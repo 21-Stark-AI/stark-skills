@@ -104,3 +104,69 @@ class TestModelFlags:
         cmd = mock_run.call_args[0][0]
         assert "--model" in cmd
         assert "gemini-2.5-pro" in cmd
+
+
+class TestConfigDiscovery:
+    """Config files are discovered and merged: repo -> org -> global."""
+
+    def test_global_config_only(self, tmp_path):
+        """When only global config exists, use it."""
+        global_cfg = tmp_path / "global" / "config.json"
+        global_cfg.parent.mkdir(parents=True)
+        global_cfg.write_text('{"agents": ["claude"], "fix_threshold": "high"}')
+
+        cfg = multi_review.discover_config(cwd=str(tmp_path), global_dir=str(global_cfg.parent))
+        assert cfg["agents"] == ["claude"]
+        assert cfg["fix_threshold"] == "high"
+
+    def test_repo_overrides_global(self, tmp_path):
+        """Repo config replaces scalar fields."""
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / "config.json").write_text('{"agents": ["claude", "codex", "gemini"], "fix_threshold": "medium"}')
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / ".code-review").mkdir()
+        (repo_dir / ".code-review" / "config.json").write_text('{"fix_threshold": "high"}')
+
+        cfg = multi_review.discover_config(cwd=str(repo_dir), global_dir=str(global_dir))
+        assert cfg["fix_threshold"] == "high"  # repo wins
+        assert cfg["agents"] == ["claude", "codex", "gemini"]  # inherited
+
+    def test_extra_domains_additive(self, tmp_path):
+        """extra_domains merges additively across levels."""
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / "config.json").write_text('{"extra_domains": ["perf"]}')
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / ".code-review").mkdir()
+        (repo_dir / ".code-review" / "config.json").write_text('{"extra_domains": ["i18n"]}')
+
+        cfg = multi_review.discover_config(cwd=str(repo_dir), global_dir=str(global_dir))
+        assert set(cfg["extra_domains"]) == {"perf", "i18n"}
+
+    def test_severity_overrides_deep_merge(self, tmp_path):
+        """severity_overrides deep merges across levels."""
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / "config.json").write_text('{"severity_overrides": {"security": {"min_severity": "high"}}}')
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / ".code-review").mkdir()
+        (repo_dir / ".code-review" / "config.json").write_text(
+            '{"severity_overrides": {"accessibility": {"min_severity": "critical"}}}'
+        )
+
+        cfg = multi_review.discover_config(cwd=str(repo_dir), global_dir=str(global_dir))
+        assert cfg["severity_overrides"]["security"]["min_severity"] == "high"
+        assert cfg["severity_overrides"]["accessibility"]["min_severity"] == "critical"
+
+    def test_defaults_when_no_config(self, tmp_path):
+        """When no config files exist, DEFAULT_CONFIG is used."""
+        cfg = multi_review.discover_config(cwd=str(tmp_path), global_dir=str(tmp_path / "nonexistent"))
+        assert cfg["agents"] == ["claude", "codex", "gemini"]
+        assert cfg["fix_threshold"] == "medium"
