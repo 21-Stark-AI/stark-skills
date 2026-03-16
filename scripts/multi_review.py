@@ -68,6 +68,82 @@ AGENTS = {
     },
 }
 
+# ── Hierarchical config ───────────────────────────────────────────────
+
+DEFAULT_CONFIG = {
+    "agents": ["claude", "codex", "gemini"],
+    "fix_threshold": "medium",
+    "test_command": None,
+    "build_command": None,
+    "verify_before_clean": True,
+    "disabled_domains": [],
+    "extra_domains": [],
+    "severity_overrides": {},
+    "github_apps": {
+        "claude": "stark-claude",
+        "codex": "stark-codex",
+        "gemini": "stark-gemini",
+    },
+}
+
+REPLACE_FIELDS = {"agents", "fix_threshold", "test_command", "build_command",
+                  "verify_before_clean", "disabled_domains"}
+ADDITIVE_FIELDS = {"extra_domains"}
+DEEP_MERGE_FIELDS = {"severity_overrides", "github_apps"}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def _find_config_chain(cwd: str, global_dir: str) -> list[Path]:
+    """Walk from cwd up to ~ looking for .code-review/config.json, then global."""
+    chain = []
+    home = Path.home()
+    current = Path(cwd).resolve()
+    while current != home and current != current.parent:
+        cfg = current / ".code-review" / "config.json"
+        if cfg.exists():
+            chain.append(cfg)
+        current = current.parent
+    global_cfg = Path(global_dir) / "config.json"
+    if global_cfg.exists():
+        chain.append(global_cfg)
+    return chain
+
+
+def discover_config(cwd: str | None = None, global_dir: str | None = None) -> dict:
+    """Discover and merge config: repo -> org -> global."""
+    if cwd is None:
+        cwd = os.getcwd()
+    if global_dir is None:
+        global_dir = str(Path.home() / ".claude" / "code-review")
+
+    chain = _find_config_chain(cwd, global_dir)
+    merged = dict(DEFAULT_CONFIG)
+    for cfg_path in reversed(chain):
+        try:
+            layer = json.loads(cfg_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        for key, val in layer.items():
+            if key in REPLACE_FIELDS:
+                merged[key] = val
+            elif key in ADDITIVE_FIELDS:
+                existing = merged.get(key, [])
+                merged[key] = list(set(existing) | set(val))
+            elif key in DEEP_MERGE_FIELDS:
+                merged[key] = _deep_merge(merged.get(key, {}), val)
+            else:
+                merged[key] = val
+    return merged
+
 
 def _discover_domains() -> dict[str, dict[str, Any]]:
     """Discover domains from prompt files in any agent directory.
