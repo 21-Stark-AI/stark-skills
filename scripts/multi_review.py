@@ -381,16 +381,19 @@ def run_review_round(
     agents: list[str] | None = None,
     domains: list[str] | None = None,
     cwd: str | None = None,
+    out: Any = None,
 ) -> ReviewRound:
     """Run one round of parallel reviews: agents × domains."""
+    if out is None:
+        out = sys.stdout
     agents = agents or list(AGENTS.keys())
     domains = domains or list(DOMAINS.keys())
     rnd = ReviewRound(round_num=round_num)
 
     total = len(agents) * len(domains)
-    print(f"\n{'='*60}")
-    print(f"  Review Round {round_num} — {len(agents)} agents × {len(domains)} domains = {total} sub-agents")
-    print(f"{'='*60}")
+    print(f"\n{'='*60}", file=out)
+    print(f"  Review Round {round_num} — {len(agents)} agents × {len(domains)} domains = {total} sub-agents", file=out)
+    print(f"{'='*60}", file=out)
 
     with ThreadPoolExecutor(max_workers=min(total, MAX_WORKERS)) as pool:
         futures = {}
@@ -401,7 +404,8 @@ def run_review_round(
                 future = pool.submit(_run_subagent, agent, domain_key, base, cwd)
                 futures[future] = (agent, domain_key)
                 print(
-                    f"  [{agent_cfg['emoji']}] {agent} × {domain_cfg['label']}..."
+                    f"  [{agent_cfg['emoji']}] {agent} × {domain_cfg['label']}...",
+                    file=out,
                 )
 
         for future in as_completed(futures):
@@ -417,12 +421,14 @@ def run_review_round(
             if result.error:
                 print(
                     f"  [{agent_cfg['emoji']}] {agent} × {domain_key}: "
-                    f"ERROR — {result.error}"
+                    f"ERROR — {result.error}",
+                    file=out,
                 )
             else:
                 print(
                     f"  [{agent_cfg['emoji']}] {agent} × {domain_key}: "
-                    f"{n} findings ({crits}C/{highs}H) [{result.duration_s:.1f}s]"
+                    f"{n} findings ({crits}C/{highs}H) [{result.duration_s:.1f}s]",
+                    file=out,
                 )
 
     return rnd
@@ -547,17 +553,19 @@ def review_pr(
     base: str = "main",
     dry_run: bool = False,
     json_output: bool = False,
+    json_only: bool = False,
     cwd: str | None = None,
 ) -> dict[str, Any]:
     """Run the full multi-agent review on a single PR."""
+    out = sys.stderr if json_only else sys.stdout
     n_agents = len(AGENTS)
     n_domains = len(DOMAINS)
 
-    print(f"\n{'#'*60}")
-    print(f"  Multi-Agent Review: {repo} PR #{pr_number}")
-    print(f"  Base: {base}")
-    print(f"  {n_agents} agents × {n_domains} domains = {n_agents * n_domains} sub-agents")
-    print(f"{'#'*60}")
+    print(f"\n{'#'*60}", file=out)
+    print(f"  Multi-Agent Review: {repo} PR #{pr_number}", file=out)
+    print(f"  Base: {base}", file=out)
+    print(f"  {n_agents} agents × {n_domains} domains = {n_agents * n_domains} sub-agents", file=out)
+    print(f"{'#'*60}", file=out)
 
     if not DOMAINS:
         print("  [!] No domain prompt files found in:", PROMPTS_DIR, file=sys.stderr)
@@ -569,29 +577,29 @@ def review_pr(
 
     while True:
         round_num += 1
-        rnd = run_review_round(base, round_num, cwd=cwd)
+        rnd = run_review_round(base, round_num, cwd=cwd, out=out)
         rounds.append(rnd)
 
         # Post reviews to GitHub — one review per agent, consolidating all domains
         if not dry_run:
-            print(f"\n  Posting reviews to PR #{pr_number}...")
+            print(f"\n  Posting reviews to PR #{pr_number}...", file=out)
             for agent, agent_cfg in AGENTS.items():
                 body = format_agent_review_body(agent, rnd)
                 if body:
                     ok = post_review(repo, pr_number, agent_cfg["app"], body)
                     status = "posted" if ok else "FAILED"
-                    print(f"    {agent_cfg['emoji']} {agent} → {status}")
+                    print(f"    {agent_cfg['emoji']} {agent} → {status}", file=out)
 
         # Check for actionable findings (critical/high/medium)
         if not has_actionable_findings(rnd):
-            print(f"\n  Round {round_num}: No critical/high/medium findings. Review clean.")
+            print(f"\n  Round {round_num}: No critical/high/medium findings. Review clean.", file=out)
             break
 
         actionable = [
             f for f in all_findings(rnd) if f.severity in ("critical", "high", "medium")
         ]
-        print(f"\n  Round {round_num}: {len(actionable)} actionable findings to fix.")
-        print("  Findings require fixing. Outputting for orchestrator...")
+        print(f"\n  Round {round_num}: {len(actionable)} actionable findings to fix.", file=out)
+        print("  Findings require fixing. Outputting for orchestrator...", file=out)
         break
 
     # Build final output
@@ -636,11 +644,11 @@ def review_pr(
     }
 
     if not json_output:
-        print(f"\n{'='*60}")
-        print("  Summary")
-        print(f"{'='*60}")
-        print(format_summary_table(rounds))
-        print()
+        print(f"\n{'='*60}", file=out)
+        print("  Summary", file=out)
+        print(f"{'='*60}", file=out)
+        print(format_summary_table(rounds), file=out)
+        print(file=out)
 
     return output
 
@@ -672,6 +680,10 @@ def main() -> None:
     parser.add_argument("--base", help="Base branch. Default: auto-detect (main/master)")
     parser.add_argument("--dry-run", action="store_true", help="Don't post reviews to GitHub")
     parser.add_argument("--json", action="store_true", dest="json_output", help="Output JSON only")
+    parser.add_argument(
+        "--json-only", action="store_true", dest="json_only",
+        help="Strict JSON mode: stdout is JSON payload only, all logs go to stderr",
+    )
 
     args = parser.parse_args()
 
@@ -684,10 +696,12 @@ def main() -> None:
 
         result = review_pr(
             repo, args.pr, base,
-            dry_run=args.dry_run, json_output=args.json_output,
+            dry_run=args.dry_run,
+            json_output=args.json_output or args.json_only,
+            json_only=getattr(args, 'json_only', False),
         )
 
-        if args.json_output:
+        if args.json_output or args.json_only:
             print(json.dumps(result, indent=2))
 
     elif args.all_repos:
