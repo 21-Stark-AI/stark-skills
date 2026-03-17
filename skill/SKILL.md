@@ -76,7 +76,24 @@ merge_base=$(git merge-base origin/{base_ref} HEAD)
 
 All subsequent work happens inside this worktree. The operator's checkout is never touched.
 
-### 1.6 Capture baseline (full mode only)
+### 1.6 Rebase over base branch
+
+If the PR branch is not `main` (or whatever `base_ref` is), rebase over the latest base to incorporate any recently merged branches:
+
+```bash
+git fetch origin {base_ref}
+git rebase origin/{base_ref}
+```
+
+If rebase conflicts → abort (`git rebase --abort`), warn in terminal, and continue with the un-rebased branch. The review still runs — conflicts just mean findings may overlap with already-merged code.
+
+If rebase succeeds, update the merge base:
+
+```bash
+merge_base=$(git merge-base origin/{base_ref} HEAD)
+```
+
+### 1.7 Capture baseline (full mode only)
 
 Run the configured `test_command` in the worktree. Parse output for failing test identifiers. Store as `baseline_failures` set. Pre-existing failures are not the skill's responsibility.
 
@@ -112,9 +129,13 @@ Cross-reference: 2+ agents flagging same file+region = `high_confidence`.
 
 Edit code in the worktree to address all `fix` and `recurring` findings.
 
-### 2d. Test
+### 2d. Build & Test
 
-Run `test_command`. Compare failures against `baseline_failures`. Only NEW failures (identifiers not in baseline) are regressions — fix them.
+**Build check** — if `build_command` is configured, run it first. If not configured, try to infer from the project (`pnpm build`, `npm run build`, `mvn compile`, `go build ./...`, etc. based on what package manager / build files exist). If build fails, the fixes introduced compilation errors — fix them before proceeding.
+
+**Test** — run `test_command`. Compare failures against `baseline_failures`. Only NEW failures (identifiers not in baseline) are regressions — fix them.
+
+If fixing build or test regressions required code changes, re-run the build check to confirm no new compilation errors were introduced. Loop until build passes (max 3 attempts per round, then warn and proceed).
 
 ### 2e. Commit + push
 
