@@ -143,6 +143,11 @@ install() {
     link_dir "$REPO_DIR/standards" "$CODE_REVIEW_DIR/standards" "Standards templates"
 
     echo ""
+    info "Note: To enable staleness detection in a repo, copy or reference:"
+    info "  $CODE_REVIEW_DIR/standards/workflows/doc-staleness.yml"
+    info "  → .github/workflows/doc-staleness.yml in the target repo"
+
+    echo ""
     echo "Installation complete. Verify with: ./install.sh --status"
     echo ""
 
