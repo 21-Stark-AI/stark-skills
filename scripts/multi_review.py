@@ -561,7 +561,11 @@ def _run_subagent(
             f"{full_prompt}"
         )
         gemini_home = tempfile.mkdtemp(prefix="gemini-review-")
-        os.makedirs(os.path.join(gemini_home, ".gemini"), exist_ok=True)
+        gemini_dir = os.path.join(gemini_home, ".gemini")
+        os.makedirs(gemini_dir, exist_ok=True)
+        # Gemini CLI expects projects.json to exist for atomic rename
+        with open(os.path.join(gemini_dir, "projects.json"), "w") as f:
+            f.write("{}")
         cmd = [
             "gemini", "--model", "gemini-2.5-pro",
             "-p", prompt,
