@@ -427,8 +427,8 @@ def _run_plan_subagent(
 
     if agent == "claude":
         cmd = [
-            "claude", "-p", full_prompt, "--output-format", "text",
-            "--model", "claude-opus-4-6", "--max-tokens", "16384",
+            "claude", "-p", "-", "--output-format", "text",
+            "--model", "claude-opus-4-6",
         ]
     elif agent == "codex":
         cmd = ["codex", "exec", "-c", 'model_reasoning_effort="xhigh"', full_prompt]

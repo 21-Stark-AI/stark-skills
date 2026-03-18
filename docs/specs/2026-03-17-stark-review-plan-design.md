@@ -137,7 +137,7 @@ For each agent × domain combination, the script:
 4. Dispatches via CLI:
 
 ```
-Claude: claude -p - --output-format text --model claude-opus-4-6 --max-tokens 16384  (prompt via stdin)
+Claude: claude -p - --output-format text --model claude-opus-4-6  (prompt via stdin)
 Codex:  codex exec -c 'model_reasoning_effort="xhigh"' --ephemeral --json -o <file> -  (prompt via stdin)
 Gemini: GEMINI_CLI_HOME=$(mktemp -d) gemini --model gemini-2.5-pro -p "$instruction" -o json  (plan content via stdin)
 ```
