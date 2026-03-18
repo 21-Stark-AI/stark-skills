@@ -278,7 +278,11 @@ def _run_plan_subagent(
         # Gemini: -p is the instruction, stdin is context (piped plan content).
         # -o json gives structured JSON output. GEMINI_CLI_HOME isolates sessions.
         gemini_home = tempfile.mkdtemp(prefix="gemini-plan-review-")
-        os.makedirs(os.path.join(gemini_home, ".gemini"), exist_ok=True)
+        gemini_dir = os.path.join(gemini_home, ".gemini")
+        os.makedirs(gemini_dir, exist_ok=True)
+        # Gemini CLI expects projects.json to exist for atomic rename
+        with open(os.path.join(gemini_dir, "projects.json"), "w") as f:
+            f.write("{}")
         cmd = [
             "gemini", "--model", "gemini-2.5-pro",
             "-p", prompt_text or "Review this plan document.",
