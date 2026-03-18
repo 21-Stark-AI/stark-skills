@@ -216,7 +216,7 @@ The orchestrator passes maximum-power flags to each CLI tool:
 
 | Agent | CLI Flags | Model/Effort |
 |-------|-----------|--------------|
-| Claude | `--model claude-opus-4-6 --max-tokens 16384` | Opus 4.6, max output |
+| Claude | `--model claude-opus-4-6` | Opus 4.6 |
 | Codex | `-c 'model_reasoning_effort="xhigh"'` | Maximum reasoning effort |
 | Gemini | `--model gemini-2.5-pro` | Pro model |
 
@@ -248,8 +248,8 @@ The skill file — narrative instructions for Claude Code to follow when `/stark
 
 ```python
 if agent == "claude":
-    cmd = ["claude", "-p", prompt, "--output-format", "text",
-           "--model", "claude-opus-4-6", "--max-tokens", "16384"]
+    cmd = ["claude", "-p", "-", "--output-format", "text",
+           "--model", "claude-opus-4-6"]
 elif agent == "codex":
     cmd = ["codex", "review", "-c", 'model_reasoning_effort="xhigh"', "--base", base, full_prompt]
 elif agent == "gemini":

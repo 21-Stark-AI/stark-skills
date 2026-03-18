@@ -89,7 +89,7 @@ class TestModelFlags:
         cmd = mock_run.call_args[0][0]
         assert "--model" in cmd
         assert "claude-opus-4-6" in cmd
-        assert "--max-tokens" in cmd
+        assert "--max-tokens" not in cmd  # removed: no longer supported
         assert "-" in cmd  # stdin marker
         call_kwargs = mock_run.call_args[1]
         assert "input" in call_kwargs
