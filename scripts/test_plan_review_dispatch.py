@@ -154,12 +154,16 @@ class TestSubAgentDispatch:
         assert cmd[0] == "claude"
         assert "--model" in cmd
         assert "claude-opus-4-6" in cmd
+        assert "-" in cmd  # stdin marker
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert "Test plan content" in call_kwargs["input"]
         assert len(result.findings) == 1
         assert result.error is None
 
     @patch("plan_review_dispatch.subprocess.run")
     def test_codex_dispatch(self, mock_run):
-        mock_run.return_value = MagicMock(stdout="[]", returncode=0)
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
         result = plan_review_dispatch._run_plan_subagent(
             "codex", "general", "Test plan", timeout=300,
         )
@@ -168,7 +172,13 @@ class TestSubAgentDispatch:
         assert cmd[1] == "exec"
         assert "-c" in cmd
         assert plan_review_dispatch.CODEX_REASONING_CONFIG in cmd
-        assert "Test plan" in cmd
+        assert "--ephemeral" in cmd
+        assert "--json" in cmd
+        assert "-o" in cmd
+        assert cmd[-1] == "-"  # stdin marker
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert "Test plan" in call_kwargs["input"]
 
     @patch("plan_review_dispatch.subprocess.run")
     def test_gemini_dispatch(self, mock_run):
@@ -180,6 +190,8 @@ class TestSubAgentDispatch:
         assert cmd[0] == "gemini"
         assert "--model" in cmd
         assert "gemini-2.5-pro" in cmd
+        # gemini keeps prompt in argv (stdin not verified)
+        assert "Test plan" in cmd[-1]
 
     @patch("plan_review_dispatch.subprocess.run")
     def test_timeout_recorded(self, mock_run):
@@ -206,6 +218,61 @@ class TestSubAgentDispatch:
             "codex", "general", "Test plan", timeout=300,
         )
         assert result.error == "agent_unavailable"
+
+
+class TestReturnCodeHandling:
+    """CLI errors must be detected, not silently swallowed."""
+
+    @patch("plan_review_dispatch.subprocess.run")
+    def test_nonzero_returncode_sets_cli_error(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="unknown flag", returncode=2)
+        result = plan_review_dispatch._run_plan_subagent(
+            "claude", "feasibility", "Test plan", timeout=300,
+        )
+        assert result.error == "cli_error"
+        assert len(result.findings) == 0
+
+    @patch("plan_review_dispatch.subprocess.run")
+    def test_empty_stdout_sets_empty_output(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        result = plan_review_dispatch._run_plan_subagent(
+            "claude", "feasibility", "Test plan", timeout=300,
+        )
+        assert result.error == "empty_output"
+        assert len(result.findings) == 0
+
+    @patch("plan_review_dispatch.subprocess.run")
+    def test_codex_nonzero_returncode(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="bad flag", returncode=2)
+        result = plan_review_dispatch._run_plan_subagent(
+            "codex", "general", "Test plan", timeout=300,
+        )
+        assert result.error == "cli_error"
+        assert len(result.findings) == 0
+
+    @patch("plan_review_dispatch.subprocess.run")
+    def test_prompt_passed_via_stdin_claude(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="[]", stderr="", returncode=0)
+        plan_review_dispatch._run_plan_subagent(
+            "claude", "feasibility", "Test plan", timeout=300,
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert "Test plan" in call_kwargs["input"]
+        cmd = mock_run.call_args[0][0]
+        assert cmd[-1] != call_kwargs["input"]  # prompt not in argv
+
+    @patch("plan_review_dispatch.subprocess.run")
+    def test_prompt_passed_via_stdin_codex(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        plan_review_dispatch._run_plan_subagent(
+            "codex", "general", "Test plan", timeout=300,
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert "Test plan" in call_kwargs["input"]
+        cmd = mock_run.call_args[0][0]
+        assert cmd[-1] == "-"
 
 
 class TestCLIFlagsSmoke:
