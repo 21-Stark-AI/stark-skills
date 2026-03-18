@@ -36,6 +36,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -513,6 +514,9 @@ def _run_subagent(
     else:
         full_prompt = domain_prompt
 
+    stdin_input = None
+    codex_output_file = None
+
     if agent == "claude":
         prompt = (
             f"Run 'git diff {base}...HEAD' and read all changed files. "
@@ -522,7 +526,7 @@ def _run_subagent(
         cmd = [
             "claude",
             "-p",
-            prompt,
+            "-",
             "--output-format",
             "text",
             "--model",
@@ -530,11 +534,23 @@ def _run_subagent(
             "--max-tokens",
             "16384",
         ]
+        stdin_input = prompt
 
     elif agent == "codex":
-        cmd = ["codex", "review", "-c", CODEX_REASONING_CONFIG, "--base", base, full_prompt]
+        codex_output_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False,
+        ).name
+        cmd = [
+            "codex", "exec", "review",
+            "-c", CODEX_REASONING_CONFIG,
+            "--ephemeral", "--json",
+            "-o", codex_output_file,
+            "--base", base, "-",
+        ]
+        stdin_input = full_prompt
 
     elif agent == "gemini":
+        # gemini CLI stdin support via '-' not verified; keeping prompt in argv
         prompt = (
             f"Run 'git diff {base}...HEAD' and read all changed files. "
             f"ONLY review files that appear in the diff. "
@@ -552,18 +568,54 @@ def _run_subagent(
             duration_s=0.0,
         )
 
+    def _cleanup_codex_output():
+        if codex_output_file and os.path.exists(codex_output_file):
+            os.unlink(codex_output_file)
+
     max_attempts = 2
     timeout_s = 600
+    run_kwargs: dict[str, Any] = {
+        "capture_output": True, "text": True,
+        "timeout": timeout_s, "cwd": cwd,
+    }
+    if stdin_input is not None:
+        run_kwargs["input"] = stdin_input
+
     for attempt in range(1, max_attempts + 1):
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                cwd=cwd,
-            )
-            raw = result.stdout
+            result = subprocess.run(cmd, **run_kwargs)
+
+            if result.returncode != 0:
+                print(
+                    f"  [{agent}:{domain_key}] CLI error (exit {result.returncode}): "
+                    f"{result.stderr[:500]}",
+                    file=sys.stderr,
+                )
+                _cleanup_codex_output()
+                return SubAgentResult(
+                    agent=agent, domain=domain_key, raw_output="",
+                    findings=[], error="cli_error",
+                    duration_s=time.time() - t0,
+                )
+
+            # For codex, read final output from -o file
+            if codex_output_file:
+                raw = ""
+                if os.path.exists(codex_output_file):
+                    with open(codex_output_file) as f:
+                        raw = f.read()
+                    os.unlink(codex_output_file)
+            else:
+                raw = result.stdout
+
+            if not raw.strip():
+                print(f"  [{agent}:{domain_key}] Empty output", file=sys.stderr)
+                return SubAgentResult(
+                    agent=agent, domain=domain_key, raw_output="",
+                    findings=[], error="empty_output",
+                    duration_s=time.time() - t0,
+                )
+
             findings = _parse_findings(agent, domain_key, raw)
             return SubAgentResult(
                 agent=agent,
@@ -579,6 +631,7 @@ def _run_subagent(
                     file=sys.stderr,
                 )
                 continue
+            _cleanup_codex_output()
             return SubAgentResult(
                 agent=agent,
                 domain=domain_key,
@@ -587,6 +640,7 @@ def _run_subagent(
                 duration_s=time.time() - t0,
             )
         except Exception as e:
+            _cleanup_codex_output()
             return SubAgentResult(
                 agent=agent,
                 domain=domain_key,

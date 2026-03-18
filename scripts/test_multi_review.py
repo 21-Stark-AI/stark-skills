@@ -90,15 +90,23 @@ class TestModelFlags:
         assert "--model" in cmd
         assert "claude-opus-4-6" in cmd
         assert "--max-tokens" in cmd
+        assert "-" in cmd  # stdin marker
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert call_kwargs["input"]  # non-empty prompt
 
     @patch("multi_review.subprocess.run")
     def test_codex_uses_xhigh(self, mock_run):
         mock_run.return_value = MagicMock(stdout="[]", returncode=0)
         multi_review._run_subagent("codex", "architecture", "abc123")
         cmd = mock_run.call_args[0][0]
-        assert cmd[:2] == ["codex", "review"]
+        assert cmd[:3] == ["codex", "exec", "review"]
         assert "-c" in cmd
         assert multi_review.CODEX_REASONING_CONFIG in cmd
+        assert "--ephemeral" in cmd
+        assert "--json" in cmd
+        assert "-o" in cmd
+        assert cmd[-1] == "-"  # stdin marker
 
     @patch("multi_review.subprocess.run")
     def test_gemini_uses_pro(self, mock_run):
@@ -117,13 +125,14 @@ class TestCLIFlagsSmoke:
     """
 
     @pytest.mark.skipif(not shutil.which("codex"), reason="codex CLI not installed")
-    def test_codex_review_accepts_config_flag(self):
-        """codex review -c 'model_reasoning_effort=...' must not error."""
+    def test_codex_exec_review_accepts_flags(self):
+        """codex exec review -c ... --ephemeral --json must not error."""
         result = subprocess.run(
-            ["codex", "review", "-c", multi_review.CODEX_REASONING_CONFIG, "--help"],
+            ["codex", "exec", "review", "-c", multi_review.CODEX_REASONING_CONFIG,
+             "--ephemeral", "--json", "--help"],
             capture_output=True, text=True, timeout=10,
         )
-        assert result.returncode == 0, f"codex review rejected flags: {result.stderr}"
+        assert result.returncode == 0, f"codex exec review rejected flags: {result.stderr}"
 
     @pytest.mark.skipif(not shutil.which("gemini"), reason="gemini CLI not installed")
     def test_gemini_accepts_model_flag(self):
@@ -305,3 +314,56 @@ class TestConfigWiring:
         result = multi_review.apply_severity_overrides(findings, overrides)
         assert result[0].severity == "low"  # medium < critical -> downgraded
         assert result[1].severity == "critical"  # unchanged
+
+
+class TestReturnCodeHandling:
+    """CLI errors must be detected, not silently swallowed."""
+
+    @patch("multi_review.subprocess.run")
+    def test_nonzero_returncode_sets_cli_error(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="unknown flag", returncode=2)
+        result = multi_review._run_subagent("claude", "architecture", "abc123")
+        assert result.error == "cli_error"
+        assert len(result.findings) == 0
+
+    @patch("multi_review.subprocess.run")
+    def test_empty_stdout_sets_empty_output(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        result = multi_review._run_subagent("claude", "architecture", "abc123")
+        assert result.error == "empty_output"
+        assert len(result.findings) == 0
+
+    @patch("multi_review.subprocess.run")
+    def test_whitespace_stdout_sets_empty_output(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="   \n  ", stderr="", returncode=0)
+        result = multi_review._run_subagent("gemini", "architecture", "abc123")
+        assert result.error == "empty_output"
+        assert len(result.findings) == 0
+
+    @patch("multi_review.subprocess.run")
+    def test_prompt_passed_via_stdin_claude(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="[]", stderr="", returncode=0)
+        multi_review._run_subagent("claude", "architecture", "abc123")
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert call_kwargs["input"]  # non-empty prompt
+        cmd = mock_run.call_args[0][0]
+        assert cmd[-1] != call_kwargs["input"]  # prompt not in argv
+
+    @patch("multi_review.subprocess.run")
+    def test_prompt_passed_via_stdin_codex(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        multi_review._run_subagent("codex", "architecture", "abc123")
+        call_kwargs = mock_run.call_args[1]
+        assert "input" in call_kwargs
+        assert call_kwargs["input"]  # non-empty prompt
+        cmd = mock_run.call_args[0][0]
+        assert cmd[-1] == "-"  # stdin marker
+
+    @patch("multi_review.subprocess.run")
+    def test_codex_nonzero_returncode(self, mock_run):
+        """Codex CLI error should be caught even with -o file."""
+        mock_run.return_value = MagicMock(stdout="", stderr="bad flag", returncode=2)
+        result = multi_review._run_subagent("codex", "architecture", "abc123")
+        assert result.error == "cli_error"
+        assert len(result.findings) == 0
