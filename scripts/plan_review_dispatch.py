@@ -264,23 +264,32 @@ def _run_plan_subagent(
         result.error = "unknown_agent"
         return result
 
+    max_attempts = 2
     t0 = time.monotonic()
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        result.raw_output = proc.stdout or ""
-    except subprocess.TimeoutExpired:
-        result.duration_s = time.monotonic() - t0
-        result.error = "timeout"
-        return result
-    except FileNotFoundError:
-        result.duration_s = time.monotonic() - t0
-        result.error = "agent_unavailable"
-        return result
+    for attempt in range(1, max_attempts + 1):
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            result.raw_output = proc.stdout or ""
+            break
+        except subprocess.TimeoutExpired:
+            if attempt < max_attempts:
+                print(
+                    f"    {agent}:{domain_key} timed out, retrying ({attempt}/{max_attempts})...",
+                    file=sys.stderr,
+                )
+                continue
+            result.duration_s = time.monotonic() - t0
+            result.error = "timeout"
+            return result
+        except FileNotFoundError:
+            result.duration_s = time.monotonic() - t0
+            result.error = "agent_unavailable"
+            return result
 
     result.duration_s = time.monotonic() - t0
     result.findings = _parse_plan_findings(agent, domain_key, result.raw_output)
