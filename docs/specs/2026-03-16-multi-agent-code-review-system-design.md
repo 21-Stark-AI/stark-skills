@@ -604,7 +604,7 @@ All commands run inside the worktree (cwd = worktree path) where `HEAD` is the P
 
 **Claude:**
 ```bash
-claude -p - --output-format text --model claude-opus-4-6 --max-tokens 16384
+claude -p - --output-format text --model claude-opus-4-6
 # Prompt piped via stdin: "Run 'git diff {merge_base}..HEAD' and read all changed files. <preamble + domain prompt>"
 ```
 Context: Claude runs inside the worktree. `HEAD` = PR head. The merge-base SHA is injected into the prompt. Prompt passed via stdin to avoid argv limits and `ps` leakage.

@@ -533,8 +533,6 @@ def _run_subagent(
             "text",
             "--model",
             "claude-opus-4-6",
-            "--max-tokens",
-            "16384",
         ]
         stdin_input = prompt
 
@@ -563,6 +561,7 @@ def _run_subagent(
             f"{full_prompt}"
         )
         gemini_home = tempfile.mkdtemp(prefix="gemini-review-")
+        os.makedirs(os.path.join(gemini_home, ".gemini"), exist_ok=True)
         cmd = [
             "gemini", "--model", "gemini-2.5-pro",
             "-p", prompt,

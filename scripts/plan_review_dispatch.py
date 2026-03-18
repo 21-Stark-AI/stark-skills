@@ -261,7 +261,6 @@ def _run_plan_subagent(
             "claude", "-p", "-",
             "--output-format", "text",
             "--model", "claude-opus-4-6",
-            "--max-tokens", "16384",
         ]
         stdin_input = full_prompt
     elif agent == "codex":
@@ -279,6 +278,7 @@ def _run_plan_subagent(
         # Gemini: -p is the instruction, stdin is context (piped plan content).
         # -o json gives structured JSON output. GEMINI_CLI_HOME isolates sessions.
         gemini_home = tempfile.mkdtemp(prefix="gemini-plan-review-")
+        os.makedirs(os.path.join(gemini_home, ".gemini"), exist_ok=True)
         cmd = [
             "gemini", "--model", "gemini-2.5-pro",
             "-p", prompt_text or "Review this plan document.",

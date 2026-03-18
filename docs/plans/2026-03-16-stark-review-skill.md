@@ -263,7 +263,7 @@ class TestModelFlags:
         cmd = mock_run.call_args[0][0]
         assert "--model" in cmd
         assert "claude-opus-4-6" in cmd
-        assert "--max-tokens" in cmd
+        assert "--model" in cmd
 
     @patch("multi_review.subprocess.run")
     def test_codex_uses_xhigh(self, mock_run):
@@ -301,8 +301,8 @@ if agent == "claude":
         f"{full_prompt}"
     )
     cmd = [
-        "claude", "-p", prompt, "--output-format", "text",
-        "--model", "claude-opus-4-6", "--max-tokens", "16384",
+        "claude", "-p", "-", "--output-format", "text",
+        "--model", "claude-opus-4-6",
     ]
 
 elif agent == "codex":
