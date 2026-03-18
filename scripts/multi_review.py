@@ -550,31 +550,40 @@ def _run_subagent(
             duration_s=0.0,
         )
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            cwd=cwd,
-        )
-        raw = result.stdout
-        findings = _parse_findings(agent, domain_key, raw)
-        return SubAgentResult(
-            agent=agent,
-            domain=domain_key,
-            raw_output=raw,
-            findings=findings,
-            duration_s=time.time() - t0,
-        )
-    except subprocess.TimeoutExpired:
-        return SubAgentResult(
-            agent=agent,
-            domain=domain_key,
-            raw_output="",
-            error="Timed out after 600s",
-            duration_s=time.time() - t0,
-        )
+    max_attempts = 2
+    timeout_s = 600
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=cwd,
+            )
+            raw = result.stdout
+            findings = _parse_findings(agent, domain_key, raw)
+            return SubAgentResult(
+                agent=agent,
+                domain=domain_key,
+                raw_output=raw,
+                findings=findings,
+                duration_s=time.time() - t0,
+            )
+        except subprocess.TimeoutExpired:
+            if attempt < max_attempts:
+                print(
+                    f"    {agent}:{domain_key} timed out, retrying ({attempt}/{max_attempts})...",
+                    file=sys.stderr,
+                )
+                continue
+            return SubAgentResult(
+                agent=agent,
+                domain=domain_key,
+                raw_output="",
+                error=f"Timed out after {timeout_s}s (2 attempts)",
+                duration_s=time.time() - t0,
+            )
     except Exception as e:
         return SubAgentResult(
             agent=agent,
