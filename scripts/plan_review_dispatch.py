@@ -280,6 +280,14 @@ def _run_plan_subagent(
         gemini_home = tempfile.mkdtemp(prefix="gemini-plan-review-")
         gemini_dir = os.path.join(gemini_home, ".gemini")
         os.makedirs(gemini_dir, exist_ok=True)
+        # Copy auth files from real GEMINI_CLI_HOME (or ~/.gemini) so OAuth
+        # tokens are available in the isolated tmpdir.
+        real_gemini = os.environ.get("GEMINI_CLI_HOME", os.path.expanduser("~"))
+        real_gemini_dir = os.path.join(real_gemini, ".gemini")
+        for auth_file in ("settings.json", "oauth_creds.json", "google_accounts.json"):
+            src = os.path.join(real_gemini_dir, auth_file)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(gemini_dir, auth_file))
         # Gemini CLI ProjectRegistry needs cwd registered (value = short slug string)
         with open(os.path.join(gemini_dir, "projects.json"), "w") as f:
             json.dump({"projects": {os.getcwd(): "review"}}, f)
