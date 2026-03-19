@@ -198,7 +198,9 @@ git commit -m "feat(rename-project): add Phase 1 — validation"
 ```markdown
 ## Phase 2: Rename on GitHub
 
-If `DRY_RUN=true`, print what would happen and skip to Phase 3.
+**Dry-run gate:** If `DRY_RUN=true`, print "Would rename $ORG/$OLD_NAME → $ORG/$NEW_NAME on GitHub" and skip to Phase 3.
+
+**Idempotency:** Before calling PATCH, check if the repo is already named `$NEW_NAME` (GET /repos/$ORG/$NEW_NAME and compare repo ID). If already renamed, skip to 2b.
 
 ### 2a. Rename the repository
 
@@ -261,6 +263,10 @@ git commit -m "feat(rename-project): add Phase 2 — GitHub rename + remote upda
 ```markdown
 ## Phase 3: Local Rename + Symlink Cleanup
 
+**Dry-run gate:** If `DRY_RUN=true`, print "Would rename $PARENT/$OLD_NAME → $PARENT/$NEW_NAME" and list symlinks that would be removed. Skip to Phase 4.
+
+**Idempotency:** If `$PARENT/$NEW_NAME` already exists and `$PARENT/$OLD_NAME` does not, skip 3a.
+
 ### 3a. Rename the local directory
 
 ```bash
@@ -321,6 +327,8 @@ git commit -m "feat(rename-project): add Phase 3 — local rename + symlink clea
 ```markdown
 ## Phase 4: Update References in Renamed Project
 
+**Dry-run gate:** If `DRY_RUN=true`, show diffs of what would change and skip to Phase 5.
+
 Use `git grep -Il ""` to identify tracked text files (skips binary files).
 
 Skip directories: `.git/`, `.github/workflows/`, `node_modules/`, `.venv/`,
@@ -354,6 +362,8 @@ Do NOT replace:
 - `/{old-name}` (slash-prefixed) — skill invocation name
 - `name:\s*['"]?{old-name}['"]?` in frontmatter — skill identity
 - GitHub App names (`stark-claude`, `stark-codex`, `stark-gemini`)
+- Historical document filenames (e.g., `2026-03-16-stark-review-skill-design.md`) — only update content, not filenames
+- `~/.claude/code-review/` path — does not contain project name, should never be modified
 - Content inside `.git/` directory
 
 ### 4d. Post-update validation
@@ -383,6 +393,8 @@ git commit -m "feat(rename-project): add Phase 4 — self-update references"
 
 ```markdown
 ## Phase 5: Update References in Sibling Repos
+
+**Dry-run gate:** If `DRY_RUN=true`, show list of sibling repos that would be modified and the files/patterns that would change. Skip to Phase 6.
 
 ### 5a. Discover sibling repos
 
@@ -439,6 +451,8 @@ git commit -m "feat(rename-project): add Phase 5 — cross-repo update"
 ```markdown
 ## Phase 6: Reinstall Symlinks
 
+**Dry-run gate:** If `DRY_RUN=true`, print "Would run install.sh to recreate symlinks" and skip to Phase 7.
+
 ```bash
 cd "$PARENT/$NEW_NAME"
 ./install.sh
@@ -480,8 +494,18 @@ Print:
 - CI/CD workflow files with old-name references
 - Sibling repos skipped due to dirty worktrees
 - The `cd` command: `cd $PARENT/$NEW_NAME`
+- Known integration points that may need manual update (webhooks, Slack, Jira)
 - Note: GitHub redirects are in place but break if a repo with the old
   name is created later
+
+## What This Skill Does NOT Do
+
+- Rename skills or their invocation commands (e.g., `/stark-review` stays `/stark-review`)
+- Update CI/CD pipelines or GitHub Actions (scans and reports them only)
+- Handle repos outside the parent directory
+- Rename GitHub Apps or their credentials
+- Modify binary files or untracked files
+- Update external webhooks, Slack integrations, or Jira links
 
 ## Mistakes to Avoid
 
@@ -658,6 +682,26 @@ git commit -m "docs: add rename-project to CLAUDE.md skills list"
       "assertions": [
         {"name": "detects_partial", "check": "Checks remote URL and local dir name to find resume point"},
         {"name": "skips_completed_steps", "check": "Does not re-run GitHub rename if already done"}
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "rename stark-review to scripts (name already taken on GitHub by different repo)",
+      "expected_output": "Refuses to rename with clear error about name collision",
+      "files": [],
+      "assertions": [
+        {"name": "checks_collision", "check": "Compares repo IDs to detect different repo with same name"},
+        {"name": "aborts_before_mutation", "check": "Does not call PATCH or modify any files"}
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "rename stark-review to stark-skills (GitHub App lacks admin permission)",
+      "expected_output": "Fails with clear error about missing admin permission",
+      "files": [],
+      "assertions": [
+        {"name": "checks_permission", "check": "Calls GET /repos/{org}/{name} and checks permissions.admin"},
+        {"name": "fails_early", "check": "Aborts in validation phase, before any mutation"}
       ]
     }
   ]
