@@ -446,8 +446,21 @@ def post_review(repo: str, pr_number: int, app: str, body: str) -> bool:
 def _parse_findings(agent: str, domain: str, raw: str) -> list[Finding]:
     """Extract JSON findings from reviewer output."""
     cleaned = raw.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
-    cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+    # Strip markdown fences anywhere in the text
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", cleaned, re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+    else:
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+    # Handle Gemini double-encoded JSON (escaped newlines/quotes inside a string)
+    if "\\n" in cleaned and cleaned.startswith('"'):
+        try:
+            cleaned = json.loads(cleaned)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
     match = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if not match:

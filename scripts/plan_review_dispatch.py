@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -190,19 +191,25 @@ def _parse_plan_findings(
 ) -> list[PlanFinding]:
     """Parse JSON array of findings from raw agent output.
 
-    Strips markdown fences and locates the outermost JSON array brackets.
+    Handles multiple output formats:
+    - Raw JSON array
+    - JSON wrapped in markdown code fences (with optional preamble/postamble)
+    - JSON with escaped newlines (Gemini -o json double-encoding)
     Returns [] on any parse failure.
     """
     text = raw.strip()
-    # Strip markdown code fences
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # Remove first and last fence lines
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+
+    # Strip markdown code fences anywhere in the text (not just at start)
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    # Handle Gemini double-encoded JSON (escaped newlines/quotes inside a string)
+    if "\\n" in text and text.startswith('"'):
+        try:
+            text = json.loads(text)  # un-escape the string
+        except (json.JSONDecodeError, ValueError):
+            pass
 
     # Find outermost [ ... ]
     start = text.find("[")
@@ -307,8 +314,10 @@ def _run_plan_subagent(
         if gemini_home and os.path.isdir(gemini_home):
             shutil.rmtree(gemini_home, ignore_errors=True)
 
+    # Codex is slower due to reasoning mode; give it 2x the timeout
+    effective_timeout = timeout * 2 if agent == "codex" else timeout
     run_kwargs: dict[str, Any] = {
-        "capture_output": True, "text": True, "timeout": timeout,
+        "capture_output": True, "text": True, "timeout": effective_timeout,
     }
     if stdin_input is not None:
         run_kwargs["input"] = stdin_input
@@ -383,6 +392,16 @@ def _run_plan_subagent(
     # If we got non-trivial output but couldn't parse findings, flag it
     if not result.findings and result.raw_output.strip() and result.raw_output.strip() != "[]":
         result.error = "parse_error"
+        preview = result.raw_output.strip()[:500]
+        print(
+            f"  [{agent}:{domain_key}] parse_error — raw output preview:\n    {preview}",
+            file=sys.stderr,
+        )
+        # Persist full raw output for debugging
+        debug_dir = Path.home() / ".claude" / "code-review" / "history" / "parse-errors"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_file = debug_dir / f"{agent}-{domain_key}-{int(time.time())}.txt"
+        debug_file.write_text(result.raw_output)
 
     return result
 
