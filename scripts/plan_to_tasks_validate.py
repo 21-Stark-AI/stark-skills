@@ -107,17 +107,317 @@ def compute_plan_hash(content: str) -> str:
     return f"sha256:{digest}"
 
 
-# ── Stub — implemented in Task 3 ─────────────────────────────────────────
+# ── Validation prompt ─────────────────────────────────────────────────────
+
+VALIDATION_PROMPT = """You are a validation agent for a plan decomposition. You receive a JSON envelope containing:
+- plan_markdown: the original spec/design document
+- breakdown: the structured task decomposition (phases → tasks)
+- plan_hash: SHA-256 of the plan for integrity
+
+Your job is adversarial — try to break the decomposition. Check:
+1. Coverage — every requirement maps to at least one task
+2. Self-containment — each task implementable without reading other issues
+3. Dependency correctness — task_id references valid, no circular deps
+4. Overlap — no two tasks describe same work
+5. Sizing — tasks within guardrails (≤5 AC, ≤4 files, ≤500 words in how)
+6. Review sufficiency — review hints specific, not generic
+7. Metric sanity — story points consistent, risk ratings aligned
+
+Output ONLY a JSON object:
+{"schema_version": 1, "approved": true/false, "issues": [{"phase_id": "...", "task_id": "...", "field": "...", "problem": "...", "suggestion": "..."}]}
+If no issues: {"schema_version": 1, "approved": true, "issues": []}
+Output ONLY the JSON, no other text."""
+
+ISSUE_REQUIRED_FIELDS = {"phase_id", "task_id", "field", "problem"}
+
+
+# ── Envelope builder ──────────────────────────────────────────────────────
+
+
+def build_validation_envelope(
+    plan_content: str,
+    breakdown: dict[str, Any],
+    plan_hash: str,
+) -> dict[str, Any]:
+    """Build the JSON envelope sent to each validation agent."""
+    return {
+        "schema_version": 1,
+        "plan_markdown": plan_content,
+        "breakdown": breakdown,
+        "plan_hash": plan_hash,
+    }
+
+
+# ── Output parsing ────────────────────────────────────────────────────────
+
+
+def _extract_codex_output(raw: str) -> str:
+    """Extract text content from Codex JSONL event stream.
+
+    Handles:
+    - agent_message events with output_text content blocks
+    - item.completed events with output_text content blocks
+    Falls back to raw string if no events are found.
+    """
+    lines = raw.strip().splitlines()
+    extracted: list[str] = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        event_type = event.get("type", "")
+
+        # agent_message format
+        if event_type == "agent_message":
+            content = event.get("content", [])
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "output_text":
+                    text = block.get("text", "")
+                    if text:
+                        extracted.append(text)
+
+        # item.completed format
+        elif event_type == "item.completed":
+            item = event.get("item", {})
+            content = item.get("content", [])
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "output_text":
+                    text = block.get("text", "")
+                    if text:
+                        extracted.append(text)
+
+    if extracted:
+        return "\n".join(extracted)
+    return raw
+
+
+def _extract_gemini_output(raw: str) -> str:
+    """Unwrap Gemini's {"response": "..."} envelope if present."""
+    raw = raw.strip()
+    try:
+        outer = json.loads(raw)
+        if isinstance(outer, dict) and "response" in outer:
+            return outer["response"]
+    except json.JSONDecodeError:
+        pass
+    return raw
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Remove ```json ... ``` or ``` ... ``` wrappers."""
+    text = text.strip()
+    # Match optional language tag after opening fence
+    pattern = r"^```(?:json)?\s*\n?(.*?)\n?```$"
+    match = re.match(pattern, text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def parse_validation_output(raw: str, agent: str) -> "ValidationResult":
+    """Parse agent output into a ValidationResult.
+
+    Applies agent-specific extraction, then strips markdown fences,
+    then parses the JSON and constructs issues.
+    """
+    text = raw
+
+    if agent == "codex":
+        text = _extract_codex_output(text)
+    elif agent == "gemini":
+        text = _extract_gemini_output(text)
+
+    text = _strip_markdown_fences(text)
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return ValidationResult(
+            agent=agent,
+            approved=False,
+            raw_output=raw,
+            error=f"JSON parse error: {exc}",
+        )
+
+    if not isinstance(data, dict):
+        return ValidationResult(
+            agent=agent,
+            approved=False,
+            raw_output=raw,
+            error=f"Expected JSON object, got {type(data).__name__}",
+        )
+
+    approved = bool(data.get("approved", False))
+    raw_issues = data.get("issues", [])
+    issues: list[ValidationIssue] = []
+
+    for item in raw_issues:
+        if not isinstance(item, dict):
+            continue
+        if not ISSUE_REQUIRED_FIELDS.issubset(item.keys()):
+            continue
+        issues.append(
+            ValidationIssue(
+                phase_id=item["phase_id"],
+                task_id=item["task_id"],
+                field=item["field"],
+                problem=item["problem"],
+                suggestion=item.get("suggestion", ""),
+            )
+        )
+
+    return ValidationResult(
+        agent=agent,
+        approved=approved,
+        issues=issues,
+        raw_output=raw,
+    )
+
+
+# ── Agent dispatch ────────────────────────────────────────────────────────
+
+
+def _run_validation_agent(
+    agent: str,
+    envelope_json: str,
+    timeout: int,
+) -> ValidationResult:
+    """Run a single validation agent subprocess and return its result."""
+    start = time.monotonic()
+
+    stdin_payload = f"{VALIDATION_PROMPT}\n\n{envelope_json}"
+
+    try:
+        if agent == "codex":
+            result = subprocess.run(
+                [
+                    "codex",
+                    "exec",
+                    "-c",
+                    CODEX_REASONING_CONFIG,
+                    "--ephemeral",
+                    "--json",
+                    "--full-auto",
+                    "-",
+                ],
+                input=stdin_payload,
+                capture_output=True,
+                text=True,
+                timeout=timeout * 2,
+            )
+            raw = result.stdout or result.stderr
+
+        elif agent == "gemini":
+            with tempfile.TemporaryDirectory() as tmpdir:
+                env = {**os.environ, "GEMINI_CLI_HOME": tmpdir}
+                result = subprocess.run(
+                    [
+                        "gemini",
+                        "-p",
+                        VALIDATION_PROMPT,
+                        "-o",
+                        "json",
+                        "--approval-mode",
+                        "plan",
+                    ],
+                    input=envelope_json,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                )
+            raw = result.stdout or result.stderr
+
+        else:
+            return ValidationResult(
+                agent=agent,
+                error=f"Unknown agent: {agent}",
+                duration_s=time.monotonic() - start,
+            )
+
+    except FileNotFoundError:
+        return ValidationResult(
+            agent=agent,
+            error=f"agent_unavailable: {agent} not found in PATH",
+            duration_s=time.monotonic() - start,
+        )
+    except subprocess.TimeoutExpired:
+        return ValidationResult(
+            agent=agent,
+            error=f"Timeout after {timeout}s",
+            duration_s=time.monotonic() - start,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ValidationResult(
+            agent=agent,
+            error=f"Unexpected error: {exc}",
+            duration_s=time.monotonic() - start,
+        )
+
+    duration = time.monotonic() - start
+    validation_result = parse_validation_output(raw, agent=agent)
+    validation_result.duration_s = duration
+    return validation_result
 
 
 def dispatch_validators(
     plan_content: str,
-    breakdown_content: str,
+    breakdown: dict[str, Any] | str,
+    plan_hash: str | None = None,
     agents: list[str] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> list[ValidationResult]:
-    """Dispatch validation agents in parallel (stub — implemented in Task 3)."""
-    return []
+    """Dispatch validation agents in parallel using ThreadPoolExecutor.
+
+    Args:
+        plan_content: Original plan/spec markdown.
+        breakdown: Parsed breakdown dict or raw JSON string.
+        plan_hash: SHA-256 hash of plan_content (computed if not provided).
+        agents: List of agent names to dispatch. Defaults to config value.
+        timeout: Per-agent timeout in seconds.
+
+    Returns:
+        List of ValidationResult objects (one per agent).
+    """
+    if plan_hash is None:
+        plan_hash = compute_plan_hash(plan_content)
+
+    if isinstance(breakdown, str):
+        try:
+            breakdown_dict: dict[str, Any] = json.loads(breakdown)
+        except json.JSONDecodeError:
+            breakdown_dict = {}
+    else:
+        breakdown_dict = breakdown
+
+    if agents is None:
+        config = load_config()
+        agents = config.get("agents", ["codex", "gemini"])
+
+    envelope = build_validation_envelope(
+        plan_content=plan_content,
+        breakdown=breakdown_dict,
+        plan_hash=plan_hash,
+    )
+    envelope_json = json.dumps(envelope)
+
+    results: list[ValidationResult] = []
+
+    with ThreadPoolExecutor(max_workers=len(agents)) as executor:
+        futures = {
+            executor.submit(_run_validation_agent, agent, envelope_json, timeout): agent
+            for agent in agents
+        }
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    return results
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -167,9 +467,15 @@ def main() -> int:
 
     plan_hash = compute_plan_hash(plan_content)
 
+    try:
+        breakdown = json.loads(breakdown_content)
+    except json.JSONDecodeError:
+        breakdown = {}
+
     results = dispatch_validators(
         plan_content=plan_content,
-        breakdown_content=breakdown_content,
+        breakdown=breakdown,
+        plan_hash=plan_hash,
         agents=agents,
         timeout=timeout,
     )
