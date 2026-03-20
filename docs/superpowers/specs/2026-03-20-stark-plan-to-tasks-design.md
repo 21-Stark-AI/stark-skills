@@ -33,19 +33,40 @@ The plan is the source of truth. If the decomposition struggles, the plan is wea
 }
 ```
 
-Accepts `["codex"]`, `["gemini"]`, or `["codex", "gemini"]` for multi-vote validation.
+Accepts `["codex"]`, `["gemini"]`, or `["codex", "gemini"]` for multi-vote validation. Default: `["codex"]`.
+
+**Pass 3 dispatch mechanism:**
+
+Each validation agent receives two files via stdin: the plan and the decomposition JSON. The prompt is a validation-specific checklist (the checks listed in Phase 4). Output is structured JSON: `{approved: bool, issues: [{task_index, field, problem, suggestion}]}`.
+
+CLI invocation per agent (same patterns as `plan_review_dispatch.py`):
+
+```bash
+# Codex
+cat prompt.txt | codex exec -c 'model_reasoning_effort="high"' --ephemeral --json --full-auto -
+
+# Gemini
+gemini -p '<validation-prompt>' -o json --approval-mode plan < plan_and_breakdown.txt
+```
+
+Agent availability is checked in Phase 1 (not just auth — verify the CLI binary exists). If a configured validation agent is not installed, fail early with a clear message naming the missing agent, before any LLM work.
+
+If multiple validation agents are configured and they disagree, issues flagged by any agent are treated as findings (union, not intersection).
 
 ## Execution Sequence
 
-### Phase 1: Setup
+Steps are numbered sequentially. Steps 2-4 correspond to the three LLM passes.
+
+### Step 1: Setup
 
 - Read the plan file. Fail if it doesn't exist or is empty.
-- Detect target repo: parse the plan for repo references, fall back to `git remote -v` in the current directory.
+- Detect target repo: check plan frontmatter for `repo: org/name` field. If absent, scan plan body for `org/repo` patterns (e.g., `GetEvinced/widget-system`). If no match, fall back to `git remote -v` in the current directory. If all fail, ask the user.
 - Verify GitHub App auth: `$PYTHON $SCRIPTS/github_app.py --app stark-claude token`. Fail early if auth is broken.
+- Verify validation agent CLIs are installed: check that each agent in `validation_agents` config (default: `["codex"]`) is available in PATH. Fail early if missing.
 - Read target project's `docs/` tree structure (for knowledge routing in Phase 6).
 - Read target project's existing GitHub labels (for label creation in Phase 5).
 
-### Phase 2: Pass 1 — Plan Quality Gate
+### Step 2: Plan Quality Gate (LLM Pass 1)
 
 The LLM evaluates the plan against a robustness checklist. This is not a generic review — it specifically checks whether the plan has enough detail for an agent to decompose it into self-contained tasks.
 
@@ -75,7 +96,7 @@ The LLM evaluates the plan against a robustness checklist. This is not a generic
 - Does NOT add scope — only identifies gaps in what's already described.
 - Does NOT infer or add implementation details — that's the architect's job.
 
-### Phase 3: Pass 2 — Decomposition
+### Step 3: Decomposition (LLM Pass 2)
 
 Takes the hardened plan and produces a structured breakdown.
 
@@ -150,11 +171,11 @@ If a task can't be described in one issue without scrolling, it's too big — sp
 }
 ```
 
-Output written to a temp file (`/tmp/stark-plan-to-tasks-{timestamp}.json`) after Pass 2. This enables crash recovery and reduces context window pressure for Pass 3. The temp file is cleaned up after Phase 5 completes successfully.
+Output written to a temp file (`/tmp/stark-plan-to-tasks-{timestamp}.json`) after Pass 2. This enables crash recovery and reduces context window pressure for Pass 3. The temp file is cleaned up after Step 6 (Knowledge Extraction) completes successfully — Step 6 needs the breakdown data to know what knowledge to route.
 
-For plans producing >10 tasks, Pass 2 processes phases one at a time to maintain output quality (LLM quality degrades on long list outputs — later tasks get thinner `How` sections and generic review hints).
+**Large plan handling:** Pass 2 always identifies all phases first (names, descriptions, dependencies), then generates tasks one phase at a time. This keeps each generation call focused and prevents quality degradation on later tasks. The phase list is generated in a single call; task generation is one call per phase.
 
-### Phase 4: Pass 3 — Validation
+### Step 4: Validation (LLM Pass 3 — separate agent)
 
 The validation pass receives both the fixed plan and the structured breakdown. Its job is adversarial — it tries to break the decomposition.
 
@@ -171,13 +192,15 @@ The validation pass receives both the fixed plan and the structured breakdown. I
 
 **Resolution:**
 
-- Fixable issues (missing context, incomplete acceptance criteria, wrong dependency) → skill fixes them in the structured breakdown and re-validates.
+The validation agent flags issues — the primary Claude session fixes them. This is different from Pass 1 (where the user fixes the plan) because the decomposition is derived output, not the architect's source document. The primary session can safely adjust task fields (fill in a missing acceptance criterion, fix a dependency link) because the plan — the source of truth — is unchanged.
+
+- Fixable issues (missing context, incomplete acceptance criteria, wrong dependency) → primary session fixes them in the structured breakdown, then re-dispatches to validation agent.
 - Structural issues (missed feature, phases in wrong order) → loops back to Pass 2 for that section.
 - Max 2 fix iterations. If it can't converge, halt and surface remaining issues to the user. Do NOT proceed to issue creation with a known-incomplete breakdown — that violates the quality chain.
 
-### Phase 5: GitHub Issue Creation
+### Step 5: GitHub Issue Creation
 
-**Token refresh:** Re-acquire a fresh token at the start of this phase. The token exported during Phase 1 may have expired if Passes 1-3 took >55 minutes.
+**Token refresh:** Re-export `GH_TOKEN` at the start of this step. The token cache auto-refreshes, but the shell variable exported in Step 1 holds the old value. Each `gh` command block should inline the token: `GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)"` to always get a fresh value.
 
 **Issue body limits:** GitHub imposes a 65,536 character limit on issue bodies. To keep issues readable and within limits, cap sections: `How` ≤ 500 words, `Review Hints` ≤ 5 bullet points. If more detail is needed, link to extracted docs from Phase 6 rather than inlining.
 
@@ -258,7 +281,7 @@ EOF
 )"
 ```
 
-### Phase 6: Knowledge Extraction & Doc Enrichment
+### Step 6: Knowledge Extraction & Doc Enrichment
 
 After issues are created, the plan still holds knowledge that doesn't belong in any single task. This knowledge must survive the plan's deletion.
 
@@ -272,24 +295,24 @@ After issues are created, the plan still holds knowledge that doesn't belong in 
 
 **Routing logic:**
 
-The skill reads the target project's `docs/` tree and follows existing structure — it does not impose its own.
+The skill scans the target project's `docs/` tree and matches knowledge to existing files/directories by name and content. The table below shows the detection heuristic and fallback:
 
-| Knowledge type | Target | Format |
-|----------------|--------|--------|
-| Architectural decisions | `docs/adr/` or `docs/decisions/` (whatever exists) | ADR template if project uses one, otherwise plain markdown |
-| Data models / schemas | `docs/` alongside related docs | Markdown |
-| Integration / API contracts | `docs/api/` or `docs/architecture/` | Markdown |
-| Constraints | Existing relevant doc (e.g., `docs/security.md`) — appended | Section in existing file |
-| Glossary terms | `docs/glossary.md` (created if missing) | Definition list |
+| Knowledge type | Detection | Fallback (if no match found) |
+|----------------|-----------|------------------------------|
+| Architectural decisions | Look for `docs/adr/`, `docs/decisions/`, `docs/architecture/decisions/` | Create `docs/adr/NNN-{title}.md` |
+| Data models / schemas | Look for existing model/schema docs in `docs/` | Create `docs/data-model.md` |
+| Integration / API contracts | Look for `docs/api/`, `docs/architecture/` | Create `docs/api.md` |
+| Constraints | Look for `docs/security.md`, `docs/performance.md`, etc. by keyword | Create `docs/constraints.md` |
+| Glossary terms | Look for `docs/glossary.md`, `docs/GLOSSARY.md` (case-insensitive) | Create `docs/glossary.md` |
 
-If the project has no docs structure at all, the skill creates minimal files under `docs/`.
+The detection step uses glob + file content scanning to find where similar content already lives. The fallback creates new files only when no existing match is found. This means the skill adapts to whatever structure exists but has deterministic behavior when nothing exists.
 
 **Decision record:**
 
-After knowledge extraction, the plan is compressed into a lightweight decision record appended to `docs/decisions.md` (created if missing). One file, append-only — keeps decisions findable without file proliferation.
+After knowledge extraction, the plan is compressed into a lightweight decision record appended to `docs/decisions.md` (created if missing with `# Decisions` as the title). One file, append-only — keeps decisions findable without file proliferation.
 
 ```markdown
-## Widget System
+## 2026-03-18 — Widget System
 
 - **Date:** 2026-03-18
 - **Status:** Decomposed → issues created
@@ -308,7 +331,7 @@ After knowledge extraction, the plan is compressed into a lightweight decision r
 - Commit message references tracking issues: `docs: extract knowledge from plan, create tasks (#41, #42, #43)`
 - The commit is local-only. The skill does not push or create a PR — that's the user's decision.
 
-### Phase 7: Summary
+### Step 7: Summary
 
 Print to terminal:
 - Number of phases created
@@ -373,7 +396,7 @@ This skill uses only the `stark-claude` GitHub App (not all three like `stark-re
 - **Target repo has no docs/ directory** — create `docs/` with minimal structure during knowledge extraction.
 - **GitHub App auth fails** — fail early in Phase 1, before any LLM work.
 - **Label already exists** — `gh label create --force` is idempotent (updates description/color if changed).
-- **Very large plan (20+ tasks)** — the skill handles this naturally; phases keep the issue count manageable per tracking issue.
+- **Very large plan (20+ tasks)** — handled by per-phase task generation (see Step 3). Phases keep the issue count manageable per tracking issue.
 - **Plan contains no extractable knowledge** — skip Phase 6 doc enrichment, still delete the plan (the knowledge lives in the issues).
 
 ## Failure Modes
@@ -386,10 +409,12 @@ This skill uses only the `stark-claude` GitHub App (not all three like `stark-re
 | GitHub App auth fails | Fail at Phase 1 before any LLM work |
 | GitHub API rate limit during issue creation | Stop, report partial state (which issues were created), provide issue numbers for cleanup |
 | Partial issue creation (some succeeded, some failed) | Report which succeeded with numbers, allow user to retry remaining |
-| Token expires mid-run (>1 hour with many issues) | Re-acquire token before Phase 5; token cache auto-refreshes |
+| Token expires mid-run (>1 hour with many issues) | Each `gh` command block inlines token acquisition; stale shell var is the risk, not cache |
 | Issue body exceeds 65,536 char GitHub limit | Split the issue or truncate `How` section with a note; flag to user |
 | Plan quality gate can't be fixed without human input | Stop at Phase 2, report what's missing, ask the user |
 | Validation can't converge after 2 iterations | Halt, do not create issues, surface remaining problems |
+| Validation agent CLI not found | Fail at Step 1 with message naming the missing agent |
+| Re-run on same plan (issues already exist) | Check for existing issues with `plan:{slug}` label before creating; report existing issues and ask user whether to skip, update, or create duplicates |
 
 ## Mistakes to Avoid
 
