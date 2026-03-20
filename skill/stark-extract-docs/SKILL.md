@@ -385,3 +385,276 @@ For `constraint` extractions with `has_alternatives: false`:
 ### 3.8 Update staleness config
 
 If `{TARGET_DIR}/.doc-staleness.yml` exists AND `docs/retrospectives/` was created, check if `docs/retrospectives/` is in the `exclude_paths`. If not, add it.
+
+## Phase 4: Preview & Write
+
+### 4.1 Preview
+
+Print a summary of all files that will be created or updated:
+
+```
+[HH:MM:SS] === Files to write ===
+Will create:
+  docs/adr/0003-no-rollback-for-rename.md
+  docs/adr/0004-no-checkpoint-file-for-interactive-skills.md
+  docs/retrospectives/2026-03-19-rename-project.md
+  docs/reference/github-app-auth.md
+Will update:
+  docs/retrospectives/learning-log.md (append 3 entries)
+  docs/glossary.md (append 2 terms)
+```
+
+### 4.2 Create directories
+
+Create any missing directories needed for the generated files. Only create `docs/retrospectives/` if retrospective content was generated (never create it empty).
+
+```bash
+mkdir -p "{TARGET_DIR}/docs/adr"
+mkdir -p "{TARGET_DIR}/docs/reference"
+# Only if retrospective content exists:
+mkdir -p "{SOURCE_REPO}/docs/retrospectives"
+```
+
+### 4.3 Write files
+
+Write all generated content to disk. Use the Write tool for new files, Edit tool for appending to existing files.
+
+Track which files were written for the commit step.
+
+### 4.4 Commit (unless --no-commit)
+
+If `--no-commit` was passed, skip this step. Log: "Files written. Skipping commit (--no-commit)."
+
+Otherwise:
+
+1. Check target repo for uncommitted changes:
+   ```bash
+   git -C "{TARGET_DIR}" status --porcelain
+   ```
+   If there are pre-existing uncommitted changes (beyond our new files), warn: "Target repo has uncommitted changes. Skipping commit — use --no-commit or commit your changes first." and skip the commit.
+
+2. Stage and commit only the files we wrote:
+   ```bash
+   git -C "{TARGET_DIR}" add <specific-files>
+   git -C "{TARGET_DIR}" commit -m "docs: extract knowledge from {spec-slug}"
+   ```
+
+3. If source repo ≠ target repo and retrospective/learning-log files were written to source repo:
+   - Attempt to commit source-repo files too:
+     ```bash
+     git -C "{SOURCE_REPO}" add docs/retrospectives/{retrospective-file} docs/retrospectives/learning-log.md
+     git -C "{SOURCE_REPO}" commit -m "docs: add review retrospective for {spec-slug}"
+     ```
+   - If the source repo has uncommitted changes (dirty tree), warn instead:
+     ```
+     ⚠ Retrospective and learning log written to source repo ({SOURCE_REPO}).
+       Source repo has uncommitted changes — skipping commit. Stage and commit manually.
+     ```
+
+## Phase 5: Batch Coordination (--batch mode only)
+
+If `--batch` was NOT passed, skip this phase entirely.
+
+### 5.1 Iterate over specs
+
+List all `*-design.md` files in the batch directory:
+
+```bash
+ls {batch-dir}/*-design.md
+```
+
+Process each spec sequentially: run Phases 1-4 for each. Between specs, clear the extraction state but preserve the running `next_adr_number` counter.
+
+If a spec fails (Phase 1 validation, no extractable knowledge, etc.), log the failure and continue with the next spec. Track failures for the summary.
+
+### 5.2 Cross-spec ADR deduplication
+
+After all specs are processed, review all ADRs created during this batch run. For each pair, compare titles and context summaries. If two ADRs cover the same decision:
+- Keep the one with more detail (longer Context + Decision sections)
+- Delete the duplicate file
+- Do NOT renumber — leave gaps in ADR numbering
+- Log: "Deduplicated ADR NNNN (duplicate of MMMM)"
+
+### 5.3 Final commit
+
+If any ADRs were deleted in the dedup pass:
+```bash
+git -C "{TARGET_DIR}" add -u  # stage deletions
+git -C "{TARGET_DIR}" commit -m "docs: deduplicate ADRs from batch extraction"
+```
+
+## Phase 6: Summary
+
+Print to terminal:
+
+```
+[HH:MM:SS] === stark-extract-docs completed ===
+
+Spec:                 {spec-path}
+Target repo:          {target-repo}
+Artifacts found:      spec ✓, plan ✓, spec review ✓, plan review ✗
+
+Extractions:          {total} total
+  decision:           {N}
+  decision_defended:  {N}
+  constraint:         {N}
+  integration:        {N}
+  data_model:         {N}
+  evolution:          {N}
+  agent_signal:       {N}
+  glossary:           {N}
+
+Outputs:
+  ADRs created:       {N} ({list numbers and titles})
+  ADRs deduplicated:  {N}
+  Retrospective:      {path or "none"}
+  Reference docs:     {N} created, {N} updated
+  Learning log:       {N} entries appended
+  Glossary:           {N} terms added
+
+Files:                {N} created, {N} updated
+```
+
+For batch mode, additionally show totals across all specs and dedup stats.
+
+## Phase 7: Metrics & History
+
+### 7.1 Print metrics block
+
+```
+Metrics
+───────
+Total duration:     Xm Ys
+Phases:
+  Phase 1 (Setup):                    Xs
+  Phase 2 (Pass 1 — Extraction):      Xs
+  Phase 3 (Pass 2 — Routing):         Xs
+  Phase 4 (Preview & Write):          Xs
+  Phase 5 (Batch Coordination):       Xs  (batch only)
+  Phase 6 (Summary):                  Xs
+```
+
+### 7.2 Improvement flags
+
+Check and print if applicable:
+- Pass 2 extraction count is 0 → "Spec has no extractable knowledge — may be too thin"
+- ADR dedup rate > 50% (batch) → "Many overlapping decisions — consider consolidating"
+- Missing review artifacts → "No review found — review-derived knowledge unavailable"
+- Pass 1 > 70% of total time → "Extraction is the bottleneck"
+
+If none triggered: "No improvement opportunities detected."
+
+### 7.3 Persist history
+
+Write history file to `~/.claude/code-review/history/extract-docs/{target-repo}/{spec-slug}.json`:
+
+```bash
+mkdir -p ~/.claude/code-review/history/extract-docs/{target-repo}
+```
+
+Content — the full metrics JSON including:
+- `schema_version: 1`
+- `spec_path`
+- `target_repo`
+- `completed_at` (ISO 8601)
+- `input_hashes` (from Phase 2 extraction output)
+- `created_artifacts` — list of all files created/updated, ADR numbers, glossary entries, learning log entries
+- `timing` — per-phase durations following the observability protocol schema
+- `extractions` — counts by category
+- `outputs` — counts by output type
+
+This file enables:
+- Skip logic: compare `input_hashes` on next run
+- `--force` replacement: identify which artifacts to overwrite
+- `stark-metrics` aggregation
+
+## Observability
+
+Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md).
+
+**Task-based progress at start:**
+
+```
+TaskCreate: "Phase 1: Setup — validate input, resolve artifacts"
+            activeForm: "Setting up extraction"
+TaskCreate: "Phase 2: Pass 1 — Knowledge Extraction"
+            activeForm: "Extracting knowledge from artifacts"
+TaskCreate: "Phase 3: Pass 2 — Routing & Generation"
+            activeForm: "Routing knowledge to doc types"
+TaskCreate: "Phase 4: Preview & Write"
+            activeForm: "Writing documentation files"
+TaskCreate: "Phase 5: Batch Coordination"   (batch mode only)
+            activeForm: "Deduplicating across specs"
+TaskCreate: "Phase 6: Summary"
+            activeForm: "Generating summary"
+TaskCreate: "Phase 7: Metrics & History"
+            activeForm: "Persisting metrics"
+```
+
+Set each to `in_progress` before starting, `completed` when done.
+
+**Timestamped log lines:** `[HH:MM:SS]` for each phase start/end and key events.
+
+**5-minute checkpoints:** For batch mode — show elapsed time + current spec + progress (N/M specs done).
+
+Record `T0` at skill start. All durations relative to `T0`.
+
+## Force Re-Run Behavior (--force)
+
+When `--force` is passed AND a history file exists for this spec:
+
+1. Read the history file to get `created_artifacts`.
+2. **ADRs:** Overwrite the same ADR files (same numbers, same paths) with fresh content.
+3. **Retrospective:** Overwrite the existing retrospective file.
+4. **Learning log:** Find and remove entries matching the previous run's recorded entries (match by spec slug + observation text), then append new ones.
+5. **Glossary:** Find and remove entries matching previous run's recorded terms (match by term name), then append new ones.
+6. **Reference docs / constraints:** Overwrite the sections added by this skill's previous run (requires the history file to track which content was added).
+
+If no history file exists, `--force` simply bypasses the skip check and behaves like a first run.
+
+## What This Skill Does NOT Do
+
+- Modify the source spec or plan (those are point-in-time artifacts)
+- Delete the spec or plan (unlike `stark-plan-to-tasks`, the spec remains)
+- Create GitHub issues (that's `stark-plan-to-tasks`)
+- Challenge or re-evaluate architectural decisions
+- Generate docs from code (that's `/init-docs --backfill`)
+- Push or create PRs (commit is local-only)
+
+## Edge Cases
+
+- **Spec has no review file** — skip `evolution`, `decision_defended`, `agent_signal` categories. Extract from spec only.
+- **Spec has no plan** — skip plan-specific knowledge. Most comes from spec + review.
+- **Target has no `docs/` dir** — create `docs/adr/`, `docs/reference/`. Only create `docs/retrospectives/` if content exists.
+- **ADR dir uses different name** — detected in Phase 1.5 (`docs/decisions/`, `docs/adrs/`, `docs/adr/`).
+- **Spec already processed** — skip unless `--force`. Compares all input hashes, not just spec.
+- **Learning log doesn't exist** — create with header row.
+- **Glossary doesn't exist** — create with `# Glossary` title.
+- **Source repo ≠ target repo** — retrospectives go to source, ADRs to target. Warn about separate commits.
+
+## Failure Modes
+
+| Failure | Recovery |
+|---------|----------|
+| Spec doesn't exist or is empty | Error message, abort |
+| Spec is not `.md` | Error: "expected .md file" |
+| Target repo not found locally | Error with clone suggestion |
+| Pass 1 extracts nothing | Log cleanly, exit (not an error) |
+| Pass 1 returns invalid JSON | Retry once with error in prompt, then fail |
+| ADR number can't be determined | Fall back to `0001` with warning |
+| File write fails | Report what succeeded, what failed |
+| Batch: one spec fails | Continue to next, report failures at end |
+| Git commit fails | Files already written; suggest manual commit |
+| Target repo has dirty tree | Warn, skip commit, files still written |
+
+## Mistakes to Avoid
+
+- Don't use `git add -A` — add specific files by name.
+- Don't modify the source spec or plan.
+- Don't write retrospectives into the target repo when it's different from the source repo.
+- Don't renumber existing ADRs.
+- Don't create duplicate ADRs silently — mark uncertain ones with `<!-- possible duplicate -->`.
+- Don't route low-confidence extractions without `--include-low`.
+- Don't confuse `--force` (history bypass) with `--include-low` (confidence filter).
+- Don't assume `docs/adr/` — check for `docs/decisions/`, `docs/adrs/` first.
+- Don't create empty `docs/retrospectives/` directory.
