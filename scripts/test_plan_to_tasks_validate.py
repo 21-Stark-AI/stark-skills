@@ -35,3 +35,74 @@ class TestCLISmoke:
             capture_output=True, text=True,
         )
         assert result.returncode != 0
+
+
+from plan_to_tasks_validate import (
+    build_validation_envelope,
+    parse_validation_output,
+    ValidationIssue,
+    ValidationResult,
+)
+
+
+class TestEnvelope:
+    def test_envelope_has_required_fields(self):
+        envelope = build_validation_envelope(
+            plan_content="# My Plan",
+            breakdown={"schema_version": 1, "phases": []},
+            plan_hash="sha256:abc",
+        )
+        assert envelope["schema_version"] == 1
+        assert envelope["plan_markdown"] == "# My Plan"
+        assert envelope["breakdown"]["schema_version"] == 1
+        assert envelope["plan_hash"] == "sha256:abc"
+
+    def test_envelope_is_valid_json(self):
+        envelope = build_validation_envelope(
+            plan_content="# Plan\n```json\n{}\n```",
+            breakdown={"schema_version": 1, "phases": []},
+            plan_hash="sha256:abc",
+        )
+        json.loads(json.dumps(envelope))
+
+
+class TestOutputParsing:
+    def test_parse_valid_approved(self):
+        raw = json.dumps({"schema_version": 1, "approved": True, "issues": []})
+        result = parse_validation_output(raw, agent="codex")
+        assert result.approved is True
+        assert result.issues == []
+
+    def test_parse_valid_with_issues(self):
+        raw = json.dumps({
+            "schema_version": 1,
+            "approved": False,
+            "issues": [{"phase_id": "phase-1", "task_id": "task-1-1",
+                        "field": "acceptance_criteria", "problem": "Missing validation",
+                        "suggestion": "Add email check"}],
+        })
+        result = parse_validation_output(raw, agent="codex")
+        assert result.approved is False
+        assert len(result.issues) == 1
+        assert result.issues[0].field == "acceptance_criteria"
+
+    def test_parse_malformed_json(self):
+        result = parse_validation_output("not json at all", agent="codex")
+        assert result.error is not None
+        assert result.approved is False
+
+    def test_parse_codex_jsonl_events(self):
+        events = [json.dumps({"type": "agent_message", "content": [
+            {"type": "output_text", "text": json.dumps(
+                {"schema_version": 1, "approved": True, "issues": []}
+            )}
+        ]})]
+        raw = "\n".join(events)
+        result = parse_validation_output(raw, agent="codex")
+        assert result.approved is True
+
+    def test_parse_gemini_envelope(self):
+        inner = json.dumps({"schema_version": 1, "approved": True, "issues": []})
+        raw = json.dumps({"response": inner})
+        result = parse_validation_output(raw, agent="gemini")
+        assert result.approved is True
