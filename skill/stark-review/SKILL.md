@@ -383,12 +383,126 @@ Best-effort — don't fail if cleanup fails. If a crashed session left a worktre
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+**You MUST implement all of the following.** This is not optional — the user relies on this output to understand what's happening during long-running reviews.
 
-Additional skill-specific metrics:
-- Per-round: dispatch duration, classify+fix duration, build+test duration
-- Per-agent: success/failure count, avg duration per agent (claude/codex/gemini)
-- Finding lifecycle: total → fixed / false positive / noise / recurring / unresolved
+### Task-based progress (required)
+
+At skill start, create these tasks to drive the Claude Code progress spinner:
+
+```
+TaskCreate: "Phase 1: Setup — auth, fetch PR, create worktree"
+            activeForm: "Setting up review environment"
+TaskCreate: "Phase 2: Review-Fix Loop (up to N rounds)"
+            activeForm: "Running review-fix loop"
+TaskCreate: "Phase 3: Final Summary"
+            activeForm: "Generating summary"
+TaskCreate: "Phase 4: Post & Persist"
+            activeForm: "Posting to PR"
+TaskCreate: "Phase 5: Cleanup"
+            activeForm: "Cleaning up worktree"
+```
+
+Set each to `in_progress` BEFORE starting it, `completed` when done. Only one task `in_progress` at a time.
+
+For Phase 2, create **child tasks dynamically** as each round begins:
+
+```
+TaskCreate: "Round 1: dispatch 18 sub-agents"
+            activeForm: "Dispatching 18 sub-agents (round 1)"
+TaskCreate: "Round 1: classify + fix"
+            activeForm: "Classifying and fixing findings"
+TaskCreate: "Round 1: build + test"
+            activeForm: "Running build and tests"
+```
+
+Don't pre-create all rounds — the loop may exit early.
+
+### Timestamped log lines (required)
+
+Record `T0` at skill start. Print timestamped lines for every phase transition and key event:
+
+```
+[HH:MM:SS] === stark-review started ===
+[HH:MM:SS] Phase 1: Setup — started
+[HH:MM:SS] Phase 1: Setup — done (12s)
+[HH:MM:SS] Phase 2: Review-Fix Loop — started
+[HH:MM:SS]   ▸ Round 1: dispatching 18 sub-agents
+[HH:MM:SS]   ▸ Round 1: 18 complete (14 succeeded, 4 failed) — 127s
+[HH:MM:SS]   ▸ Round 1: 7 fix, 3 false positive, 2 noise — fixing
+[HH:MM:SS]   ▸ Round 1: build + test — passed
+[HH:MM:SS]   ▸ Round 1: commit + push — done
+[HH:MM:SS]   ▸ Round 2: dispatching 18 sub-agents
+[HH:MM:SS]   ...
+[HH:MM:SS] Phase 2: Review-Fix Loop — done (8m 43s)
+[HH:MM:SS] Phase 3: Summary — done (5s)
+[HH:MM:SS] Phase 4: Post & Persist — done (3s)
+[HH:MM:SS] Phase 5: Cleanup — done (2s)
+[HH:MM:SS] === stark-review completed ===
+```
+
+### 5-minute checkpoints (required for runs > 5 min)
+
+If running for 5+ minutes, print a checkpoint at every 5-minute boundary:
+
+```
+[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 6/18 sub-agents complete
+[HH:MM:SS] ⏱ Checkpoint — 10m elapsed | Phase 2, Round 2 | fixing 3 findings
+```
+
+### Metrics block at end (required)
+
+After the skill completes (success or failure), print:
+
+```
+Metrics
+───────
+Total duration:     Xm Ys
+Phases:
+  Phase 1 (Setup):           12s
+  Phase 2 (Review-Fix Loop): 8m 43s
+    Round 1 dispatch:        2m 11s
+    Round 1 classify+fix:    1m 22s
+    Round 2 dispatch:        2m 05s
+    Round 2 classify+fix:    1m 02s
+    Build & test:            1m 43s
+  Phase 3 (Summary):         5s
+  Phase 4 (Post & Persist):  3s
+  Phase 5 (Cleanup):         2s
+
+Issues found:        14 (7 fixed, 5 recurring, 2 unresolved)
+Noise:               7 (4 false positive, 3 noise)
+Agents:              18 dispatched, 16 succeeded, 2 failed
+Rounds:              2 fix + 1 final
+Bug issues created:  N
+```
+
+### Improvement flags (required)
+
+After the metrics, check and print if applicable:
+- Any single phase > 70% of total time → flag as bottleneck
+- Agent failure rate > 20% → flag with breakdown by agent
+- A round produced 0 new actionable findings → suggest reducing rounds
+- Build/test retries > 1 → flag fix quality issue
+
+If none triggered: `No improvement opportunities detected.`
+
+### Timing in history JSON
+
+Include per-phase timing in `rounds.json`:
+
+```json
+{
+  "timing": {
+    "total_duration_s": 683,
+    "phases": [
+      {"name": "Setup", "duration_s": 12},
+      {"name": "Review-Fix Loop", "duration_s": 523, "rounds": [
+        {"round": 1, "dispatch_s": 131, "classify_fix_s": 82},
+        {"round": 2, "dispatch_s": 125, "classify_fix_s": 62}
+      ]}
+    ]
+  }
+}
 
 ## Review Guidelines
 
