@@ -12,13 +12,18 @@ Wraps the GitHub App auth flow so you never deal with tokens manually.
 ## Prerequisites
 
 ```bash
-# Auth (GitHub App — auto-detects repo from git remote)
-export GH_TOKEN=$(~/git/Evinced/scripts/.venv/bin/python3 ~/git/Evinced/scripts/github_app.py token)
+# Ensure gh CLI uses the user's personal PAT (not a bot token)
+unset GH_TOKEN
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+
+# Bot token — used ONLY for posting review comments (Step 4)
+BOT_TOKEN=$(~/git/Evinced/scripts/.venv/bin/python3 ~/git/Evinced/scripts/github_app.py token)
 
 # Must be on a feature branch, not main
 BRANCH=$(git branch --show-current)
 ```
+
+**Auth split:** PR creation, merging, and all mutations use the user's PAT (via `gh` native auth). Only review comments use the bot token so they appear as `stark-claude[bot]`.
 
 Abort if on `main` — PRs come from feature branches.
 Abort if working tree has uncommitted changes — commit or stash first.
@@ -91,7 +96,7 @@ Capture `$PR_NUM` from output.
 
 **PRs are NOT draft by default.** Only use `--draft` if the user explicitly asks.
 
-**On `gh` auth failure:** Re-run `export GH_TOKEN=$(~/git/Evinced/scripts/.venv/bin/python3 ~/git/Evinced/scripts/github_app.py token)`.
+**On `gh` auth failure:** Verify `gh auth status` shows an active account. The user's PAT handles PR creation, not the bot.
 
 ---
 
@@ -201,7 +206,8 @@ Branch $BRANCH deleted (local + remote)
 | Not on a feature branch | Abort — tell user to create a branch first |
 | Dirty working tree | Abort — commit or stash first |
 | Push diverged | Rebase on main, resolve, push |
-| `gh` auth fails | Re-run `export GH_TOKEN=$(~/git/Evinced/scripts/.venv/bin/python3 ~/git/Evinced/scripts/github_app.py token)` |
+| `gh` auth fails for PR ops | Verify `gh auth status` — user's PAT must be active. Run `gh auth login` if needed |
+| Bot review post fails | Re-run `BOT_TOKEN=$(github_app.py token)` — bot auth is only for review comments |
 | `stark_claude.py` fails | Check Python venv deps (PyJWT, requests, cryptography). Use `~/git/Evinced/scripts/.venv/bin/python3` |
 | Merge conflict | Rebase on main, resolve, re-push, retry merge |
 | PR checks failing | Show check status to user, ask whether to force-merge with `--admin` or fix first |
@@ -220,7 +226,7 @@ Additional skill-specific metrics:
 
 - **Don't create draft PRs unless explicitly asked.** PRs are NOT draft by default.
 - **Don't `git add -A`.** Always add specific files.
-- **Set GH_TOKEN once in prerequisites** using `github_app.py token`. Don't use the old `unset GH_TOKEN` workaround.
+- **Don't set GH_TOKEN for PR/merge operations.** Use the user's native `gh` auth for creating and merging PRs. Only set `GH_TOKEN=$BOT_TOKEN` for review comment posting.
 - **Don't merge without user approval.** Always present summary and wait.
 - **Don't post reviews via `gh api`.** Always use `stark_claude.py` so reviews appear as `stark-claude[bot]`.
 - **Don't hardcode repo names.** Auto-detect from `gh repo view`.

@@ -335,16 +335,16 @@ After extraction, validate against the validation output schema. On malformed ou
 
 ## Phase 5: GitHub Issue Creation
 
-**Token refresh:** Inline token acquisition in each `gh` command block:
+**Auth: use the user's PAT, not the bot.** Issues should appear as created by the user, not by `stark-claude[bot]`. Ensure `GH_TOKEN` is NOT set so `gh` uses native auth:
+
 ```bash
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)"
+unset GH_TOKEN  # Use user's native gh auth for issue creation
 ```
 
 **Label setup:** Auto-create all missing labels. Check against `EXISTING_LABELS` from Step 1.9:
 
 ```bash
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
-  gh label create "sp:3" --repo {ORG_REPO} --color "0075ca" --force
+gh label create "sp:3" --repo {ORG_REPO} --color "0075ca" --force
 ```
 
 Labels to ensure exist:
@@ -360,8 +360,7 @@ Use `--force` — idempotent, updates description/color if the label already exi
 **Shell injection prevention:** Never interpolate LLM-generated content directly into shell commands. Write issue bodies to temp files (`chmod 600`) and use `--body-file`. Use `gh api` with `--field` for titles:
 
 ```bash
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
-  gh api /repos/{ORG}/{REPO}/issues \
+gh api /repos/{ORG}/{REPO}/issues \
   --method POST \
   --field title="$TITLE" \
   --field body="$(cat $BODY_FILE)" \
