@@ -300,12 +300,18 @@ After the review-fix loop, some real issues may remain unfixed — either becaus
 2. Severity is `critical` or `high`
 3. Still present after the final round (not resolved during the fix loop)
 
+**Auth: use the user's PAT, not the bot.** Bug issues should appear as created by the user, not by `stark-claude[bot]`. Ensure `GH_TOKEN` is NOT set (unset it if previously exported for review comments):
+
+```bash
+unset GH_TOKEN  # Use user's native gh auth for issue creation
+```
+
 **Label setup** (auto-create if missing):
 ```bash
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
-  gh label create "type:bug" --repo {ORG}/{REPO} --color "e11d48" --force
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
-  gh label create "stark-review" --repo {ORG}/{REPO} --color "7057ff" --force
+gh label create "type:bug" --repo {ORG}/{REPO} --color "e11d48" --force
+gh label create "stark-review" --repo {ORG}/{REPO} --color "7057ff" --force
+gh label create "critical" --repo {ORG}/{REPO} --color "b60205" --force
+gh label create "high" --repo {ORG}/{REPO} --color "d93f0b" --force
 ```
 
 **For each qualifying finding**, create an issue:
@@ -340,8 +346,7 @@ ISSUE_EOF
 TITLE_FILE=$(mktemp) && chmod 600 "$TITLE_FILE"
 echo "bug: {finding.title}" > "$TITLE_FILE"
 
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
-  gh api /repos/{ORG}/{REPO}/issues \
+gh api /repos/{ORG}/{REPO}/issues \
   --method POST \
   --field title="$(cat $TITLE_FILE)" \
   --field body="$(cat $BODY_FILE)" \
@@ -361,8 +366,7 @@ GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
 
 **Deduplication:** Before creating, check if an open issue with label `stark-review` already exists for the same bug:
 ```bash
-GH_TOKEN="$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)" \
-  gh api "/repos/{ORG}/{REPO}/issues?labels=stark-review&state=open" --jq '.[] | {number, title, body}'
+gh api "/repos/{ORG}/{REPO}/issues?labels=stark-review&state=open" --jq '.[] | {number, title, body}'
 ```
 Match by: title contains the finding title AND body contains the same file path. Both must match — two different files with the same finding title are distinct bugs. If a match is found, skip and note "Bug already tracked in #{existing}".
 
