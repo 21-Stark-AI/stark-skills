@@ -191,12 +191,31 @@ Write round data to `~/.claude/code-review/history/{org}/{repo}/{pr}/round-{N}.j
 
 Generate a markdown summary with these sections:
 
+### Headline Counts
+
+**Issues and noise are counted separately.** The headline count reflects only real issues — findings that were acted on or represent genuine problems in the code.
+
+```markdown
+## Review Summary
+
+**Issues found:** {fix + recurring count} | **Noise:** {noise + false_positive count} | **Ignored:** {ignored count}
+**Signal-to-noise:** {issues / (issues + noise) * 100}%
+```
+
+- **Issues** = findings classified as `fix` or `recurring` (real problems in the code)
+- **Noise** = findings classified as `false_positive` or `noise` (not real problems)
+- **Ignored** = below fix_threshold (not evaluated, listed for completeness)
+
+Noise and false positives are never counted in the "issues found" number. They are tracked separately to measure review quality and drive prompt improvement.
+
 ### All Findings Table
 
 ```markdown
 | # | Round | Agent(s) | Domain | Severity | File | Title | Outcome |
 |---|-------|----------|--------|----------|------|-------|---------|
 ```
+
+The `Outcome` column shows: `fixed`, `recurring`, `false_positive`, `noise`, or `ignored`.
 
 ### Fixed
 
@@ -206,9 +225,31 @@ Findings fixed, grouped by round. Include title, file, and commit SHA.
 
 Findings that appeared in 2+ rounds or from 2+ agents. Note which round resolved them (or if they persisted).
 
-### False Positives & Noise
+### Noise & False Positives
 
-One-line reasoning per finding. These feed the prompt improvement analysis.
+One-line reasoning per finding explaining why it's not a real issue.
+
+### Misalignment Analysis
+
+For each noise/false_positive finding, analyze **why** the reviewer flagged it — what was missing from the review context that caused the misalignment. Group into root causes:
+
+| Root Cause | Count | Improvement Action |
+|------------|-------|--------------------|
+| **Missing context in CLAUDE.md** | N | Reviewer didn't know about project convention X → add to CLAUDE.md |
+| **Missing context in PR description** | N | Reviewer couldn't infer intent → document the "why" in PR body |
+| **Overly aggressive prompt** | N | Domain prompt flags pattern X which is normal in this codebase → tune prompt or add `severity_overrides` |
+| **Stack/framework mismatch** | N | Reviewer applied rules for framework Y to framework Z → add `disabled_domains` or stack-aware instructions |
+| **Spec/design not referenced** | N | Reviewer didn't know the design choice was intentional → link spec/ADR in PR or CLAUDE.md |
+| **Already covered by tooling** | N | Reviewer flagged what linter/CI already catches → exclude from review scope |
+
+For each root cause with count > 0, provide a **concrete action** the user can take:
+
+- **CLAUDE.md additions:** Write the exact lines to add (e.g., "Add to CLAUDE.md: `## Conventions\n- We use X pattern for Y because Z`")
+- **PR template improvements:** Suggest what to include in PR descriptions to give reviewers enough context
+- **Config changes:** Specific `disabled_domains`, `severity_overrides`, or `disabled_paths` entries for `.code-review/config.json`
+- **Prompt tuning targets:** Which `global/prompts/{agent}/{domain}.md` file to adjust and what to change
+
+The goal is to **shrink noise over time** by improving the context reviewers receive, not just ignoring false positives.
 
 ### Ignored
 

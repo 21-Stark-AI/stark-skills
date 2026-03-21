@@ -171,24 +171,50 @@ Generate a consolidated markdown summary with these sections:
 
 **Otherwise, use the normal summary:**
 
-### 4a. All Findings Table
+### 4a. Headline Counts
+
+**Issues and noise are counted separately.** The headline reflects only real issues.
+
+```markdown
+**Issues found:** {fix + recurring count} | **Noise:** {noise + false_positive count} | **Ignored:** {ignored count}
+**Signal-to-noise:** {issues / (issues + noise) * 100}%
+```
+
+- **Issues** = findings classified as `fix` or `recurring` (real problems in the plan)
+- **Noise** = `false_positive` or `noise` (not real problems — do not count as issues)
+- **Ignored** = below fix_threshold
+
+### 4b. All Findings Table
 
 | # | Round | Agent(s) | Domain | Severity | Section | Title | Outcome |
 |---|-------|----------|--------|----------|---------|-------|---------|
 
-### 4b. Fixed — findings addressed, grouped by round.
+### 4c. Fixed — findings addressed, grouped by round.
 
-### 4c. Recurring — findings in 2+ rounds. Which round resolved them.
+### 4d. Recurring — findings in 2+ rounds. Which round resolved them.
 
-### 4d. Unresolved — findings from the final round that remain.
+### 4e. Unresolved — findings from the final round that remain.
 
-### 4e. False Positives & Noise — one-line reasoning per finding.
+### 4f. Noise & False Positives — one-line reasoning per finding.
 
-### 4f. Changes Made
+### 4g. Misalignment Analysis
+
+For each noise/false_positive finding, analyze **why** the reviewer flagged it and what context was missing. Group into root causes:
+
+| Root Cause | Count | Improvement Action |
+|------------|-------|--------------------|
+| **Missing context in spec/plan** | N | Spec didn't explain rationale for choice X → add a "## Rationale" or "## Design Decisions" section |
+| **Overly aggressive prompt** | N | Domain prompt flags pattern X which is valid for this plan type → tune prompt |
+| **Scope mismatch** | N | Reviewer applied production-system criteria to dev tooling → add context-awareness to prompt |
+| **Already addressed elsewhere** | N | Finding refers to something covered in a different section → improve cross-references in the plan |
+
+For each root cause, provide a concrete action: what to add to the plan, which prompt to tune, or what config to change.
+
+### 4h. Changes Made
 
 Diff of plan changes across all fix rounds. Compare `original_content` with current file content.
 
-### 4g. Prompt Improvement Assessment
+### 4i. Prompt Improvement Assessment
 
 Analyze patterns across all rounds:
 
