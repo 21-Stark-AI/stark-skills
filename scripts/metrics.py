@@ -446,16 +446,24 @@ def compute_report(records: list[RunRecord]) -> dict:
             severity_totals[k] += v
 
     fix_count = outcome_totals.get("fix", 0)
+    recurring_count = outcome_totals.get("recurring", 0)
     fp_count = outcome_totals.get("false_positive", 0)
     noise_count = outcome_totals.get("noise", 0)
+    ignored_count = outcome_totals.get("ignored", 0)
+    # Issues = real problems (fix + recurring). Noise = not real (FP + noise).
+    issue_count = fix_count + recurring_count
+    noise_total = fp_count + noise_count
     deduped_total = total_deduped if total_deduped > 0 else sum(outcome_totals.values())
 
     report["finding_quality"] = {
         "total_raw": total_raw,
         "deduplicated": total_deduped,
+        "issues": issue_count,
+        "noise": noise_total,
+        "ignored": ignored_count,
         "by_outcome": dict(outcome_totals),
         "by_severity": dict(severity_totals),
-        "signal_to_noise_pct": round(fix_count / max(deduped_total, 1) * 100, 1),
+        "signal_to_noise_pct": round(issue_count / max(issue_count + noise_total, 1) * 100, 1),
         "false_positive_rate_pct": round(fp_count / max(deduped_total, 1) * 100, 1),
     }
 
@@ -623,6 +631,10 @@ def format_human(report: dict) -> str:
         lines.append("─" * 40)
         lines.append(f"Total raw:        {fq['total_raw']}")
         lines.append(f"After dedup:      {fq['deduplicated']}")
+        lines.append(f"  Issues:         {fq.get('issues', 0)}  (fix + recurring)")
+        lines.append(f"  Noise:          {fq.get('noise', 0)}  (false positive + noise)")
+        lines.append(f"  Ignored:        {fq.get('ignored', 0)}  (below threshold)")
+        lines.append("Breakdown:")
         for outcome in OUTCOME_KEYS:
             count = fq["by_outcome"].get(outcome, 0)
             if count > 0:
