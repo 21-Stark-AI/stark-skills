@@ -425,5 +425,61 @@ class TestGetIssueNodeId(unittest.TestCase):
         self.assertEqual(result, "I_abc123")
 
 
+class TestCheckSpecCompletenessStricter(unittest.TestCase):
+    """Additional tests for check_spec_completeness Spec Approval gate."""
+
+    def test_high_risk_pending_approval_fails(self) -> None:
+        """High-risk item with 'Pending' Spec Approval must fail."""
+        fields = {"Risk": "High", "AI Suitability": "agent-led", "Spec Approval": "Pending"}
+        ok, missing = github_projects.check_spec_completeness(fields)
+        self.assertFalse(ok)
+        self.assertIn("Spec Approval required for high-risk items", missing)
+
+
+class TestFindItemForIssueNullGuard(unittest.TestCase):
+    """Tests for find_item_for_issue when issue is null."""
+
+    @patch("github_app.graphql")
+    def test_returns_none_when_issue_is_null(self, mock_gql: MagicMock) -> None:
+        """find_item_for_issue returns None when GraphQL returns issue: null."""
+        mock_gql.return_value = {
+            "data": {"repository": {"issue": None}}
+        }
+
+        result = github_projects.find_item_for_issue("GetEvinced", "my-repo", 9999, "PVT_1")
+        self.assertIsNone(result)
+
+
+class TestGetIssueNodeIdNullGuard(unittest.TestCase):
+    """Tests for get_issue_node_id when issue is null."""
+
+    @patch("github_app.graphql")
+    def test_raises_when_issue_is_null(self, mock_gql: MagicMock) -> None:
+        """get_issue_node_id raises ValueError when GraphQL returns issue: null."""
+        mock_gql.return_value = {
+            "data": {"repository": {"issue": None}}
+        }
+
+        with self.assertRaises(ValueError) as ctx:
+            github_projects.get_issue_node_id("GetEvinced", "my-repo", 9999)
+
+        self.assertIn("9999", str(ctx.exception))
+        self.assertIn("not found", str(ctx.exception))
+
+
+class TestTransitionStatusMissingField(unittest.TestCase):
+    """Tests for transition_status when Status field is missing."""
+
+    @patch("github_projects.get_item_fields")
+    def test_raises_when_status_field_missing(self, mock_get_fields: MagicMock) -> None:
+        """transition_status raises ValueError when Status field is absent and validate=True."""
+        mock_get_fields.return_value = {"Priority": "High"}  # no Status
+
+        with self.assertRaises(ValueError) as ctx:
+            github_projects.transition_status("PVT_1", "PVTI_1", "Needs Spec")
+
+        self.assertIn("current Status field is missing", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

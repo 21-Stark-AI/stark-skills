@@ -391,6 +391,8 @@ def find_item_for_issue(org: str, repo: str, issue_number: int, project_id: str)
         variables={"org": org, "repo": repo, "number": issue_number},
     )
     issue = result["data"]["repository"]["issue"]
+    if issue is None:
+        return None
     for item in issue["projectItems"]["nodes"]:
         if item["project"]["id"] == project_id:
             return item["id"]
@@ -403,7 +405,12 @@ def get_issue_node_id(org: str, repo: str, issue_number: int) -> str:
         _ISSUE_PROJECT_ITEMS,
         variables={"org": org, "repo": repo, "number": issue_number},
     )
-    return result["data"]["repository"]["issue"]["id"]
+    issue = result["data"]["repository"]["issue"]
+    if issue is None:
+        raise ValueError(
+            f"Issue #{issue_number} not found in {org}/{repo}"
+        )
+    return issue["id"]
 
 
 def is_legal_transition(from_status: str, to_status: str) -> bool:
@@ -431,9 +438,11 @@ def transition_status(
     if validate:
         current_fields = get_item_fields(item_id)
         current_status = current_fields.get("Status")
+        if current_status is None:
+            raise ValueError("Cannot validate transition: current Status field is missing")
         if current_status == new_status:
             return False
-        if current_status and not is_legal_transition(current_status, new_status):
+        if not is_legal_transition(current_status, new_status):
             raise ValueError(
                 f"Illegal transition: '{current_status}' → '{new_status}'. "
                 f"Allowed: {LEGAL_TRANSITIONS.get(current_status, set())}"
@@ -463,7 +472,7 @@ def check_spec_completeness(item_fields: dict[str, Any]) -> tuple[bool, list[str
 
     risk = item_fields.get("Risk", "")
     if risk and risk.lower() == "high":
-        if not item_fields.get("Spec Approval"):
+        if item_fields.get("Spec Approval") != "Approved":
             missing.append("Spec Approval required for high-risk items")
 
     return (len(missing) == 0, missing)
