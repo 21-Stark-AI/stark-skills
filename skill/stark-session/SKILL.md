@@ -76,6 +76,15 @@ gh pr view --json number,title,state,reviewDecision,statusCheckRollup 2>/dev/nul
 
 If `gh` fails, skip PR info — not fatal.
 
+### Phase 2b — Project Context
+
+After loading git state and PR info:
+
+1. **Load project config:** Read `.github/project-config.json`. If not found, skip project context.
+2. **Query in-flight work:** Find project items where Agent = current agent AND Status = `agent working`. Display as "In-flight work from previous session:" in the briefing.
+3. **Query pending actions:** Find items where Status = `needs clarification`. Display as "Pending human actions:" in the briefing.
+4. **Error handling:** If project query fails, log warning and continue with normal session start.
+
 ### Phase 3 — Health checks
 
 Run each command in `session.health_checks` from config. Capture stdout/stderr on failure for display in briefing. Report pass/fail — non-fatal, never blocking.
@@ -101,6 +110,8 @@ Skills: /stark-review, /stark-session, /init-docs, ...
 
 Recent: 3 commits today on this branch
 Memory: [key context from memory files]
+In-flight: #15 implement auth module (agent working)
+Pending: #12 needs clarification from human
 ```
 
 Then ask: "What are we working on?"
@@ -110,6 +121,17 @@ Condense or omit empty sections. Don't dump full CLAUDE.md. Keep it concise.
 ---
 
 ## End Mode
+
+### Phase 0 — Project Updates
+
+Before any other end-mode steps:
+
+1. **Load project config:** Read `.github/project-config.json`. If not found, skip project updates.
+2. **Update Documentation State:** For each issue touched during this session:
+   - If documentation was generated: set Documentation State → `drafted`
+   - If PR was created with docs: set Documentation State → `reviewed`
+3. **Verify artifact links:** Check that the issue body `## Artifacts` section contains links to: PR, CI results, docs. If artifacts are missing, post a comment listing what's missing.
+4. **Error handling:** If any update fails, log warning and continue. Session end should complete even if project updates fail.
 
 ### Phase 1 — Run tests
 
@@ -188,6 +210,9 @@ Additional skill-specific metrics:
 | PR merge fails | Report error, offer to skip |
 | Push fails | Report error, ask how to proceed |
 | Config missing | Use hardcoded defaults |
+| Project config missing | Skip project context/updates — not an error |
+| Project query fails | Log warning, continue with rest of session |
+| Project update fails | Log warning, continue — session end must complete |
 
 ## Mistakes to Avoid
 
