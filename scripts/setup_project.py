@@ -44,11 +44,11 @@ SINGLE_SELECT_FIELDS: dict[str, list[str]] = {
     ],
     "Priority": ["critical", "high", "medium", "low"],
     "Risk": ["high", "medium", "low"],
-    "AI Suitability": ["high", "medium", "low"],
-    "Spec Approval": ["approved", "needs revision", "pending", "not required"],
-    "Release Approval": ["approved", "needs revision", "pending", "not required"],
-    "Documentation State": ["complete", "partial", "missing", "not required"],
-    "Agent": ["claude", "codex", "gemini", "human"],
+    "AI Suitability": ["autonomous", "assisted", "human-led"],
+    "Spec Approval": ["not required", "pending", "approved", "rejected"],
+    "Release Approval": ["not required", "pending", "approved", "rejected"],
+    "Documentation State": ["not started", "drafted", "reviewed", "complete"],
+    "Agent": ["claude", "codex", "gemini", "none"],
 }
 
 NUMBER_FIELDS: list[str] = ["Story Points", "Review Rounds"]

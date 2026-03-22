@@ -27,8 +27,10 @@ jobs:
       - name: Extract issue number from PR body
         if: steps.config.outputs.found == 'true'
         id: issue
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          ISSUE=$(echo "${{ github.event.pull_request.body }}" | grep -oP 'Closes #\K\d+' | head -1)
+          ISSUE=$(printf '%s' "$PR_BODY" | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+')
           if [ -z "$ISSUE" ]; then
             echo "No 'Closes #N' found in PR body"
             echo "number=" >> "$GITHUB_OUTPUT"

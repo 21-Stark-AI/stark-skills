@@ -272,7 +272,11 @@ def get_item_fields(item_id: str) -> dict[str, Any]:
     for fv in (node.get("fieldValues") or {}).get("nodes", []):
         fname = (fv.get("field") or {}).get("name")
         if fname:
-            fields[fname] = fv.get("text") or fv.get("name") or fv.get("number") or fv.get("title")
+            for key in ("text", "name", "number", "title"):
+                val = fv.get(key)
+                if val is not None:
+                    fields[fname] = val
+                    break
     return fields
 
 
@@ -298,10 +302,11 @@ def get_items(project_id: str, **filters: Any) -> list[dict]:
             for fv in (node.get("fieldValues") or {}).get("nodes", []):
                 fname = (fv.get("field") or {}).get("name")
                 if fname:
-                    fields[fname] = (
-                        fv.get("text") or fv.get("name")
-                        or fv.get("number") or fv.get("title")
-                    )
+                    for key in ("text", "name", "number", "title"):
+                        val = fv.get(key)
+                        if val is not None:
+                            fields[fname] = val
+                            break
             all_items.append({
                 "item_id": node["id"],
                 "issue_number": content.get("number"),

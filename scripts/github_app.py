@@ -282,9 +282,9 @@ def graphql(query: str, *, variables: dict | None = None, retry: bool = True) ->
             body = r.json()
             if "errors" in body:
                 msgs = "; ".join(e.get("message", str(e)) for e in body["errors"])
-                raise RuntimeError(f"GraphQL error: {msgs}")
+                raise RuntimeError(f"GraphQL error: {msgs}")  # no retry — fail-closed
             return body.get("data", {})
-        except (requests.exceptions.RequestException, RuntimeError) as e:
+        except requests.exceptions.RequestException as e:
             last_err = e
             if attempt < attempts - 1:
                 time.sleep(1)
