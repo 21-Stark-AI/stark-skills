@@ -258,6 +258,41 @@ def api_delete(path: str) -> int:
     return r.status_code
 
 
+def graphql(query: str, *, variables: dict | None = None, retry: bool = True) -> dict:
+    """Execute a GraphQL query/mutation against the GitHub API.
+
+    Retries once on transient failures. Raises RuntimeError on GraphQL errors
+    (fail-closed for mutations).
+    """
+    payload: dict[str, Any] = {"query": query}
+    if variables:
+        payload["variables"] = variables
+
+    last_err: Exception | None = None
+    attempts = 2 if retry else 1
+    for attempt in range(attempts):
+        try:
+            r = requests.post(
+                f"{API}/graphql",
+                headers=_headers(),
+                json=payload,
+                timeout=30,
+            )
+            r.raise_for_status()
+            body = r.json()
+            if "errors" in body:
+                msgs = "; ".join(e.get("message", str(e)) for e in body["errors"])
+                raise RuntimeError(f"GraphQL error: {msgs}")
+            return body.get("data", {})
+        except (requests.exceptions.RequestException, RuntimeError) as e:
+            last_err = e
+            if attempt < attempts - 1:
+                time.sleep(1)
+                continue
+            raise
+    raise last_err  # type: ignore[misc]
+
+
 # ── High-level operations ───────────────────────────────────────────────
 # All functions accept `repo` param (org/name) to stay independent of globals.
 
