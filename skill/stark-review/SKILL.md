@@ -292,6 +292,24 @@ pr_review("org/repo", NUMBER, event="COMMENT", body=summary_body)
 
 If posting fails, print the summary to terminal and warn. Do not fail.
 
+### Review Rounds Tracking
+
+After posting findings, update the Review Rounds field on the linked issue's project item:
+
+1. Load `.github/project-config.json`. If not found, skip.
+2. Extract issue number from PR body (`Closes #N` / `Fixes #N`)
+3. If no linked issue, skip.
+4. Use bot token: `export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)`
+5. Find project item: `github_projects.find_item_for_issue(ORG, REPO, issue_number, config['project_id'])`
+6. If item not found, skip.
+7. Read current Review Rounds: `github_projects.get_item_fields(item_id).get('Review Rounds', 0)`
+8. If this round had findings > 0, increment:
+   `github_projects.set_field(config['project_id'], item_id, 'Review Rounds', current + 1)`
+9. If zero findings, do NOT increment (avoid inflating the metric).
+10. `unset GH_TOKEN`
+
+**Failure handling:** If any project operation fails, log warning and continue — review posting already succeeded.
+
 ### 4b. Create bug issues for unfixed findings
 
 After the review-fix loop, some real issues may remain unfixed — either because they're too complex to auto-fix, they require human judgment, or they persist across max_rounds. For each finding that meets ALL of these criteria, create a GitHub issue:
