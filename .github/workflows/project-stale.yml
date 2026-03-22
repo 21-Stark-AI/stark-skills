@@ -1,0 +1,126 @@
+name: Project Stale Detection
+on:
+  schedule:
+    - cron: '0 * * * *'  # hourly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect stale items
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('.github/project-config.json')) return;
+            const config = JSON.parse(fs.readFileSync('.github/project-config.json', 'utf8'));
+
+            // Fetch all project items
+            let cursor = null;
+            const items = [];
+            while (true) {
+              const data = await github.graphql(`
+                query($projectId: ID!, $cursor: String) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      items(first: 100, after: $cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          id updatedAt
+                          content { ... on Issue { number title repository { nameWithOwner } } }
+                          fieldValues(first: 20) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                name field { ... on ProjectV2SingleSelectField { name } }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, { projectId: config.project_id, cursor });
+
+              const page = data.node.items;
+              items.push(...page.nodes);
+              if (!page.pageInfo.hasNextPage) break;
+              cursor = page.pageInfo.endCursor;
+            }
+
+            const now = Date.now();
+            const HOUR = 3600000;
+
+            for (const item of items) {
+              let status = '', aiSuit = '';
+              for (const fv of item.fieldValues.nodes) {
+                if (fv.field?.name === 'Status') status = fv.name;
+                if (fv.field?.name === 'AI Suitability') aiSuit = fv.name;
+              }
+
+              const age = now - new Date(item.updatedAt).getTime();
+              const issue = item.content;
+              if (!issue) continue;
+
+              // agent working thresholds
+              if (status === 'agent working') {
+                const warnH = aiSuit === 'autonomous' ? 4 : 24;
+                const blockH = warnH * 2;
+                if (age > blockH * HOUR) {
+                  // Set to blocked
+                  const statusField = config.fields['Status'];
+                  const blockedId = statusField?.options?.['blocked'];
+                  if (blockedId) {
+                    await github.graphql(`
+                      mutation($pid: ID!, $iid: ID!, $fid: ID!, $v: ProjectV2FieldValue!) {
+                        updateProjectV2ItemFieldValue(input: {projectId:$pid,itemId:$iid,fieldId:$fid,value:$v}) { projectV2Item { id } }
+                      }
+                    `, { pid: config.project_id, iid: item.id, fid: statusField.id, v: { singleSelectOptionId: blockedId } });
+                  }
+                  // Set blocked reason
+                  const brField = config.fields['Blocked Reason'];
+                  if (brField) {
+                    await github.graphql(`
+                      mutation($pid: ID!, $iid: ID!, $fid: ID!, $v: ProjectV2FieldValue!) {
+                        updateProjectV2ItemFieldValue(input: {projectId:$pid,itemId:$iid,fieldId:$fid,value:$v}) { projectV2Item { id } }
+                      }
+                    `, { pid: config.project_id, iid: item.id, fid: brField.id, v: { text: `Agent stalled (>${blockH}h)` } });
+                  }
+                  // Comment on issue
+                  await github.rest.issues.createComment({
+                    owner: issue.repository.nameWithOwner.split('/')[0],
+                    repo: issue.repository.nameWithOwner.split('/')[1],
+                    issue_number: issue.number,
+                    body: `⚠️ This issue has been in \`agent working\` for over ${blockH} hours. Moved to \`blocked\`. Please investigate.`,
+                  });
+                  console.log(`#${issue.number} → blocked (stale ${Math.round(age/HOUR)}h)`);
+                } else if (age > warnH * HOUR) {
+                  await github.rest.issues.createComment({
+                    owner: issue.repository.nameWithOwner.split('/')[0],
+                    repo: issue.repository.nameWithOwner.split('/')[1],
+                    issue_number: issue.number,
+                    body: `⏱ This issue has been in \`agent working\` for ${Math.round(age/HOUR)} hours. If the agent is stuck, consider moving to \`needs clarification\` or \`blocked\`.`,
+                  });
+                  console.log(`#${issue.number} — warning (${Math.round(age/HOUR)}h)`);
+                }
+              }
+
+              // needs clarification > 48h
+              if (status === 'needs clarification' && age > 48 * HOUR) {
+                await github.rest.issues.createComment({
+                  owner: issue.repository.nameWithOwner.split('/')[0],
+                  repo: issue.repository.nameWithOwner.split('/')[1],
+                  issue_number: issue.number,
+                  body: `📋 This issue has been waiting for clarification for ${Math.round(age/HOUR)} hours. Please provide the requested information so work can resume.`,
+                });
+                console.log(`#${issue.number} — needs clarification (${Math.round(age/HOUR)}h)`);
+              }
+            }
