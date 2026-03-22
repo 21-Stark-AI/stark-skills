@@ -279,12 +279,13 @@ def graphql(query: str, *, variables: dict | None = None, retry: bool = True) ->
                 json=body,
                 timeout=30,
             )
+            r.raise_for_status()
             data = r.json()
             if "errors" in data:
                 msgs = "; ".join(e.get("message", str(e)) for e in data["errors"])
                 raise RuntimeError(f"GraphQL errors: {msgs}")
             return data
-        except ConnectionError as exc:
+        except requests.exceptions.ConnectionError as exc:
             last_exc = exc
             if attempt + 1 >= attempts:
                 raise
