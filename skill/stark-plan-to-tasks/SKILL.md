@@ -240,13 +240,15 @@ Default to `task` if ambiguous. Use `feature` only when the task creates genuine
 
 **GitHub Issue Type mapping:** In addition to labels, set the native GitHub Issue Type on each issue via `--field type="{GH_ISSUE_TYPE}"`. Map the task `type` field to the GitHub Issue Type name:
 
-| Task type | Label | GitHub Issue Type (`--field type`) |
-|-----------|-------|------------------------------------|
-| `feature` | `type:feature` | `Feature` |
-| `task` | `type:task` | `Task` |
-| `bug` | `type:bug` | `Bug` |
+| Task type | GitHub Issue Type (`--field type`) |
+|-----------|-------------------------------------|
+| `feature` | `Feature` |
+| `task` | `Task` |
+| `bug` | `Bug` |
 
-GitHub Issue Types are org-level. The GetEvinced org defines: Task, Bug, Feature. If the API call fails due to missing issue types, fall back to labels only and warn.
+**IMPORTANT:** Do NOT create or use `type:bug`, `type:feature`, or `type:task` labels. Use the built-in GitHub Issue Type field exclusively (`--field type="Bug"`). Labels and Types are separate concepts.
+
+GitHub Issue Types are org-level. The GetEvinced org defines: Task, Bug, Feature. If the API call fails due to missing issue types, warn and continue without a type (do NOT fall back to type labels).
 
 **Sizing guardrails:** If a task exceeds max 5 acceptance criteria, max 4 files, or max 500 words in `how` — split it. If a task has only 1 acceptance criterion and 1 file — consider merging. Recommend max 6-8 phases, max 8-10 tasks per phase. If exceeded, surface it as a signal the plan should be split.
 
@@ -370,7 +372,6 @@ gh label create "sp:3" --repo {ORG_REPO} --color "0075ca" --force
 ```
 
 Labels to ensure exist:
-- `type:feature` (blue, `#1d76db`), `type:task` (yellow, `#e4e669`), `type:bug` (red, `#e11d48`)
 - `sp:1`, `sp:2`, `sp:3`, `sp:5`, `sp:8`, `sp:13` (blue shades, graduated)
 - `risk:low` (green, `#2cbe4e`), `risk:med` (yellow, `#e4e669`), `risk:high` (red, `#e11d48`)
 - `confidence:low` (gray, `#8b949e`), `confidence:med` (gray, `#6e7681`), `confidence:high` (gray, `#484f58`)
@@ -386,7 +387,7 @@ gh api /repos/{ORG}/{REPO}/issues \
   --method POST \
   --field title="$TITLE" \
   --field body="$(cat $BODY_FILE)" \
-  --field labels='["type:feature","sp:5","risk:med","confidence:high","stark-plan-to-tasks","plan:{PLAN_SLUG}"]' \
+  --field labels='["sp:5","risk:med","confidence:high","stark-plan-to-tasks","plan:{PLAN_SLUG}"]' \
   --field type="{GH_ISSUE_TYPE}"
 ```
 

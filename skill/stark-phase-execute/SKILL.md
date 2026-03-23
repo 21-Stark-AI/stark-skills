@@ -427,9 +427,9 @@ Skip if `--skip-release`.
 
 Before bumping the version, ensure CHANGELOG has content. For each merged task in this phase, add an entry under `## [Unreleased]` in CHANGELOG.md:
 
-- `type:feature` tasks → `### Added` section
-- `type:fix` tasks → `### Fixed` section
-- `type:task` tasks → `### Changed` section
+- Feature tasks (GitHub Issue Type = Feature) → `### Added` section
+- Bug fix tasks (GitHub Issue Type = Bug) → `### Fixed` section
+- Other tasks (GitHub Issue Type = Task) → `### Changed` section
 
 Entry format: `- {task title} (#{issue_number})`
 
@@ -437,10 +437,10 @@ If CHANGELOG.md doesn't exist, create one with standard Keep a Changelog format.
 
 ### 3.2 Version bump & release
 
-Determine bump from task labels:
-- Any `type:feature` → minor
-- Only `type:fix` or `type:chore` → patch
-- Any `type:breaking` → major
+Determine bump from GitHub Issue Type:
+- Any Feature → minor
+- Only Bug or Task → patch
+- Any breaking change (noted in task description) → major
 
 **Delegate to `/stark-release`** with the determined bump type as argument. This preserves the hierarchical config override chain — repos with custom release workflows (different version files, different tag formats, CI-triggered deploys) get their repo-level `/stark-release` overrides respected.
 
