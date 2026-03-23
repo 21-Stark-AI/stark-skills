@@ -137,10 +137,10 @@ Run the configured `test_command` in the worktree. Parse output for failing test
 ### 2a. Run review
 
 ```bash
-$PYTHON $SCRIPTS/multi_review.py --pr {number} --base {merge_base} --json-only --dry-run 2>/dev/null
+$PYTHON $SCRIPTS/multi_review.py --pr {number} --base {merge_base} --json-only --post-raw 2>/dev/null
 ```
 
-Parse stdout as JSON. This is one call per round — `multi_review.py` runs all sub-agents in parallel and returns a JSON object with `rounds[0].results[]` containing findings per agent × domain.
+Parse stdout as JSON. This is one call per round — `multi_review.py` runs all sub-agents in parallel, posts each agent's raw findings to the PR under its own bot identity (stark-claude, stark-codex, stark-gemini), and returns a JSON object with `rounds[0].results[]` containing findings per agent × domain.
 
 ### 2b. Classify findings
 
@@ -271,35 +271,11 @@ Analyze patterns across all rounds:
 
 ## Phase 4: Post & Persist
 
-If `auth_failed`: skip all posting (4.1–4.3). Print summary to terminal with a note: "Review not posted to PR (auth failed). Copy the above to post manually." Jump to 4.5.
+If `auth_failed`: skip all posting (4.1–4.3). Print summary to terminal with a note: "Review not posted to PR (auth failed). Copy the above to post manually." Jump to 4.4.
 
-### 4.1 Post per-agent raw findings
+### 4.1 Per-agent raw findings (handled by multi_review.py)
 
-**Every agent's raw findings MUST be posted to the PR under that agent's bot identity.** GitHub is the permanent data store for learning and analysis — raw findings are never discarded or consolidated away.
-
-For each agent that participated, post a separate comment under that agent's bot:
-
-```bash
-$PYTHON $SCRIPTS/github_app.py --app stark-claude pr review {number} --comment --body "$claude_findings"
-$PYTHON $SCRIPTS/github_app.py --app stark-codex pr review {number} --comment --body "$codex_findings"
-$PYTHON $SCRIPTS/github_app.py --app stark-gemini pr review {number} --comment --body "$gemini_findings"
-```
-
-Each agent's comment format:
-
-```markdown
-## stark-{agent} review — round {N}
-
-| # | Domain | Severity | File | Title | Suggestion |
-|---|--------|----------|------|-------|------------|
-(one row per finding from this agent)
-
-**{count} findings** | dispatched at {timestamp}
-```
-
-- 0 findings → post: `## stark-{agent} review — round {N}\n\nNo findings.`
-- Agent failed → post: `## stark-{agent} review — round {N}\n\n⚠️ Agent failed: {error}`
-- Posting fails for one agent → warn and continue with the next.
+Per-agent raw findings are posted automatically by `multi_review.py --post-raw` during Phase 2. Each agent's findings are posted as a separate PR comment under its own bot identity (stark-claude, stark-codex, stark-gemini). This happens mechanically in the Python script — the orchestrator skill does not need to post raw findings.
 
 ### 4.2 Post orchestrator summary
 
