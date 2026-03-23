@@ -235,13 +235,27 @@ Recommend only — do NOT modify prompts.
 
 Write `{plan-name}.review.md` alongside the original plan file. If the plan is `docs/specs/2026-03-13-design.md`, the review goes to `docs/specs/2026-03-13-design.review.md`.
 
-### 5c. Post to PR (if PR detected and not --dry-run)
+### 5c. Post per-agent raw findings to PR (if PR detected and not --dry-run)
+
+**Every agent's raw findings MUST be posted to the PR under that agent's bot identity.** GitHub serves as the permanent data store for learning and analysis.
+
+For each agent that returned findings, post a separate comment under that agent's bot:
+
+```bash
+$PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number --comment --body "$claude_findings"
+$PYTHON $SCRIPTS/github_app.py --app stark-codex pr review $pr_number --comment --body "$codex_findings"
+$PYTHON $SCRIPTS/github_app.py --app stark-gemini pr review $pr_number --comment --body "$gemini_findings"
+```
+
+Each agent's comment should list its raw findings in a table. If an agent returned 0 findings or failed, still post a short status comment under its identity.
+
+Then post the orchestrator's classified summary as `stark-claude[bot]`:
 
 ```bash
 $PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number --comment --body "$summary"
 ```
 
-If posting fails, warn but don't fail.
+If posting fails for a specific agent, warn and continue.
 
 ### 5d. Save history
 

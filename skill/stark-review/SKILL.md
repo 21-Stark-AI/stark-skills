@@ -271,26 +271,52 @@ Analyze patterns across all rounds:
 
 ## Phase 4: Post & Persist
 
-### 4a. Post to PR
+### 4a. Post per-agent raw findings to PR
+
+**Every agent's raw findings MUST be posted to the PR under that agent's bot identity.** GitHub serves as the permanent data store for learning and analysis — raw findings are never discarded or consolidated away.
 
 If `auth_failed`: skip posting entirely. Print summary to terminal with a note: "Review not posted to PR (auth failed). Copy the above to post manually."
 
-Otherwise, post the final summary as a single comment via `stark-claude[bot]`:
+Otherwise, for each agent that returned findings, post a separate comment under that agent's bot:
+
+```bash
+# Post claude's raw findings as stark-claude[bot]
+$PYTHON $SCRIPTS/github_app.py --app stark-claude pr review {number} --comment --body "$claude_findings"
+
+# Post codex's raw findings as stark-codex[bot]
+$PYTHON $SCRIPTS/github_app.py --app stark-codex pr review {number} --comment --body "$codex_findings"
+
+# Post gemini's raw findings as stark-gemini[bot]
+$PYTHON $SCRIPTS/github_app.py --app stark-gemini pr review {number} --comment --body "$gemini_findings"
+```
+
+Each agent's comment should contain:
+
+```markdown
+## stark-{agent} review — round {N}
+
+| # | Domain | Severity | File | Title | Suggestion |
+|---|--------|----------|------|-------|------------|
+(one row per finding from this agent)
+
+**{count} findings** | dispatched at {timestamp}
+```
+
+If an agent returned 0 findings, post a short comment: `## stark-{agent} review — round {N}\n\nNo findings.`
+
+If an agent failed (CLI error, timeout), post: `## stark-{agent} review — round {N}\n\n⚠️ Agent failed: {error}`
+
+If posting fails for a specific agent, warn and continue with the next agent.
+
+### 4b. Post orchestrator classified summary
+
+After all per-agent comments are posted, post the orchestrator's consolidated summary as `stark-claude[bot]`. This comment contains the classification decisions (fix, noise, false_positive, ignored) with reasoning:
 
 ```bash
 $PYTHON $SCRIPTS/github_app.py --app stark-claude pr review {number} --comment --body "$summary"
 ```
 
-Or via Python:
-
-```python
-import sys
-sys.path.insert(0, os.path.expanduser("~/.claude/code-review/scripts"))
-from github_app import pr_review
-pr_review("org/repo", NUMBER, event="COMMENT", body=summary_body)
-```
-
-If posting fails, print the summary to terminal and warn. Do not fail.
+The summary includes the standard sections (headline counts, findings table, noise reasoning, etc.) as defined in Phase 3. This is the human-readable analysis that explains what was fixed, what was dismissed, and why.
 
 ### Review Rounds Tracking
 
@@ -310,7 +336,7 @@ After posting findings, update the Review Rounds field on the linked issue's pro
 
 **Failure handling:** If any project operation fails, log warning and continue — review posting already succeeded.
 
-### 4b. Create bug issues for unfixed findings
+### 4c. Create bug issues for unfixed findings
 
 After the review-fix loop, some real issues may remain unfixed — either because they're too complex to auto-fix, they require human judgment, or they persist across max_rounds. For each finding that meets ALL of these criteria, create a GitHub issue:
 
