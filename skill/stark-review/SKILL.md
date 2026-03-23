@@ -300,11 +300,12 @@ unset GH_TOKEN  # Use native gh auth
 **Labels** (auto-create if missing):
 
 ```bash
-gh label create "type:bug" --repo {ORG}/{REPO} --color "e11d48" --force
 gh label create "stark-review" --repo {ORG}/{REPO} --color "7057ff" --force
 gh label create "critical" --repo {ORG}/{REPO} --color "b60205" --force
 gh label create "high" --repo {ORG}/{REPO} --color "d93f0b" --force
 ```
+
+**IMPORTANT:** Do NOT use `type:bug`, `type:feature`, or `type:task` labels. Use the built-in GitHub Issue Type field instead (`--field type="Bug"`). Labels and Types are separate concepts — labels are for metadata like severity and source, Types are for categorization.
 
 **Issue body:**
 
@@ -342,7 +343,7 @@ gh api /repos/{ORG}/{REPO}/issues \
   --method POST \
   --field title="$(cat $TITLE_FILE)" \
   --field body="$(cat $BODY_FILE)" \
-  --field labels="[\"type:bug\",\"stark-review\",\"{finding.severity}\"]" \
+  --field labels="[\"stark-review\",\"{finding.severity}\"]" \
   --field type="Bug"
 rm -f "$BODY_FILE" "$TITLE_FILE"
 ```
