@@ -960,6 +960,7 @@ def review_pr(
     dry_run: bool = False,
     json_output: bool = False,
     json_only: bool = False,
+    post_raw: bool = False,
     cwd: str | None = None,
 ) -> dict[str, Any]:
     """Run the full multi-agent review on a single PR."""
@@ -1028,14 +1029,27 @@ def review_pr(
             for res in rnd.results:
                 apply_severity_overrides(res.findings, sev_overrides)
 
-        # Post reviews to GitHub — one review per agent, consolidating all domains
-        if not dry_run:
-            print(f"\n  Posting reviews to PR #{pr_number}...", file=out)
+        # Post per-agent raw findings to GitHub — one comment per agent under its bot identity.
+        # Fires when: (a) not dry_run (normal mode), or (b) --post-raw (orchestrator mode where
+        # the LLM skill handles the classified summary but raw data must land on the PR).
+        if not dry_run or post_raw:
+            print(f"\n  Posting per-agent findings to PR #{pr_number}...", file=out)
             for agent, agent_cfg in AGENTS.items():
                 body = format_agent_review_body(agent, rnd)
                 if body:
                     ok = post_review(repo, pr_number, agent_cfg["app"], body)
                     status = "posted" if ok else "FAILED"
+                    print(f"    {agent_cfg['emoji']} {agent} → {status}", file=out)
+                else:
+                    # Post a status comment even for 0 findings / failed agents
+                    agent_results = [r for r in rnd.results if r.agent == agent]
+                    if any(r.error for r in agent_results):
+                        errors = "; ".join(r.error for r in agent_results if r.error)
+                        status_body = f"## {agent_cfg['emoji']} stark-{agent} review — round {rnd.round_num}\n\n⚠️ Agent failed: {errors}"
+                    else:
+                        status_body = f"## {agent_cfg['emoji']} stark-{agent} review — round {rnd.round_num}\n\nNo findings."
+                    ok = post_review(repo, pr_number, agent_cfg["app"], status_body)
+                    status = "posted (empty)" if ok else "FAILED"
                     print(f"    {agent_cfg['emoji']} {agent} → {status}", file=out)
 
         # Check for actionable findings (critical/high/medium)
@@ -1131,6 +1145,13 @@ def main() -> None:
         dest="json_only",
         help="Strict JSON mode: stdout is JSON payload only, all logs go to stderr",
     )
+    parser.add_argument(
+        "--post-raw",
+        action="store_true",
+        dest="post_raw",
+        help="Post per-agent raw findings to PR even in --json-only mode. "
+        "The orchestrator handles its own classified summary separately.",
+    )
 
     args = parser.parse_args()
 
@@ -1148,6 +1169,7 @@ def main() -> None:
             dry_run=args.dry_run,
             json_output=args.json_output or args.json_only,
             json_only=getattr(args, "json_only", False),
+            post_raw=getattr(args, "post_raw", False),
         )
 
         if args.json_output or args.json_only:
