@@ -1,23 +1,47 @@
 ---
 name: stark-review-plan
 description: >
-  Multi-agent design document review using 3 LLMs × 7 domains with autonomous fix loop.
-  Use when the user says "review this plan", "review this spec", "review design doc",
+  Multi-agent execution plan review using multi-LLM × 10 adversarial domains with autonomous fix loop.
+  Absorbs stark-review-deployment-plan. Use when the user says "review this plan",
+  "review deployment plan", "review infra plan", "review migration plan", "audit deployment",
   or invokes /stark-review-plan. Also triggers on `/stark-review-plan <path>`.
-argument-hint: "<path> [--rounds N] [--dry-run] [--force]"
+argument-hint: "<path> [--rounds N] [--dry-run] [--force] [--tournament]"
 ---
 
 # stark-review-plan
 
-Multi-agent plan/spec review: 3 LLMs (Claude, Codex, Gemini) × 7 domain specializations
-dispatched in parallel. Review-fix loop for up to N rounds, then final review-only round.
+Multi-agent execution plan review: N agents × 10 adversarial domains dispatched in parallel
+(default: 2 agents — Claude + Codex; configurable up to 3 with Gemini). Reviews quality of how
+a plan will be executed — can this plan actually be carried out safely?
+
+**This skill assumes the plan will fail and hunts for where it will break.**
+
+Normal mode: N agents × 10 domains = N×10 sub-agents in parallel (default N=2).
+Tournament mode (`--tournament`): 3 agents each independently review the full document across all
+domains, then a judge evaluates and synthesizes the winner.
+
+## Domains (10)
+
+| # | Domain | Focus |
+|---|--------|-------|
+| 1 | general | Overall coherence, scope clarity, stated goals vs. actual steps |
+| 2 | completeness | Missing prerequisites, undocumented assumptions, gaps in coverage |
+| 3 | security | Identity lifecycle, least-privilege, secrets handling, blast radius |
+| 4 | feasibility | Command validity, idempotency, human-executable steps, tooling availability |
+| 5 | operability | Observability, alerting, runbooks, on-call impact, operator UX |
+| 6 | sequencing | Dependency ordering, parallel vs. serial correctness, race conditions |
+| 7 | rollback | Rollback completeness, partial-failure traps, state recovery |
+| 8 | risk | Risk inventory, probability × impact, mitigations, residual risk |
+| 9 | gates | Cutover criteria, go/no-go checks, validation evidence, sign-off |
+| 10 | timeline | Duration estimates, critical path, buffer, deadline realism |
 
 ## Arguments
 
-- `<path>` — path to spec/plan markdown file (required)
+- `<path>` — path to plan markdown file (required)
 - `--rounds N` — max fix cycles (default: 3, from config `plan_review.max_rounds`)
 - `--dry-run` — review only, no fixes, no PR posting, no review file
 - `--force` — proceed even if plan has uncommitted changes
+- `--tournament` — tournament mode: 3 full-document reviews evaluated by a judge
 
 ## Constants
 
@@ -26,8 +50,9 @@ SCRIPTS = ~/.claude/code-review/scripts
 PYTHON  = $SCRIPTS/.venv/bin/python3
 ```
 
-To call plan_review_dispatch.py: `$PYTHON $SCRIPTS/plan_review_dispatch.py <args>`
+To call plan_review_dispatch.py: `$PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir plan-review <args>`
 To call github_app.py: `$PYTHON $SCRIPTS/github_app.py <args>`
+To call tournament.py: `$PYTHON $SCRIPTS/tournament.py <args>`
 
 ## Phase 1: Setup
 
@@ -73,6 +98,8 @@ max_rounds=3
 
 ## Phase 2: Review-Fix Loop
 
+**If `--tournament` was passed, skip this phase entirely and go to Phase 2T (Tournament).**
+
 If `--dry-run`: run Phase 2a once (round 1), skip fixing, go to Phase 4.
 
 For round = 1 to max_rounds:
@@ -80,10 +107,10 @@ For round = 1 to max_rounds:
 ### 2a. Dispatch sub-agents
 
 ```bash
-$PYTHON $SCRIPTS/plan_review_dispatch.py --file "$path" --round $round --timeout 300
+$PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir plan-review --file "$path" --round $round --timeout 300
 ```
 
-Capture stdout as JSON. This dispatches all 21 sub-agents (3 agents × 7 domains) in parallel and returns structured results.
+Capture stdout as JSON. This dispatches all N×10 sub-agents (N agents × 10 domains, default N=2) in parallel and returns structured results.
 
 Parse the JSON output. Extract findings from `results[].findings[]`.
 
@@ -116,7 +143,7 @@ First, check dispatch health from the JSON output's `summary` field:
 - If `summary.succeeded == 0` (all sub-agents failed): this is a **dispatch failure**, not a clean plan. Run diagnostics:
   ```bash
   which claude codex gemini  # verify CLIs are installed
-  $PYTHON $SCRIPTS/plan_review_dispatch.py --file "$path" --round $round --agents claude --timeout 60  # single-agent probe
+  $PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir plan-review --file "$path" --round $round --agents claude --timeout 60  # single-agent probe
   ```
   Report the failure with stderr details. Do NOT treat zero findings as "clean." Skip remaining rounds and Phase 3 (re-dispatching will hit the same failure). Go directly to Phase 4 with a dispatch-failure summary.
 - If `summary.succeeded > 0` but `summary.succeeded / summary.total_sub_agents < 0.5`: warn "Low coverage — only N/M sub-agents succeeded. Results may be incomplete." Continue normally.
@@ -129,14 +156,62 @@ If dispatch was healthy and this round produced zero findings classified as `fix
 
 Write a temporary `in-progress.json` to `~/.claude/code-review/history/plan-reviews/{plan-filename}/` with the current round's data for crash recovery.
 
+## Phase 2T: Tournament Mode
+
+**Only runs when `--tournament` was passed. Replaces Phases 2 and 3.**
+
+Each agent independently reviews the full document across ALL 10 domains in a single comprehensive prompt. No domain splitting — each agent gets one combined prompt. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead:
+
+### 2T.a. Dispatch 3 full-document reviews
+
+1. Combine all 10 domain prompts into a single comprehensive prompt per agent
+2. Dispatch each agent ONCE with the combined prompt (directly via CLI, not via plan_review_dispatch.py)
+3. Collect 3 full review documents (one per agent)
+
+Each agent receives a combined prompt that merges all 10 domain prompts. Output: 3 structured review documents (one per agent).
+
+### 2T.b. Judge evaluation
+
+Call `evaluate_review()` from `tournament.py` (Python API, not CLI):
+
+```python
+from tournament import evaluate_review
+result = evaluate_review(
+    document=plan_content,
+    reviews={"claude": claude_review, "codex": codex_review, "gemini": gemini_review},
+)
+```
+
+The judge runs twice with swapped order (position bias control). Numeric scores are averaged across both passes for more robust scoring.
+
+Evaluation criteria:
+- **Coverage** — what fraction of real issues did the agent find?
+- **Severity accuracy** — were critical issues called critical, not just "medium"?
+- **False positive rate** — how many findings were noise or not real?
+- **Actionability** — can an engineer act on each finding without guessing?
+- **Specificity** — does each finding cite exact sections, commands, or line numbers?
+
+If the judge detects position bias (winner changes when review order is swapped), the result is a tie. In tie mode, no winner is declared — only the synthesized findings are used. The summary reports "Tournament result: tie (position bias detected)" and lists the synthesized findings.
+
+### 2T.c. Synthesize winner
+
+The tournament engine declares a winner (or tie) and synthesizes best-of-all findings:
+- Winner's full review is the base (or all reviews equally in tie mode)
+- Any high-confidence finding from a non-winner that the winner missed is merged in
+- False positives from all reviews are excluded
+
+Output: single synthesized review document. Skip Phase 3 (no fix rounds in tournament mode). Go to Phase 4.
+
 ## Phase 3: Final Review
 
-**Skip this phase if Phase 2 ended due to dispatch failure** (all sub-agents failed). Re-dispatching would hit the same failure.
+**Skip this phase if:**
+- `--tournament` was passed (tournament mode handles its own final state)
+- Phase 2 ended due to dispatch failure (all sub-agents failed)
 
 Otherwise, run one more dispatch:
 
 ```bash
-$PYTHON $SCRIPTS/plan_review_dispatch.py --file "$path" --round $((max_rounds + 1)) --timeout 300
+$PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir plan-review --file "$path" --round $((max_rounds + 1)) --timeout 300
 ```
 
 This round is review-only — no fixes applied. The findings represent the final state of the plan.
@@ -184,6 +259,13 @@ Generate a consolidated markdown summary with these sections:
 - **Noise** = `false_positive` or `noise` (not real problems — do not count as issues)
 - **Ignored** = below fix_threshold
 
+In tournament mode, also include:
+```markdown
+**Tournament winner:** {agent} (score: {score}/100)
+**Runner-up:** {agent} (score: {score}/100)
+**Merged findings:** {count from non-winner reviews added to synthesis}
+```
+
 ### 4b. All Findings Table
 
 | # | Round | Agent(s) | Domain | Severity | Section | Title | Outcome |
@@ -210,11 +292,28 @@ For each noise/false_positive finding, analyze **why** the reviewer flagged it a
 
 For each root cause, provide a concrete action: what to add to the plan, which prompt to tune, or what config to change.
 
-### 4h. Changes Made
+### 4h. Coverage Matrix
+
+Maps the deployment-plan failure vectors (A-J) to the 10 adversarial domains. Populated from actual findings.
+
+| Vector | Domain | Status | Evidence |
+|--------|--------|--------|----------|
+| A) Partial-Failure Trap | rollback, sequencing | {found/clean/not-applicable} | {section or finding ref} |
+| B) Imperative Idempotency | feasibility | {found/clean/not-applicable} | {section or finding ref} |
+| C) Blank-Slate IaC | completeness | {found/clean/not-applicable} | {section or finding ref} |
+| D) Dependency Sequencing | sequencing | {found/clean/not-applicable} | {section or finding ref} |
+| E) Reality Drift | operability | {found/clean/not-applicable} | {section or finding ref} |
+| F) Command Validation | feasibility | {found/clean/not-applicable} | {section or finding ref} |
+| G) Cutover Gates | gates, rollback | {found/clean/not-applicable} | {section or finding ref} |
+| H) API Prerequisites | completeness, sequencing | {found/clean/not-applicable} | {section or finding ref} |
+| I) Identity Lifecycle | security | {found/clean/not-applicable} | {section or finding ref} |
+| J) Evidence Strictness | general | {found/clean/not-applicable} | {section or finding ref} |
+
+### 4i. Changes Made
 
 Diff of plan changes across all fix rounds. Compare `original_content` with current file content.
 
-### 4i. Prompt Improvement Assessment
+### 4j. Prompt Improvement Assessment
 
 Analyze patterns across all rounds:
 
@@ -249,6 +348,11 @@ $PYTHON $SCRIPTS/github_app.py --app stark-gemini pr review $pr_number --comment
 
 Each agent's comment should list its raw findings in a table. If an agent returned 0 findings or failed, still post a short status comment under its identity.
 
+In tournament mode, also post the tournament scorecard under stark-claude:
+```bash
+$PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number --comment --body "$tournament_scorecard"
+```
+
 Then post the orchestrator's classified summary as `stark-claude[bot]`:
 
 ```bash
@@ -266,6 +370,7 @@ mkdir -p ~/.claude/code-review/history/plan-reviews/{plan-filename}
 Write:
 - `rounds.json` — all rounds: findings, classifications, outcomes
 - `summary.md` — human-readable summary (same as PR comment)
+- `tournament.json` — tournament scores and synthesis (tournament mode only)
 
 Remove `in-progress.json` if it exists.
 
@@ -280,9 +385,9 @@ At skill start, create tasks for the progress spinner:
 ```
 TaskCreate: "Phase 1: Setup — validate plan, check history"
             activeForm: "Setting up plan review"
-TaskCreate: "Phase 2: Review-Fix Loop (up to N rounds)"
+TaskCreate: "Phase 2: Review-Fix Loop (up to N rounds)"   [or "Phase 2T: Tournament" if --tournament]
             activeForm: "Running review-fix loop"
-TaskCreate: "Phase 3: Final Review"
+TaskCreate: "Phase 3: Final Review"                        [skip if --tournament]
             activeForm: "Running final review round"
 TaskCreate: "Phase 4: Summary"
             activeForm: "Generating summary"
@@ -295,10 +400,21 @@ Set each to `in_progress` BEFORE starting, `completed` when done.
 For Phase 2, create child tasks dynamically per round:
 
 ```
-TaskCreate: "Round 1: dispatch 21 sub-agents"
-            activeForm: "Dispatching 21 sub-agents (round 1)"
+TaskCreate: "Round 1: dispatch N×10 sub-agents"
+            activeForm: "Dispatching N×10 sub-agents (round 1)"
 TaskCreate: "Round 1: classify + fix"
             activeForm: "Classifying and fixing findings"
+```
+
+For Phase 2T (tournament):
+
+```
+TaskCreate: "Tournament: dispatch 3 full-document reviews"
+            activeForm: "Dispatching tournament competitors"
+TaskCreate: "Tournament: judge evaluation"
+            activeForm: "Judge evaluating reviews (2 passes)"
+TaskCreate: "Tournament: synthesize winner"
+            activeForm: "Synthesizing best-of-all findings"
 ```
 
 ### Timestamped log lines (required)
@@ -309,23 +425,36 @@ Record `T0` at skill start. Print for every phase transition and key event:
 [HH:MM:SS] === stark-review-plan started ===
 [HH:MM:SS] Phase 1: Setup — done (3s)
 [HH:MM:SS] Phase 2: Review-Fix Loop — started
-[HH:MM:SS]   ▸ Round 1: dispatching 21 sub-agents
-[HH:MM:SS]   ▸ Round 1: 19/21 succeeded — 145s
+[HH:MM:SS]   ▸ Round 1: dispatching N×10 sub-agents
+[HH:MM:SS]   ▸ Round 1: N×10 succeeded — 145s
 [HH:MM:SS]   ▸ Round 1: 12 fix, 5 noise, 3 FP — fixing plan
 [HH:MM:SS]   ▸ Round 1: done
-[HH:MM:SS]   ▸ Round 2: dispatching 21 sub-agents
+[HH:MM:SS]   ▸ Round 2: dispatching N×10 sub-agents
 [HH:MM:SS]   ...
 [HH:MM:SS] Phase 2: done (9m 12s)
-[HH:MM:SS] Phase 3: Final Review — 21 sub-agents — done (2m 30s)
+[HH:MM:SS] Phase 3: Final Review — N×10 sub-agents — done (2m 30s)
 [HH:MM:SS] Phase 4: Summary — done (5s)
 [HH:MM:SS] Phase 5: Output — done (3s)
 [HH:MM:SS] === stark-review-plan completed ===
 ```
 
+In tournament mode:
+
+```
+[HH:MM:SS] Phase 2T: Tournament — started
+[HH:MM:SS]   ▸ Dispatching 3 full-document reviews
+[HH:MM:SS]   ▸ Reviews complete — claude: 180s, codex: 210s, gemini: 195s
+[HH:MM:SS]   ▸ Judge evaluation pass 1 — done (45s)
+[HH:MM:SS]   ▸ Judge evaluation pass 2 (swapped order) — done (42s)
+[HH:MM:SS]   ▸ Winner: {agent} (score: {score}/100)
+[HH:MM:SS]   ▸ Synthesis: {N} findings merged from non-winner reviews
+[HH:MM:SS] Phase 2T: done (7m 12s)
+```
+
 ### 5-minute checkpoints (required for runs > 5 min)
 
 ```
-[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 12/21 sub-agents complete
+[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 18/N×10 sub-agents complete
 ```
 
 ### Metrics block at end (required)
@@ -334,6 +463,7 @@ Record `T0` at skill start. Print for every phase transition and key event:
 Metrics
 ───────
 Total duration:     Xm Ys
+Mode:               normal | tournament
 Phases:
   Phase 1 (Setup):        3s
   Phase 2 (Review-Fix):   9m 12s
@@ -347,8 +477,17 @@ Phases:
 
 Issues found:        8 (5 fixed, 3 unresolved)
 Noise:               9 (6 false positive, 3 noise)
-Agents:              21 dispatched, 19 succeeded, 2 failed
+Agents:              30 dispatched, 27 succeeded, 3 failed
 Rounds:              2 fix + 1 final
+Domains:             10
+```
+
+In tournament mode, replace Agents/Rounds rows with:
+
+```
+Tournament winner:   {agent} ({score}/100)
+Runner-up:           {agent} ({score}/100)
+Merged findings:     {N} from non-winner reviews
 ```
 
 ### Improvement flags (required)
@@ -358,6 +497,7 @@ Check and print:
 - Agent failure rate > 20% → flag by agent
 - A round produced 0 new findings → suggest reducing rounds
 - Dispatch health < 50% → warn about low coverage
+- Tournament: score gap < 5 points → "results too close to call — review manually"
 
 If none: `No improvement opportunities detected.`
 

@@ -41,8 +41,8 @@ Review artifacts before they ship. Each review skill dispatches 3 LLMs in parall
 | Skill | What it reviews | When to use |
 |-------|----------------|-------------|
 | [`/stark-review`](docs/skills/stark-review/usage.md) | PR code changes | Before merging any PR. The core skill — 3 LLMs × 6 domains, autonomous fix loop. |
-| [`/stark-review-plan`](docs/skills/stark-review-plan/usage.md) | Design docs and specs | Before implementing. Stress-tests plans across 7 domains (architecture, security, operations, etc.). |
-| [`/stark-review-deployment-plan`](docs/skills/stark-review-deployment-plan/usage.md) | Infrastructure and migration plans | Before deploying. Adversarial SRE review across 10 failure vectors. |
+| [`/stark-review-design`](docs/skills/stark-review-design/usage.md) | Architecture and design docs | Before committing to a design. Reviews across 10 domains (completeness, security, scalability, etc.). |
+| [`/stark-review-plan`](docs/skills/stark-review-plan/usage.md) | Execution plans and deployment plans | Before executing. Adversarial SRE review across 10 failure vectors — assumes the plan will break. |
 | [`/stark-review-improvement`](docs/skills/stark-review-improvement/usage.md) | Review prompt effectiveness | After reviews produce too many false positives. Tunes agent prompts based on assessment data. |
 
 **Best practice:** Run `/stark-review-plan` on specs *before* implementation starts. It's cheaper to fix a plan than to fix code. Use `/stark-review` on every PR — the autonomous fix loop handles most findings without human intervention.
