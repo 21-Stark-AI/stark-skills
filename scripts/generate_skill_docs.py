@@ -446,7 +446,7 @@ def generate_internals_markdown(skill: SkillData, mermaid_diagram: str, doc_cont
 
 DOMAIN_MAP: dict[str, list[str]] = {
     "Code Review": [
-        "stark-review", "stark-review-plan", "stark-review-deployment-plan",
+        "stark-review", "stark-review-design", "stark-review-plan",
         "stark-review-improvement",
     ],
     "PR & Shipping": ["stark-pr-flow", "stark-release"],
@@ -467,8 +467,8 @@ _DECISION_TREES: dict[str, str] = {
     "Code Review": """\
 graph TD
     A{What are you reviewing?} -->|PR code| B[stark-review]
-    A -->|Design doc / plan| C[stark-review-plan]
-    A -->|Infra / deployment plan| D[stark-review-deployment-plan]
+    A -->|Design / architecture doc| C[stark-review-design]
+    A -->|Execution / deployment plan| D[stark-review-plan]
     A -->|Improve review prompts| E[stark-review-improvement]""",
 
     "PR & Shipping": """\

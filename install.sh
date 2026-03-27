@@ -136,6 +136,16 @@ install() {
         fi
     done
 
+    # Clean up orphaned skill symlinks (deleted skills)
+    local SKILLS_DIR="$HOME/.claude/skills"
+    for link in "$SKILLS_DIR"/stark-*/SKILL.md; do
+        if [ -L "$link" ] && [ ! -e "$link" ]; then
+            echo "  Removing orphaned symlink: $link"
+            rm "$link"
+            rmdir "$(dirname "$link")" 2>/dev/null || true
+        fi
+    done
+
     # Clean up old skill names (renamed to stark-* prefix)
     for old_name in init-docs update-deps rename-project onboard-project review-deployment-plan release claude-md-improver session-start; do
         local old_dir="$HOME/.claude/skills/$old_name"

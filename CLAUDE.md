@@ -36,8 +36,8 @@ Multi-agent PR code review system. 3 AI CLI tools (Claude, Codex, Gemini) × N d
 All skills live in `skill/stark-*/SKILL.md` and are symlinked to `~/.claude/skills/` via install.sh.
 
 - `/stark-review [PR_NUMBER]` — multi-agent PR review (3 LLMs × 6 domains)
-- `/stark-review-design <path>` — multi-agent design/spec review (3 LLMs × 10 domains)
-- `/stark-review-plan <path>` — multi-agent execution plan review (3 LLMs × 10 domains, adversarial)
+- `/stark-review-design <path>` — multi-agent design/spec review (N agents × 10 domains, default N=2)
+- `/stark-review-plan <path>` — multi-agent execution plan review (N agents × 10 adversarial domains, default N=2)
 - `/stark-review-improvement` — improve prompts based on review assessment
 - `/stark-session [start|end]` — session management: briefing on start, cleanup on end
 - `/stark-pr-flow` — end-to-end PR workflow: push, create, review, merge

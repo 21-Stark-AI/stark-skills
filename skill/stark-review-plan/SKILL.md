@@ -1,7 +1,7 @@
 ---
 name: stark-review-plan
 description: >
-  Multi-agent execution plan review using 3 LLMs × 10 adversarial domains with autonomous fix loop.
+  Multi-agent execution plan review using multi-LLM × 10 adversarial domains with autonomous fix loop.
   Absorbs stark-review-deployment-plan. Use when the user says "review this plan",
   "review deployment plan", "review infra plan", "review migration plan", "audit deployment",
   or invokes /stark-review-plan. Also triggers on `/stark-review-plan <path>`.
@@ -10,13 +10,13 @@ argument-hint: "<path> [--rounds N] [--dry-run] [--force] [--tournament]"
 
 # stark-review-plan
 
-Multi-agent execution plan review: 3 LLMs (Claude, Codex, Gemini) × 10 adversarial domains
-dispatched in parallel. Reviews quality of how a plan will be executed — can this plan actually
-be carried out safely?
+Multi-agent execution plan review: N agents × 10 adversarial domains dispatched in parallel
+(default: 2 agents — Claude + Codex; configurable up to 3 with Gemini). Reviews quality of how
+a plan will be executed — can this plan actually be carried out safely?
 
 **This skill assumes the plan will fail and hunts for where it will break.**
 
-Normal mode: 3 agents × 10 domains = 30 sub-agents in parallel.
+Normal mode: N agents × 10 domains = N×10 sub-agents in parallel (default N=2).
 Tournament mode (`--tournament`): 3 agents each independently review the full document across all
 domains, then a judge evaluates and synthesizes the winner.
 
@@ -110,7 +110,7 @@ For round = 1 to max_rounds:
 $PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir plan-review --file "$path" --round $round --timeout 300
 ```
 
-Capture stdout as JSON. This dispatches all 30 sub-agents (3 agents × 10 domains) in parallel and returns structured results.
+Capture stdout as JSON. This dispatches all N×10 sub-agents (N agents × 10 domains, default N=2) in parallel and returns structured results.
 
 Parse the JSON output. Extract findings from `results[].findings[]`.
 
@@ -400,8 +400,8 @@ Set each to `in_progress` BEFORE starting, `completed` when done.
 For Phase 2, create child tasks dynamically per round:
 
 ```
-TaskCreate: "Round 1: dispatch 30 sub-agents"
-            activeForm: "Dispatching 30 sub-agents (round 1)"
+TaskCreate: "Round 1: dispatch N×10 sub-agents"
+            activeForm: "Dispatching N×10 sub-agents (round 1)"
 TaskCreate: "Round 1: classify + fix"
             activeForm: "Classifying and fixing findings"
 ```
@@ -425,14 +425,14 @@ Record `T0` at skill start. Print for every phase transition and key event:
 [HH:MM:SS] === stark-review-plan started ===
 [HH:MM:SS] Phase 1: Setup — done (3s)
 [HH:MM:SS] Phase 2: Review-Fix Loop — started
-[HH:MM:SS]   ▸ Round 1: dispatching 30 sub-agents
-[HH:MM:SS]   ▸ Round 1: 27/30 succeeded — 145s
+[HH:MM:SS]   ▸ Round 1: dispatching N×10 sub-agents
+[HH:MM:SS]   ▸ Round 1: N×10 succeeded — 145s
 [HH:MM:SS]   ▸ Round 1: 12 fix, 5 noise, 3 FP — fixing plan
 [HH:MM:SS]   ▸ Round 1: done
-[HH:MM:SS]   ▸ Round 2: dispatching 30 sub-agents
+[HH:MM:SS]   ▸ Round 2: dispatching N×10 sub-agents
 [HH:MM:SS]   ...
 [HH:MM:SS] Phase 2: done (9m 12s)
-[HH:MM:SS] Phase 3: Final Review — 30 sub-agents — done (2m 30s)
+[HH:MM:SS] Phase 3: Final Review — N×10 sub-agents — done (2m 30s)
 [HH:MM:SS] Phase 4: Summary — done (5s)
 [HH:MM:SS] Phase 5: Output — done (3s)
 [HH:MM:SS] === stark-review-plan completed ===
@@ -454,7 +454,7 @@ In tournament mode:
 ### 5-minute checkpoints (required for runs > 5 min)
 
 ```
-[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 18/30 sub-agents complete
+[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 18/N×10 sub-agents complete
 ```
 
 ### Metrics block at end (required)
