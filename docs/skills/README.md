@@ -6,30 +6,6 @@ A multi-agent AI engineering system. 23 skills that take you from a napkin idea 
 
 The core of stark-skills is a 7-step pipeline where each skill's output feeds the next. You can enter at any point — if you already have a design, skip straight to step 3.
 
-```mermaid
-graph LR
-    subgraph "Design"
-        A["/stark-design"] -->|design doc| B["/stark-review-design"]
-    end
-    subgraph "Planning"
-        B -->|reviewed design| C["/stark-design-to-plan"]
-        C -->|impl plan| D["/stark-review-plan"]
-        D -->|reviewed plan| E["/stark-plan-to-tasks"]
-    end
-    subgraph "Execution"
-        E -->|GitHub issues| F["/stark-phase-execute"]
-        F -->|PRs| G["/stark-review"]
-    end
-
-    style A fill:#4a9eff,color:#fff
-    style B fill:#f5a623,color:#fff
-    style C fill:#4a9eff,color:#fff
-    style D fill:#f5a623,color:#fff
-    style E fill:#7b68ee,color:#fff
-    style F fill:#50c878,color:#fff
-    style G fill:#f5a623,color:#fff
-```
-
 ![Pipeline](pipeline.png)
 
 Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to independently produce a document, then have each agent cross-review the other two — 3 competing outputs, 6 adversarial reviews, one synthesized winner. **Review** skills (orange) dispatch N agents across M specialized domains in parallel, classify the findings, fix the document, and repeat until clean.
@@ -48,7 +24,7 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 **Step 7 — `/stark-review`** is the PR code review that runs during execution (or standalone). 3 agents × 6 domains = 18 parallel sub-agent reviews, posted to GitHub under the respective bot identities.
 
-## The Full Ecosystem
+## The Ecosystem
 
 ![Ecosystem](ecosystem.png)
 
