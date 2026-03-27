@@ -20,6 +20,9 @@ from tournament import (
     Tournament,
     evaluate_semantic,
     evaluate_test,
+    evaluate_review,
+    REVIEW_EVAL_CRITERIA,
+    REVIEW_SCALE_MAP,
 )
 
 import pytest
@@ -454,3 +457,22 @@ def test_cli_dry_run():
     assert config["competitors"][0]["id"] == "claude"
     assert config["competitors"][1]["id"] == "codex"
     assert config["evaluation"]["strategy"] == "semantic"
+
+
+# ── Review evaluation tests ────────────────────────────────────────────
+
+
+def test_evaluate_review_importable():
+    """evaluate_review function exists and is importable."""
+    from tournament import evaluate_review, REVIEW_EVAL_CRITERIA, REVIEW_SCALE_MAP
+    assert callable(evaluate_review)
+    assert "coverage" in REVIEW_EVAL_CRITERIA
+    assert "good" in REVIEW_SCALE_MAP
+
+
+def test_review_scale_map_values():
+    """REVIEW_SCALE_MAP converts text scales to numeric correctly."""
+    from tournament import REVIEW_SCALE_MAP
+    assert REVIEW_SCALE_MAP["good"] > REVIEW_SCALE_MAP["acceptable"] > REVIEW_SCALE_MAP["poor"]
+    # For false_positive_rate, low is good (high score)
+    assert REVIEW_SCALE_MAP["low"] > REVIEW_SCALE_MAP["high"]

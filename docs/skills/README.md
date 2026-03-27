@@ -9,14 +9,14 @@ Which skill should I use? Follow the decision trees below.
 ```mermaid
 graph TD
     A{What are you reviewing?} -->|PR code| B[stark-review]
-    A -->|Design doc / plan| C[stark-review-plan]
-    A -->|Infra / deployment plan| D[stark-review-deployment-plan]
+    A -->|Design / architecture doc| C[stark-review-design]
+    A -->|Execution / deployment plan| D[stark-review-plan]
     A -->|Improve review prompts| E[stark-review-improvement]
 ```
 
 - **`/stark-review`** — *(not installed)*
+- **`/stark-review-design`** — *(not installed)*
 - **`/stark-review-plan`** — *(not installed)*
-- **`/stark-review-deployment-plan`** — *(not installed)*
 - **`/stark-review-improvement`** — *(not installed)*
 
 ## PR & Shipping
