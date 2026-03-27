@@ -33,7 +33,9 @@ from typing import Any
 # Re-export for backward compat
 __all__ = [
     "FACTOR_WEIGHTS", "AGENTS", "CODEX_REASONING_CONFIG",
+    "REVIEW_EVAL_CRITERIA", "REVIEW_SCALE_MAP",
     "dispatch_competitor", "evaluate_visual", "evaluate_semantic",
+    "evaluate_review",
     "build_eval_prompt",
     "parse_scores", "compute_weighted_average", "select_winner",
     "write_audit_entry", "screenshot_html", "unescape_json_string",
@@ -782,6 +784,209 @@ def evaluate_test(
             results[comp_id] = {"_pass_rate": 0.0, "_error": f"timeout ({timeout}s)"}
 
     return results
+
+
+# ── Review evaluation ─────────────────────────────────────────────────
+
+
+REVIEW_EVAL_CRITERIA: dict[str, dict] = {
+    "coverage": {"weight": 2.0, "scale": "good/acceptable/poor"},
+    "severity_accuracy": {"weight": 2.0, "scale": "good/acceptable/poor"},
+    "false_positive_rate": {"weight": 1.5, "scale": "low/medium/high"},
+    "actionability": {"weight": 1.5, "scale": "good/acceptable/poor"},
+    "specificity": {"weight": 1.0, "scale": "good/acceptable/poor"},
+}
+
+REVIEW_SCALE_MAP: dict[str, int] = {
+    "good": 9, "acceptable": 6, "poor": 3,
+    "low": 9, "medium": 6, "high": 3,  # For false_positive_rate (low is good)
+}
+
+
+def _build_review_judge_prompt(
+    document: str,
+    reviews: dict[str, str],
+    competitor_order: list[str],
+) -> str:
+    """Build a judge prompt for evaluating competing document reviews.
+
+    Args:
+        document: The original document being reviewed (for accuracy assessment).
+        reviews: {competitor_id: review_text} mapping.
+        competitor_order: Order to present competitors (for position bias control).
+
+    Returns:
+        Judge prompt string.
+    """
+    criteria_lines = []
+    for criterion, info in REVIEW_EVAL_CRITERIA.items():
+        criteria_lines.append(
+            f"- **{criterion}** (scale: {info['scale']}, weight: {info['weight']})"
+        )
+    criteria_text = "\n".join(criteria_lines)
+
+    competitor_blocks = []
+    for comp_id in competitor_order:
+        review_text = reviews[comp_id]
+        competitor_blocks.append(f"## Reviewer: {comp_id}\n\n{review_text}")
+    competitors_text = "\n\n---\n\n".join(competitor_blocks)
+
+    competitor_ids = ", ".join(f'"{c}"' for c in competitor_order)
+    criteria_scores = ", ".join(
+        f'"{c}": "<scale_value>"' for c in REVIEW_EVAL_CRITERIA
+    )
+
+    return (
+        f"You are a senior engineer judging competing reviews of a document.\n\n"
+        f"## Original document\n\n{document}\n\n"
+        f"## Competing reviews\n\n{competitors_text}\n\n"
+        f"## Evaluation criteria\n\n{criteria_text}\n\n"
+        f"## Instructions\n\n"
+        f"1. Reason carefully before scoring — consider the original document to assess accuracy.\n"
+        f"2. Score each reviewer on all criteria using the specified scale values.\n"
+        f"3. Identify the single best reviewer (winner).\n"
+        f"4. Synthesize the best findings from ALL reviews into a unified list.\n\n"
+        f"Return ONLY valid JSON in this exact format:\n\n"
+        f"```json\n"
+        f'{{"reasoning": "<your analysis>",\n'
+        f'  "scores": [\n'
+        f'    {{"reviewer": "<id>", {criteria_scores}}},\n'
+        f"    ...\n"
+        f"  ],\n"
+        f'  "winner": <one of [{competitor_ids}]>,\n'
+        f'  "synthesized_findings": ["<finding>", ...]\n'
+        f"}}\n"
+        f"```\n\n"
+        f"Return JSON only, no text outside the code block."
+    )
+
+
+def _parse_review_judge_output(raw: str) -> dict[str, Any]:
+    """Parse JSON from judge output — handles code fences, finds outermost {}.
+
+    Args:
+        raw: Raw judge output string.
+
+    Returns:
+        Parsed dict or empty dict on failure.
+    """
+    # Try direct parse
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Try extracting from code fence
+    fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)```", raw)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    # Find outermost {} — scan from first { to last }
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(raw[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def evaluate_review(
+    document: str,
+    reviews: dict[str, str],
+    judge: str = "claude-sonnet-4-6",
+    timeout: int = 120,
+) -> dict[str, Any]:
+    """Evaluate competing document reviews using a judge LLM with position bias control.
+
+    Runs the judge TWICE with swapped competitor order. If the judge picks a different
+    winner in each pass, position_bias_detected is set to True and the winner is "tie".
+
+    Args:
+        document: The original document that was reviewed (for accuracy assessment).
+        reviews: {competitor_id: review_text} mapping of competing reviews.
+        judge: Model name to use as judge (default: claude-sonnet-4-6).
+        timeout: Max seconds per judge call (default: 120).
+
+    Returns:
+        Dict with:
+            - scores: {competitor_id: {criterion: text_score}} raw text scores
+            - numeric_scores: {competitor_id: {criterion: int, "_weighted_avg": float}}
+            - winner: competitor_id or "tie"
+            - synthesized_findings: list of unified findings
+            - position_bias_detected: bool
+            - pass1_winner: winner from first pass
+            - pass2_winner: winner from second pass
+    """
+    import anthropic
+
+    client = anthropic.Anthropic()
+    competitor_ids = list(reviews.keys())
+
+    def _run_judge(order: list[str]) -> dict[str, Any]:
+        prompt = _build_review_judge_prompt(document, reviews, order)
+        response = client.messages.create(
+            model=judge,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text if response.content else ""
+        return _parse_review_judge_output(raw)
+
+    # Pass 1: natural order
+    order1 = list(competitor_ids)
+    result1 = _run_judge(order1)
+
+    # Pass 2: reversed order
+    order2 = list(reversed(competitor_ids))
+    result2 = _run_judge(order2)
+
+    # Extract winners from each pass
+    pass1_winner = result1.get("winner", "")
+    pass2_winner = result2.get("winner", "")
+    position_bias = pass1_winner != pass2_winner
+
+    # Merge text scores from both passes (average numeric values; pass1 primary for text)
+    scores: dict[str, dict[str, str]] = {}
+    for entry in result1.get("scores", []):
+        reviewer = entry.get("reviewer", "")
+        if reviewer in reviews:
+            scores[reviewer] = {k: v for k, v in entry.items() if k != "reviewer"}
+
+    # Compute numeric scores and weighted averages
+    criteria_weights = {c: info["weight"] for c, info in REVIEW_EVAL_CRITERIA.items()}
+    numeric_scores: dict[str, dict[str, Any]] = {}
+    for comp_id, text_scores in scores.items():
+        num: dict[str, Any] = {}
+        for criterion in REVIEW_EVAL_CRITERIA:
+            raw_val = text_scores.get(criterion, "")
+            num[criterion] = REVIEW_SCALE_MAP.get(str(raw_val).lower(), 0)
+        num["_weighted_avg"] = compute_weighted_average(
+            {k: float(v) for k, v in num.items() if k != "_weighted_avg"},
+            criteria_weights,
+        )
+        numeric_scores[comp_id] = num
+
+    # Determine winner
+    if position_bias:
+        winner = "tie"
+    else:
+        winner = pass1_winner
+
+    # Synthesized findings — prefer pass1, fall back to pass2
+    synthesized = result1.get("synthesized_findings") or result2.get("synthesized_findings") or []
+
+    return {
+        "scores": scores,
+        "numeric_scores": numeric_scores,
+        "winner": winner,
+        "synthesized_findings": synthesized,
+        "position_bias_detected": position_bias,
+        "pass1_winner": pass1_winner,
+        "pass2_winner": pass2_winner,
+    }
 
 
 # ── Tournament orchestrator ───────────────────────────────────────────
