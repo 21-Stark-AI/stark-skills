@@ -30,6 +30,8 @@ graph LR
     style G fill:#f5a623,color:#fff
 ```
 
+![Pipeline](pipeline.png)
+
 Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to independently produce a document, then have each agent cross-review the other two — 3 competing outputs, 6 adversarial reviews, one synthesized winner. **Review** skills (orange) dispatch N agents across M specialized domains in parallel, classify the findings, fix the document, and repeat until clean.
 
 **Step 1 — `/stark-design`** takes a prompt or requirements file and produces a design document. Three agents each write their own design, then cross-review each other on completeness, clarity, feasibility, extensibility, and security. The orchestrator synthesizes the winner with the best elements from the runners-up.
@@ -46,7 +48,9 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 **Step 7 — `/stark-review`** is the PR code review that runs during execution (or standalone). 3 agents × 6 domains = 18 parallel sub-agent reviews, posted to GitHub under the respective bot identities.
 
-## Beyond the Pipeline
+## The Full Ecosystem
+
+![Ecosystem](ecosystem.png)
 
 The pipeline handles the happy path from idea to code. The remaining skills handle everything around it.
 
