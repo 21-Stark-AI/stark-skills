@@ -20,7 +20,7 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 **Step 5 — `/stark-plan-to-tasks`** decomposes the reviewed plan into phased GitHub issues with story points, risk labels, and confidence scores. Three LLM passes ensure consistency.
 
-**Step 6 — `/stark-phase-execute`** picks up those issues and autonomously implements them — for each issue: implement, create PR, run multi-agent review, fix findings, merge. Zero user intervention.
+**Step 6 — `/stark-phase-execute`** picks up those issues and autonomously implements them — for each issue: implement, create PR, run multi-agent review, fix findings, merge. Zero user intervention. For maximum quality, `/stark-autopilot` is the alternative execution mode: all 3 agents compete on every implementation step in parallel git worktrees, with a tournament to pick the winner at each step.
 
 **Step 7 — `/stark-review`** is the PR code review that runs during execution (or standalone). 3 agents × 6 domains = 18 parallel sub-agent reviews, posted to GitHub under the respective bot identities.
 

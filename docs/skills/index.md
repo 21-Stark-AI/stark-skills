@@ -10,6 +10,7 @@
 | `/stark-review-plan` | Multi-agent plan review — N agents × 10 adversarial domains with fix loop | [usage](stark-review-plan/usage.md) · [internals](stark-review-plan/internals.md) |
 | `/stark-plan-to-tasks` | Decompose plan into phased GitHub issues with story points | [usage](stark-plan-to-tasks/usage.md) · [internals](stark-plan-to-tasks/internals.md) |
 | `/stark-phase-execute` | Autonomous phase execution — implement, PR, review, merge | [usage](stark-phase-execute/usage.md) · [internals](stark-phase-execute/internals.md) |
+| `/stark-autopilot` | Tournament implementation — 3 agents compete per step in worktrees | [usage](stark-autopilot/usage.md) · [internals](stark-autopilot/internals.md) |
 | `/stark-review` | Multi-agent PR code review — 3 agents × 6 domains | [usage](stark-review/usage.md) · [internals](stark-review/internals.md) |
 
 ## Workflow & Ops
