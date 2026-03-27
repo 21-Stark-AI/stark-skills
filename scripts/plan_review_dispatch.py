@@ -195,13 +195,18 @@ def _discover_plan_domains(
 def _load_plan_review_config(
     repo_dir: str | None = None,
     global_config_dir: str | None = None,
+    config_section: str = "plan_review",
 ) -> dict[str, Any]:
-    """Load plan_review section from config.json (repo → global).
+    """Load a config section from config.json (repo → global).
 
     Checks:
-        1. {repo_dir}/.code-review/config.json  → plan_review section
-        2. {global_config_dir}/config.json       → plan_review section
+        1. {repo_dir}/.code-review/config.json  → {config_section}
+        2. {global_config_dir}/config.json       → {config_section}
     Merges onto DEFAULT_PLAN_REVIEW_CONFIG.
+
+    Args:
+        config_section: JSON key to read (default: "plan_review").
+            E.g., "design_review" when --prompts-dir is "design-review".
     """
     config = dict(DEFAULT_PLAN_REVIEW_CONFIG)
 
@@ -213,8 +218,8 @@ def _load_plan_review_config(
     if global_cfg_path.exists():
         try:
             data = json.loads(global_cfg_path.read_text())
-            plan_section = data.get("plan_review", {})
-            config.update(plan_section)
+            section = data.get(config_section, {})
+            config.update(section)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -224,8 +229,8 @@ def _load_plan_review_config(
         if repo_cfg_path.exists():
             try:
                 data = json.loads(repo_cfg_path.read_text())
-                plan_section = data.get("plan_review", {})
-                config.update(plan_section)
+                section = data.get(config_section, {})
+                config.update(section)
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -654,10 +659,23 @@ def main():
     parser.add_argument("--repo-dir", help="Repository root for config/prompt overrides")
     parser.add_argument("--agents", help="Comma-separated list of agents")
     parser.add_argument("--disabled-domains", help="Comma-separated domains to skip")
+    parser.add_argument(
+        "--prompts-dir",
+        help="Prompt directory name under ~/.claude/code-review/prompts/ (default: plan-review)",
+        default="plan-review",
+    )
+    parser.add_argument(
+        "--config-section",
+        help="Config JSON key to read (default: derived from --prompts-dir, e.g. 'design-review' → 'design_review')",
+        default=None,
+    )
     args = parser.parse_args()
 
+    # Derive config section from --prompts-dir if not explicitly set
+    config_section = args.config_section or args.prompts_dir.replace("-", "_")
+
     # Load config, merge with CLI overrides
-    config = _load_plan_review_config(args.repo_dir)
+    config = _load_plan_review_config(args.repo_dir, config_section=config_section)
     agents = args.agents.split(",") if args.agents else config.get("agents")
     disabled = (
         args.disabled_domains.split(",")
@@ -665,6 +683,10 @@ def main():
         else config.get("disabled_domains")
     )
     timeout = args.timeout if args.timeout != DEFAULT_TIMEOUT else config.get("timeout", DEFAULT_TIMEOUT)
+
+    global_prompts_dir = str(
+        Path.home() / ".claude" / "code-review" / "prompts" / args.prompts_dir
+    )
 
     plan_content = Path(args.file).read_text()
     result = dispatch_plan_review(
@@ -674,6 +696,7 @@ def main():
         agents=agents,
         disabled_domains=disabled,
         timeout=timeout,
+        global_prompts_dir=global_prompts_dir,
     )
     print(json.dumps(result, indent=2))
 

@@ -69,11 +69,6 @@
       "usage_quality": "ok",
       "internals_quality": "ok"
     },
-    "stark-review-deployment-plan": {
-      "hash": "68b857b9ebab90bd",
-      "usage_quality": "ok",
-      "internals_quality": "ok"
-    },
     "stark-review-improvement": {
       "hash": "0acf97fb0630ca5f",
       "usage_quality": "ok",
