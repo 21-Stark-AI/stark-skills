@@ -28,7 +28,7 @@ The system deploys as a single MCP server on GCP Cloud Run, backed by Cloud SQL 
 
 | Pattern | Application |
 |---------|-------------|
-| **Hexagonal Architecture (Ports and Adapters)** | Core agent logic is isolated from the environment via a Config Provider that abstracts Cloud SQL vs local Postgres, Secret Manager vs env vars, Firestore vs Postgres tables. |
+| **Hexagonal Architecture (Ports and Adapters)** | Planned for Docker milestone. v1 is GCP-native (hardcoded Cloud SQL, Firestore, Secret Manager). The abstraction layer will be introduced when the Docker Compose deployment target requires it. |
 | **Orchestrator Pattern** | The MCP server manages tool execution and context assembly prior to LLM invocation — deterministic, not agentic multi-turn loops. |
 | **Scatter-Gather** | Parallel dispatch to multiple LLM providers followed by semantic deduplication and consensus scoring (Ensemble mode). |
 | **RAG (Retrieval-Augmented Generation)** | Semantic search over external documentation and runbooks via pgvector, injected into prompts at assembly time. |
@@ -37,12 +37,14 @@ The system deploys as a single MCP server on GCP Cloud Run, backed by Cloud SQL 
 
 | Agent | Review Mode | Capabilities | File Patterns | Tools | Phase |
 |-------|-------------|-------------|---------------|-------|-------|
-| DevOps | ensemble (3x) | review, generate, validate | `*.tf`, `*.tfvars`, `Dockerfile`, `docker-compose.*`, `.github/workflows/*`, `helm/**`, `k8s/**` | terraform validate, tflint, checkov | 1 |
-| Accessibility | ensemble (3x) | review, validate | `*.tsx`, `*.jsx`, `*.vue`, `*.html`, `*.css`, `*.scss` | axe-core | 2 |
-| Dependency | single + tools (1x) | review, validate | `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `requirements*.txt`, `*.lock` | npm audit, pip audit, license scanner | 3 |
+| DevOps | ensemble (3x) | review | `*.tf`, `*.tfvars`, `Dockerfile`, `docker-compose.*`, `.github/workflows/*`, `helm/**`, `k8s/**` | terraform validate, tflint, checkov | 1 |
+| Accessibility | ensemble (3x) | review | `*.tsx`, `*.jsx`, `*.vue`, `*.html`, `*.css`, `*.scss` | axe-core | 2 |
+| Dependency | single + tools (1x) | review | `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `requirements*.txt`, `*.lock` | npm audit, pip audit, license scanner | 3 |
 | Cost | N/A (not an LLM agent) | telemetry | Always-on post-processing hook — intercepts LLM dispatch responses to record token usage, cost, and budget status. Not activated via file patterns. | — | 3 |
 | Docs | verify (2x) | review | `*.md`, `docs/**`, `CLAUDE.md`, `docs/adr/**` | — | 3 |
-| APICompat | verify (2x) | review, validate | `**/api/**`, `**/routes/**`, `**/handlers/**`, `openapi.*`, `swagger.*`, `*.proto` | — | 3 |
+| APICompat | verify (2x) | review | `**/api/**`, `**/routes/**`, `**/handlers/**`, `openapi.*`, `swagger.*`, `*.proto` | — | 3 |
+
+**Note:** Generate and validate capabilities are designed but deferred to v2. v1 ships review-only for all agents.
 
 ### Staged Rollout
 
@@ -92,9 +94,9 @@ LLM calls use a circuit breaker pattern: if a provider fails 3 consecutive reque
 
 **Knowledge Sync** — Scheduled pipeline (Cloud Scheduler -> Cloud Run endpoint) that pulls documents from external sources (Google Drive, ClickUp), chunks them, generates embeddings (via LLM API), and upserts to pgvector. Maintains `embeddings_meta` table with last_refresh timestamps.
 
-**Staleness Checker** — Before each agent run, checks `embeddings_meta.last_refresh` for the agent's namespace. If older than 2x the scheduled sync interval, triggers an inline refresh. Uses a singleflight pattern (mutex per namespace) so concurrent requests don't stampede — the first request triggers the refresh, others wait on the same result. The refresh has a 30s timeout with circuit breaker: if 3 consecutive refreshes fail, skip inline refresh for 1 hour and rely on stale data with a warning. Prevents stale knowledge from degrading review quality while avoiding thundering herd.
+**Staleness Checker** — Before each agent run, checks `embeddings_meta.last_refresh` for the agent's namespace. If older than 2x the scheduled sync interval, triggers an inline refresh. Uses a distributed lock via Firestore (document `sync_locks/{namespace}` with TTL) so concurrent requests across Cloud Run instances don't stampede — the first instance acquires the lock and refreshes, others poll the lock until it releases (max 30s wait), then read the fresh data. The refresh has a 30s timeout with circuit breaker: if 3 consecutive refreshes fail, skip inline refresh for 1 hour and rely on stale data with a warning.
 
-**Config Provider** — Abstracts Cloud SQL vs local Postgres, Secret Manager vs env vars, and Firestore vs Postgres-backed operational storage. Agent code calls `config.get_secret()`, `config.query_knowledge()`, `config.write_finding()` without knowing the backend.
+**Repository Workspace** — For tool execution, the MCP server needs access to the repo source code. On review requests, it performs a shallow clone (`git clone --depth=1 --branch <head_ref>`) into a temporary directory, runs tools against it, and cleans up after the review completes. The workspace is per-request and isolated — no state leaks between reviews.
 
 ### Data Flow
 
@@ -356,13 +358,13 @@ agent_configs/
 ```
 Google Drive folder -> fetch docs (Drive API) -> chunk by heading/paragraph
 -> generate embeddings (text-embedding-3-small via OpenAI API)
--> upsert to knowledge_{agent} table (ON CONFLICT UPDATE)
+-> upsert to knowledge_chunks (namespace=agent) table (ON CONFLICT UPDATE)
 -> update embeddings_meta.last_refresh
 ```
 
 **Query (Context Assembly):**
 ```
-PR diff text -> generate embedding -> query knowledge_{agent}
+PR diff text -> generate embedding -> query knowledge_chunks (namespace=agent)
 WHERE cosine_similarity > 0.7, LIMIT 10, ORDER BY similarity DESC
 -> concatenate chunks within 4K token budget
 -> inject into prompt
@@ -379,23 +381,23 @@ LLM output -> parse findings JSON -> ensemble scoring -> confidence assignment
 
 | Collection | Retention | Rationale |
 |------------|-----------|-----------|
-| `knowledge_{agent}` | Refreshed every 4-6h, stale docs tombstoned after 7 days | Keeps corpus current, prevents unbounded growth |
+| `knowledge_chunks (namespace=agent)` | Refreshed every 4-6h, stale docs tombstoned after 7 days | Keeps corpus current, prevents unbounded growth |
 | `findings` | Terminal state + 180 days | Needed for metrics and improvement analysis |
 | `cost_tracking` | 400 days | Enables annual budgeting and trend analysis |
 | `clickup_snapshots` | Overwritten on each sync | Only latest state matters |
 | `dep_versions` | Overwritten on each sync + 90 days history | Version drift detection |
 | `agent_configs` | Permanent (in Firestore) | Runtime toggles, error counts |
 
-### Remediation Loop
+### Remediation Loop (v2 — deferred, designed for reference)
 
-The remediation loop is the closed feedback cycle from finding detection to automated fix:
+The remediation loop is deferred to v2 and gated behind `remediation_enabled` (default `false`). In v1, findings are written to Firestore for tracking and metrics but not automatically acted upon. The design below documents the intended v2 behavior:
 
-1. **Queue write:** After ensemble scoring, findings with `confidence: HIGH` and `severity >= medium` are written to Firestore `findings` collection with `status: pending`.
-2. **CCR consumption:** Claude Code Remote polls or receives Firestore triggers for `status: pending` findings. It clones the repo at the PR's HEAD, applies the fix, and opens a new PR.
-3. **Fix reference:** The finding document is updated with `fix_pr: <PR number>` and `status: in_progress`.
-4. **Re-review:** When the fix PR is opened, `/stark-review` runs on it. The originating agent re-reviews and either confirms the fix (`status: verified`) or re-queues with context (`status: pending`, `retry_count += 1`).
-5. **Retry limit:** Max 2 retries. After 3 failed attempts, finding moves to `status: abandoned` and requires human review.
-6. **Activation gate:** The remediation loop is behind a config flag (`remediation_enabled`), default `false`. Enabled per-repo after the agent's finding quality is validated.
+1. **Queue write (v1):** After ensemble scoring, findings with `confidence: HIGH` and `severity >= medium` are written to Firestore `findings` collection with `status: pending`. This happens in v1 for metrics/tracking.
+2. **CCR consumption (v2):** Claude Code Remote polls for `status: pending` findings where `remediation_enabled = true` for the repo. It clones the repo at the PR's HEAD, applies the fix, and opens a new PR.
+3. **Fix reference (v2):** The finding document is updated with `fix_pr: <PR number>` and `status: in_progress`.
+4. **Re-review (v2):** When the fix PR is opened, `/stark-review` runs on it. The originating agent re-reviews and either confirms the fix (`status: verified`) or re-queues with context (`status: pending`, `retry_count += 1`, `retry_backoff_until` set to exponential delay).
+5. **Retry limit (v2):** Max 2 retries. After 3 failed attempts, finding moves to `status: abandoned` and requires human review.
+6. **Activation gate (v2):** Enabled per-repo only after the agent's finding precision exceeds 80% over 50+ findings (measured from human feedback on v1 findings).
 
 ---
 
@@ -423,78 +425,43 @@ The MCP server exposes tools following the MCP protocol. Each tool maps to an ag
 }
 ```
 
-Response format (all review tools return the same shape):
+Response format (all review tools return the standard envelope):
 
 ```json
 {
-  "agent": "devops",
-  "review_mode": "ensemble",
-  "degraded": false,
-  "findings": [
-    {
-      "severity": "high",
-      "confidence": "HIGH",
-      "file": "terraform/main.tf",
-      "line": 15,
-      "title": "Security group allows unrestricted ingress",
-      "description": "The ingress rule on line 15 allows traffic from 0.0.0.0/0...",
-      "suggestion": "Restrict to VPC CIDR or specific IP ranges...",
-      "agreed_by": ["claude", "codex", "gemini"],
-      "cross_validated_by": []
-    }
-  ],
-  "tool_results": {
-    "terraform-validate": {"status": "passed", "output": {"valid": true, "diagnostics": []}},
-    "checkov": {"status": "passed", "output": {"passed": 12, "failed": 1, "skipped": 0}}
+  "ok": true,
+  "data": {
+    "agent": "devops",
+    "review_mode": "ensemble",
+    "degraded": false,
+    "findings": [
+      {
+        "severity": "high",
+        "confidence": "HIGH",
+        "file": "terraform/main.tf",
+        "line": 15,
+        "title": "Security group allows unrestricted ingress",
+        "description": "The ingress rule on line 15 allows traffic from 0.0.0.0/0...",
+        "suggestion": "Restrict to VPC CIDR or specific IP ranges...",
+        "agreed_by": ["claude", "codex", "gemini"],
+        "cross_validated_by": []
+      }
+    ],
+    "tool_results": {
+      "terraform-validate": {"status": "passed", "output": {"valid": true, "diagnostics": []}},
+      "checkov": {"status": "passed", "output": {"passed": 12, "failed": 1, "skipped": 0}}
+    },
+    "cost": {"tokens_in": 12500, "tokens_out": 3200, "cost_usd": 0.35}
   },
   "warnings": [],
-  "cost": {"tokens_in": 12500, "tokens_out": 3200, "cost_usd": 0.35},
-  "duration_s": 45.2
+  "error": null,
+  "error_code": null,
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "duration_ms": 45200
 }
 ```
 
-**Agent Generate Tools:**
-
-```json
-{
-  "name": "devops_generate",
-  "description": "Generate DevOps artifacts (Dockerfiles, CI configs, Helm charts)",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "repo": {"type": "string"},
-      "prompt": {"type": "string", "description": "What to generate"},
-      "context_files": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Paths to include as context"
-      }
-    },
-    "required": ["repo", "prompt"]
-  }
-}
-```
-
-**Agent Validate Tools:**
-
-```json
-{
-  "name": "devops_validate",
-  "description": "Validate DevOps configs against best practices and agent knowledge",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "repo": {"type": "string"},
-      "files": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Paths to validate"
-      }
-    },
-    "required": ["repo", "files"]
-  }
-}
-```
+**Generate and Validate Tools:** Deferred to v2. Tool schemas will be defined when review quality is proven and the capability is enabled.
 
 **Management Tools:**
 
@@ -504,6 +471,26 @@ Response format (all review tools return the same shape):
 | `agents_activate` | Match agents against file list, return activated agents | `{changed_files: string[], repo: string}` |
 | `agents_status` | Detailed status for one agent (health, last run, error count) | `{agent: string}` |
 | `agents_enable` | Enable or disable an agent at runtime | `{agent: string, enabled: bool}` |
+
+### MCP Transport
+
+The MCP server uses **Streamable HTTP (SSE)** transport on Cloud Run. Claude Code connects via the remote MCP configuration in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "stark-agents": {
+      "type": "sse",
+      "url": "https://stark-agents-<hash>.run.app/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GCLOUD_ID_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The client obtains a Google Identity Token via `gcloud auth print-identity-token` and passes it in the Authorization header. Cloud Run validates the token against IAM policies.
 
 ### CLI Invocation
 
@@ -602,7 +589,7 @@ Agent reviews are **read-only** with respect to the source code — they produce
 | Surface | Mitigation |
 |---------|------------|
 | MCP endpoint (public) | IAM auth required, no anonymous access |
-| Tool execution (in-container) | Tools run as a non-root user (`nobody`) in a read-only filesystem (except `/tmp`). No network access (iptables drop). Timeout enforced via `subprocess.run(timeout=)`. Command allow-list from YAML definitions checked into git — no arbitrary shell interpolation. Only `${repo_root}` variable is expanded; all other `${}` patterns are rejected at config validation. Tool stderr is sanitized (regex strip of patterns matching API keys, tokens, connection strings) before inclusion in responses. |
+| Tool execution (in-container) | Tools run as a non-root user (`nobody`) in a read-only filesystem (except `/tmp`). Network access restricted to allow-listed domains (registry.terraform.io, github.com) via egress policy — required for terraform provider downloads and tool package registries. Timeout enforced via `subprocess.run(timeout=)`. Command allow-list from YAML definitions checked into git — no arbitrary shell interpolation. Only `${repo_root}` variable is expanded; all other `${}` patterns are rejected at config validation. Tool stderr is sanitized (regex strip of patterns matching API keys, tokens, connection strings) before inclusion in responses. |
 | pgvector queries | Parameterized queries only — embedding vectors are numeric arrays, no SQL injection path |
 | Prompt injection via PR content | LLM prompts use structured delimiters; tool results are JSON-encoded; findings are parsed strictly. Prompt sanitization strips known secret formats from diffs and tool output. |
 | Secret rotation | Agents discover rotated secrets via Secret Manager versioning; retry with exponential backoff on auth failure |
