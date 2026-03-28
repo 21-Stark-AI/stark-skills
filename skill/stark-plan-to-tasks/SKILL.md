@@ -254,7 +254,7 @@ GitHub Issue Types are org-level. The GetEvinced org defines: Task, Bug, Feature
 
 **Output schema:** Write to a temp file:
 ```bash
-TMPFILE=$(mktemp /tmp/stark-plan-to-tasks-XXXXXX.json) && chmod 600 "$TMPFILE"
+TMPFILE="/tmp/stark-plan-to-tasks-${RANDOM}${RANDOM}.json" && touch "$TMPFILE" && chmod 600 "$TMPFILE"
 ```
 
 Schema:
