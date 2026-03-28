@@ -44,3 +44,12 @@
 - **Story Points:** 137 total (40 tasks across 8 phases)
 - **Summary:** Local-first, cloud-synced observability for AI CLI interactions. Docker container with FastAPI + MCP server, SQLite write-ahead buffer syncing to Cloud SQL Postgres. Key decisions: write-ahead buffer for all events (not just offline), ADC auth (no SA key files), source-stable dedupe keys, HTTP/SSE MCP transport, monthly partitioned events table, priority-based buffer eviction.
 - **Knowledge extracted to:** Target repo (GetEvinced/stark-insights) — knowledge lives in issue bodies since the project is new.
+
+## 2026-03-28 — stark-agents: Domain-Specialized Code Review Agents
+
+- **Date:** 2026-03-28
+- **Status:** Decomposed → issues created
+- **Tracking:** GetEvinced/stark-agents#1, #2, #3, #4, #5, #6, #7, #8, #9
+- **Story Points:** 149 total (38 tasks across 9 phases)
+- **Summary:** Six domain-specialized review agents (DevOps, Accessibility, Dependency, Docs, APICompat, Cost) on GCP Cloud Run with MCP server interface. Python MCP SDK, Cloud SQL + pgvector for RAG knowledge, Firestore for control plane (agent configs, findings, cost tracking). Ensemble scoring: 3 LLMs × semantic dedup × consensus confidence. Key decisions: Cloud SQL Python connector (not Auth Proxy), text-embedding-3-small (1536 dims), Playwright + axe-core for Accessibility browser runner, remediation disabled by default, cost agent as post-dispatch hook not file-pattern agent. Phased rollout: DevOps first (48h canary), Accessibility second (multi-agent validation), then remaining four agents one at a time.
+- **Knowledge extracted to:** Target repo (GetEvinced/stark-agents) — knowledge lives in issue bodies since the project is new.
