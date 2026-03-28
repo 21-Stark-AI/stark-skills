@@ -2,6 +2,27 @@
 
 Tracks improvements to review prompts based on stark-review assessments.
 
+## 2026-03-28 — Design review noise reduction: scope calibration, dedup hardening, Claude severity
+
+**Source:** Design review of stark-automations (`docs/specs/2026-03-28-stark-automations-design.md`)
+**Prompts dir:** design-review
+**Assessment:** Signal-to-noise at 29% (60 issues / 208 total findings). 52 scope-creep false positives from agents flagging Phase 2 / future concerns. Same finding (e.g., shell sandbox) surfaced in 3-5 domains per agent. Claude generated 67% more findings than Codex (82 vs 49).
+
+### Changes Made
+
+| File | Change | Reason |
+|------|--------|--------|
+| `global/prompts/design-review/{claude,codex,gemini}/03-scope.md` | Added "Scope Calibration" section with 3 checks and explicit "Do NOT flag" list | 52 findings were scope creep — agents flagged deferred Phase 2 items, security controls proportionate to threat model, and operational tooling within stated scope |
+| `global/prompts/design-review/{claude,codex,gemini}/agent.md` | Added "Hard rule" paragraph to Deduplication section | Same root cause (e.g., shell sandbox insufficiency) appeared in 3-5 domains per agent. Existing dedup instruction was too soft. |
+| `global/prompts/design-review/claude/agent.md` | Added "Severity Calibration" section with concrete severity gates | Claude produced 82 findings vs Codex's 49. Many Claude highs were actually mediums or lows. Added: "If you cannot articulate the concrete failure scenario, it is not high." |
+
+### Validation
+- [x] Prompt syntax OK (all markdown well-formed)
+- [x] No orchestrator changes
+- [x] No config changes
+
+---
+
 ## 2026-03-23 — Gemini scope restriction, plan/spec awareness, cross-domain dedup
 
 **Source:** PR #50 in GetEvinced/stark-skills + plan review of stark-signals
