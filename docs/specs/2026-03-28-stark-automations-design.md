@@ -642,7 +642,17 @@ Extended profile (`repo-readwrite`) — adds:
 - Shell commands have no outbound network access. The `iptables`/`nftables` rules in the container drop all egress from the subprocess user (or use a network namespace if available).
 - Cloud Functions Gen2 (Cloud Run) uses gVisor, which restricts metadata server access by default.
 
-**Enforcement:** The sandbox parses the command string, extracts the binary name, and checks against the allowlist BEFORE execution. Pipes and subshells are allowed but every binary in the pipeline must be on the allowlist. Shell builtins (`echo`, `test`, `[`) are allowed.
+**Enforcement:** The sandbox parses the command string into an AST (using Python's `shlex` + custom parser) and validates:
+1. Every binary in pipes/chains must be on the allowlist
+2. Command substitution `$(...)` and backticks are **blocked**
+3. Output redirection (`>`, `>>`, `2>`) is **blocked** — all output captured by the runtime
+4. `find -exec` and `find -execdir` flags are **blocked** (bypass allowlist)
+5. Symlinks in the workspace are resolved; resolved path must still be within workspace
+6. Shell builtins: `echo`, `test`, `[`, `true`, `false`, `read`, `printf` are allowed. `eval`, `exec`, `source`, `.` are **blocked**
+
+**Network isolation:** Cloud Functions Gen2 runs on gVisor, which does NOT inherently restrict metadata server access or network egress. The design accepts that shell commands can reach the network. Mitigation: the binary allowlist excludes `curl`, `wget`, `nc`, and `gh`, limiting the model's ability to exfiltrate data via shell. The `git` binary can only clone from GitHub (configured via `GIT_CONFIG_GLOBAL` with `url."https://github.com/GetEvinced/".insteadOf` restrictions). This is defense-in-depth, not perfect isolation.
+
+**Known limitation (v1):** A sufficiently creative shell command could potentially bypass restrictions through edge cases in the parser. The primary security boundary is the tool-handler allowlist + IAM + Secret Manager access control — not the shell sandbox alone. Shell access is an optimization for prompts that need filesystem operations, not a security-sensitive execution path.
 
 ### 5.6 Prompt Injection Mitigation
 
