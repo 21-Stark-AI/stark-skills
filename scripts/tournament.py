@@ -1159,7 +1159,11 @@ class Tournament:
             tournament_id = compute_tournament_id(ts, competitors)
 
             # Use the same weighted scoring as the tournament core
-            weights = {f: info["weight"] for f, info in self.config.evaluation.factors.items()}
+            if self.config.evaluation.strategy == "visual":
+                weights = dict(FACTOR_WEIGHTS)
+            else:
+                weights = {f: info["weight"] for f, info in self.config.evaluation.factors.items()
+                           if isinstance(info, dict) and "weight" in info and not f.startswith("_")}
 
             # Rank by weighted score descending (matches core winner selection)
             weighted = {}
@@ -1215,8 +1219,6 @@ def compute_tournament_id(timestamp_epoch: float, agents: list[str]) -> str:
     """Deterministic tournament ID matching the backfill scraper formula."""
     raw = f"{timestamp_epoch}:{','.join(sorted(agents))}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
