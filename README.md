@@ -1,6 +1,6 @@
 # stark-skills
 
-AI-powered development workflow system for Claude Code. 20 skills covering the full development lifecycle — from planning through code review, shipping, and maintenance. Built on 3 competing AI agents (Claude, Codex, Gemini) that cross-validate each other's work.
+AI-powered development workflow system for Claude Code. 26 skills covering the full development lifecycle — from planning through code review, shipping, and maintenance. Built on 3 competing AI agents (Claude, Codex, Gemini) that cross-validate each other's work.
 
 ## Quick Start
 
@@ -13,7 +13,7 @@ cd ~/git/Evinced/stark-skills
 # Start a work session (context loading, health checks, briefing)
 /stark-session start
 
-# Review a PR with 3 LLMs × 6 domains
+# Review a PR with 3 LLMs × 9 domains
 /stark-review 42
 
 # End the session (tests, cleanup, push)
@@ -40,10 +40,11 @@ Review artifacts before they ship. Each review skill dispatches 3 LLMs in parall
 
 | Skill | What it reviews | When to use |
 |-------|----------------|-------------|
-| [`/stark-review`](docs/skills/stark-review/usage.md) | PR code changes | Before merging any PR. The core skill — 3 LLMs × 6 domains, autonomous fix loop. |
+| [`/stark-review`](docs/skills/stark-review/usage.md) | PR code changes | Before merging any PR. The core skill — 3 LLMs × 9 domains, autonomous fix loop. |
 | [`/stark-review-design`](docs/skills/stark-review-design/usage.md) | Architecture and design docs | Before committing to a design. Reviews across 10 domains (completeness, security, scalability, etc.). |
 | [`/stark-review-plan`](docs/skills/stark-review-plan/usage.md) | Execution plans and deployment plans | Before executing. Adversarial SRE review across 10 failure vectors — assumes the plan will break. |
 | [`/stark-review-improvement`](docs/skills/stark-review-improvement/usage.md) | Review prompt effectiveness | After reviews produce too many false positives. Tunes agent prompts based on assessment data. |
+| [`/stark-review-design-improvement`](docs/skills/stark-review-design-improvement/usage.md) | Design review prompt effectiveness | After design reviews produce too many false positives. Wraps `/stark-review-improvement` with design-review prompts. |
 
 **Best practice:** Run `/stark-review-plan` on specs *before* implementation starts. It's cheaper to fix a plan than to fix code. Use `/stark-review` on every PR — the autonomous fix loop handles most findings without human intervention.
 
@@ -53,10 +54,13 @@ Turn ideas into tracked, phased GitHub issues, then execute them autonomously.
 
 | Skill | What it does | When to use |
 |-------|-------------|-------------|
+| [`/stark-design`](docs/skills/stark-design/usage.md) | Generate design doc from requirements | Starting a new feature. 3 agents generate designs, 6 cross-reviews, synthesized into final doc. |
+| [`/stark-design-to-plan`](docs/skills/stark-design-to-plan/usage.md) | Generate implementation plan from design doc | After design is reviewed. 3 agents generate plans, 6 cross-reviews, synthesized. |
 | [`/stark-plan-to-tasks`](docs/skills/stark-plan-to-tasks/usage.md) | Decompose a spec into phased GitHub issues | After a spec/plan is reviewed and approved. 3 LLM passes: quality gate → decomposition → validation. |
 | [`/stark-phase-execute`](docs/skills/stark-phase-execute/usage.md) | Autonomously implement all tasks in a phase | When you have GitHub issues ready. Branches, implements, PRs, reviews, merges — zero intervention. |
+| [`/stark-autopilot`](docs/skills/stark-autopilot/usage.md) | Autonomous implementation with tournament | When you want 3 agents to compete per step in worktrees. Best implementation wins at each step. |
 
-**Best practice:** The full pipeline is: write spec → `/stark-review-plan` → fix → `/stark-plan-to-tasks` → `/stark-phase-execute`. Each step feeds the next. Don't skip the review step — unreviewed plans produce ambiguous issues that block autonomous execution.
+**Best practice:** The full pipeline is: `/stark-design` → `/stark-review-design` → `/stark-design-to-plan` → `/stark-review-plan` → `/stark-plan-to-tasks` → `/stark-phase-execute`. Each step feeds the next. Don't skip the review steps — unreviewed plans produce ambiguous issues that block autonomous execution.
 
 ### PR and Shipping
 
@@ -79,6 +83,7 @@ Start and end your work sessions with consistent context loading and cleanup.
 | [`/stark-session start`](docs/skills/stark-session/usage.md) | Load context, git state, health checks, briefing | Beginning of every work session. Catches stale branches, failing tests, open PRs. |
 | [`/stark-session end`](docs/skills/stark-session/usage.md) | Tests, merge PRs, commit docs, push | End of every work session. Ensures nothing is left dangling. |
 | [`/stark-session-insights`](docs/skills/stark-session-insights/usage.md) | Analyze session history for patterns | Periodically. Shows which skills you use most, common corrections, preference patterns. |
+| [`/stark-persona`](docs/skills/stark-persona/usage.md) | Session character voices | Adds personality to sessions. Weighted selection, date-aware combos, catchphrases, feedback loop. |
 
 **Best practice:** Make `/stark-session start` and `/stark-session end` habitual — like opening and closing a shift. The start briefing catches context you'd otherwise miss (someone pushed to your branch, CI is red, a PR needs your review).
 
@@ -165,17 +170,18 @@ cd ~/git/Evinced/new-repo
 The core engine dispatches 3 AI agents across N domain specializations:
 
 ```
-3 agents × 6 domains = 18 parallel sub-agent reviews
+3 agents × 9 domains = 27 parallel sub-agent reviews
 
-├── claude × {architecture, accessibility, correctness, type-safety, security, test-coverage}
-├── codex  × {same 6 domains}
-└── gemini × {same 6 domains}
+├── claude × {architecture, accessibility, correctness, type-safety, security, test-coverage,
+│              spec-conformance, ui-design-conformance, regression-prevention}
+├── codex  × {same 9 domains}
+└── gemini × {same 9 domains}
 ```
 
 Each agent posts a consolidated review via its own GitHub App bot:
-- **stark-claude** — architecture, accessibility, token integrity focus
+- **stark-claude** — architecture, accessibility, spec conformance focus
 - **stark-codex** — correctness, type safety, test coverage focus
-- **stark-gemini** — security, error handling, consistency focus
+- **stark-gemini** — security, regression prevention, UI conformance focus
 
 ## Repo Structure
 
@@ -183,16 +189,23 @@ Each agent posts a consolidated review via its own GitHub App bot:
 stark-skills/
 ├── install.sh                    ← symlinks everything to install locations
 ├── skill/                        ← → ~/.claude/skills/
-│   ├── stark-review/SKILL.md     ← one dir per skill (20 total)
-│   ├── stark-session/SKILL.md
+│   ├── stark-review/SKILL.md     ← one dir per skill (26 total)
+│   ├── stark-persona/SKILL.md
 │   └── ...
 ├── scripts/                      ← → ~/.claude/code-review/scripts/
-│   ├── multi_review.py           ← review orchestrator (ThreadPoolExecutor, 3×N)
+│   ├── multi_review.py           ← review orchestrator (ThreadPoolExecutor, 3×9)
+│   ├── tournament.py             ← multi-LLM competition engine
+│   ├── autopilot_dispatch.py     ← tournament-based autonomous implementation
+│   ├── stark_persona.py          ← session persona engine
+│   ├── flow_extractor.py         ← workflow extraction from SKILL.md
 │   ├── generate_skill_docs.py    ← documentation generator (3-LLM competition)
 │   └── github_app.py             ← multi-app GitHub auth
 ├── global/                       ← → ~/.claude/code-review/
 │   ├── config.json               ← global defaults
-│   └── prompts/{claude,codex,gemini}/  ← per-agent × per-domain review prompts
+│   └── prompts/{claude,codex,gemini}/  ← per-agent × per-domain review prompts (9 domains)
+├── data/                         ← persona roster, review coverage, showcase pages
+├── automation/                   ← CCR automation fleet (12 triggers, logs, costs)
+├── .github/workflows/            ← GitHub Actions (project sync, gate checks, heartbeat)
 ├── org/evinced/                  ← → ~/git/Evinced/.code-review/
 ├── docs/
 │   ├── skills/                   ← generated skill docs (HTML viz + Mermaid + PNGs)

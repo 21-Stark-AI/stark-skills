@@ -1,6 +1,6 @@
 # stark-skills
 
-A multi-agent AI engineering system. 23 skills that take you from a napkin idea to production code, with adversarial review at every stage.
+A multi-agent AI engineering system. 26 skills that take you from a napkin idea to production code, with adversarial review at every stage.
 
 ## The Pipeline
 
@@ -22,7 +22,7 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 **Step 6 — `/stark-phase-execute`** picks up those issues and autonomously implements them — for each issue: implement, create PR, run multi-agent review, fix findings, merge. Zero user intervention. For maximum quality, `/stark-autopilot` is the alternative execution mode: all 3 agents compete on every implementation step in parallel git worktrees, with a tournament to pick the winner at each step.
 
-**Step 7 — `/stark-review`** is the PR code review that runs during execution (or standalone). 3 agents × 6 domains = 18 parallel sub-agent reviews, posted to GitHub under the respective bot identities.
+**Step 7 — `/stark-review`** is the PR code review that runs during execution (or standalone). 3 agents × 9 domains = 27 parallel sub-agent reviews, posted to GitHub under the respective bot identities.
 
 ## The Ecosystem
 
@@ -30,13 +30,13 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 The pipeline handles the happy path from idea to code. The remaining skills handle everything around it.
 
-**Workflow** — `/stark-pr-flow` does the push-create-review-merge dance in one command. `/stark-session` manages work sessions (briefing on start, cleanup on end). `/stark-release` cuts versioned releases with changelog and tags. `/stark-tournament` runs LLM competitions when you need to compare approaches.
+**Workflow** — `/stark-pr-flow` does the push-create-review-merge dance in one command. `/stark-session` manages work sessions (briefing on start, cleanup on end). `/stark-release` cuts versioned releases with changelog and tags. `/stark-tournament` runs LLM competitions when you need to compare approaches. `/stark-persona` adds character voices to sessions — weighted selection, date-aware combos, and catchphrases.
 
 **Documentation** — `/stark-init-docs` scaffolds a docs structure. `/stark-extract-docs` pulls durable knowledge out of specs and reviews into ADRs and retrospectives. `/stark-generate-docs` produces the HTML/Mermaid/PNG visualizations you're looking at. `/stark-claude-md-improver` audits and improves CLAUDE.md files.
 
 **Project setup** — `/stark-onboard-project` bootstraps a new repo end-to-end (git, GitHub, apps, CLAUDE.md). `/stark-rename-project` renames across local + GitHub + sibling repos.
 
-**Maintenance** — `/stark-update-deps` audits and updates dependency versions across all manifest formats. `/stark-review-improvement` tunes review prompts based on false positive analysis.
+**Maintenance** — `/stark-update-deps` audits and updates dependency versions across all manifest formats. `/stark-review-improvement` tunes review prompts based on false positive analysis. `/stark-review-design-improvement` does the same for design review prompts.
 
 **Analytics** — `/stark-metrics` aggregates performance across all skill runs. `/stark-pr-status` is a PR analytics dashboard. `/stark-skill-analytics` tracks skill usage and adoption. `/stark-session-insights` mines session history for patterns and corrections.
 
