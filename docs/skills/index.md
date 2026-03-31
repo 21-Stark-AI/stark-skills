@@ -11,17 +11,19 @@
 | `/stark-plan-to-tasks` | Decompose plan into phased GitHub issues with story points | [usage](stark-plan-to-tasks/usage.md) · [internals](stark-plan-to-tasks/internals.md) |
 | `/stark-phase-execute` | Autonomous phase execution — implement, PR, review, merge | [usage](stark-phase-execute/usage.md) · [internals](stark-phase-execute/internals.md) |
 | `/stark-autopilot` | Tournament implementation — 3 agents compete per step in worktrees | [usage](stark-autopilot/usage.md) · [internals](stark-autopilot/internals.md) |
-| `/stark-review` | Multi-agent PR code review — 3 agents × 6 domains | [usage](stark-review/usage.md) · [internals](stark-review/internals.md) |
+| `/stark-review` | Multi-agent PR code review — 3 agents × 9 domains | [usage](stark-review/usage.md) · [internals](stark-review/internals.md) |
 
 ## Workflow & Ops
 
 | Skill | Description | Docs |
 |-------|-------------|------|
 | `/stark-review-improvement` | Improve review prompts from assessment feedback | [usage](stark-review-improvement/usage.md) · [internals](stark-review-improvement/internals.md) |
+| `/stark-review-design-improvement` | Improve design review prompts from assessment feedback | — |
 | `/stark-pr-flow` | End-to-end PR workflow: push, create, review, merge | [usage](stark-pr-flow/usage.md) · [internals](stark-pr-flow/internals.md) |
 | `/stark-session` | Session management: briefing on start, cleanup on end | [usage](stark-session/usage.md) · [internals](stark-session/internals.md) |
 | `/stark-release` | Cut a release: changelog, tag, GitHub Release | [usage](stark-release/usage.md) · [internals](stark-release/internals.md) |
 | `/stark-tournament` | Multi-LLM competition with configurable evaluation | [usage](stark-tournament/usage.md) · [internals](stark-tournament/internals.md) |
+| `/stark-persona` | Session character voices with weighted selection and combos | — |
 
 ## Project Setup & Docs
 

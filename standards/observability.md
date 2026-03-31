@@ -47,8 +47,8 @@ TaskCreate: "Phase 5: Cleanup"
 **Nested progress for complex phases:** For phases with sub-steps (like review-fix rounds), create child tasks:
 
 ```
-TaskCreate: "Round 1: dispatch 18 sub-agents"
-            activeForm: "Dispatching 18 sub-agents (round 1)"
+TaskCreate: "Round 1: dispatch 27 sub-agents"
+            activeForm: "Dispatching 27 sub-agents (round 1)"
 TaskCreate: "Round 1: classify findings"
             activeForm: "Classifying findings"
 TaskCreate: "Round 1: fix code"
@@ -68,8 +68,8 @@ Alongside the task UI, print timestamped log lines for key events. These provide
 [HH:MM:SS] Phase 1: Setup — started
 [HH:MM:SS] Phase 1: Setup — done (12s)
 [HH:MM:SS] Phase 2: Review-Fix Loop — started
-[HH:MM:SS]   ▸ Round 1: dispatching 18 sub-agents
-[HH:MM:SS]   ▸ Round 1: 18 complete (14 succeeded, 4 failed) — 127s
+[HH:MM:SS]   ▸ Round 1: dispatching 27 sub-agents
+[HH:MM:SS]   ▸ Round 1: 27 complete (23 succeeded, 4 failed) — 127s
 [HH:MM:SS]   ▸ Round 1: 7 fix, 3 false positive, 2 noise — fixing
 [HH:MM:SS]   ▸ Round 1: build + test — passed
 [HH:MM:SS] Phase 2: Review-Fix Loop — done (8m 43s)
@@ -82,7 +82,7 @@ Record `T0` at skill start. All elapsed time calculations are relative to `T0`.
 If the skill has been running for 5+ minutes, print a checkpoint at every 5-minute boundary:
 
 ```
-[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 6/18 sub-agents complete
+[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 6/27 sub-agents complete
 [HH:MM:SS] ⏱ Checkpoint — 10m elapsed | Phase 2, Round 2 | fixing 3 findings
 [HH:MM:SS] ⏱ Checkpoint — 15m elapsed | Phase 3: final review round
 ```
@@ -111,7 +111,7 @@ Phases:
   Phase 4 (Summary):         8s
   Phase 5 (Cleanup):         3s
 
-Agents:              18 dispatched, 16 succeeded, 2 failed
+Agents:              27 dispatched, 25 succeeded, 2 failed
 Findings:            23 total → 14 fixed, 4 false positive, 3 noise, 2 unresolved
 Rounds:              2 fix + 1 final
 ```
@@ -134,7 +134,7 @@ After the metrics, if any of these conditions are true, print an improvement fla
 Improvement Opportunities
 ─────────────────────────
 ⚠ Phase 2 took 73% of total time — sub-agent dispatch is the bottleneck
-⚠ 4/18 sub-agents failed — check Gemini CLI auth (3 Gemini failures)
+⚠ 4/27 sub-agents failed — check Gemini CLI auth (3 Gemini failures)
 ⚠ Round 2 found 0 new issues — could reduce max_rounds to 1 for this repo
 ⚠ Build step ran 3 times due to fix regressions — fixes need better validation
 ```
@@ -169,7 +169,7 @@ If the skill writes to `~/.claude/code-review/history/`, include timing data in 
       {"name": "Summary", "duration_s": 8},
       {"name": "Cleanup", "duration_s": 3}
     ],
-    "agents": {"dispatched": 18, "succeeded": 16, "failed": 2}
+    "agents": {"dispatched": 27, "succeeded": 25, "failed": 2}
   }
 }
 ```

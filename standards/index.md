@@ -36,7 +36,7 @@ The spec link in the PR description is what closes the loop. The AI reviewer fet
 **New repo — scaffold the structure:**
 
 ```
-/init-docs --template
+/stark-init-docs --template
 ```
 
 Creates the directory layout, ADR template, PR template, mkdocs.yml, and staleness config. No content generated. Safe to run on existing repos — idempotent.
@@ -44,7 +44,7 @@ Creates the directory layout, ADR template, PR template, mkdocs.yml, and stalene
 **Existing repo — generate docs from history:**
 
 ```
-/init-docs --backfill
+/stark-init-docs --backfill
 ```
 
 Reads git log and merged PRs. Infers ADRs from technology choices, drafts specs from significant PRs, generates guides from CI configs and scripts. Commits everything.
@@ -52,7 +52,7 @@ Reads git log and merged PRs. Infers ADRs from technology choices, drafts specs 
 **Existing docs — migrate into the standard layout:**
 
 ```
-/init-docs --upgrade
+/stark-init-docs --upgrade
 ```
 
 Scans for docs anywhere in the repo, classifies and moves them into the standard structure using `git mv` to preserve history.
@@ -61,7 +61,7 @@ Scans for docs anywhere in the repo, classifies and moves them into the standard
 
 ## Repo Structure
 
-After running `/init-docs --template`, you get:
+After running `/stark-init-docs --template`, you get:
 
 ```
 docs/

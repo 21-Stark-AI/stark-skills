@@ -16,11 +16,11 @@ graph TD
     B6 --> C{"Determine Mode"}
     C -->|"Fork PR / no test_command / --dry-run"| D["Review-Only Mode"]
     C -->|"Same repo + test_command configured"| E["Full Mode"]
-    D --> F["Run review once (18 sub-agents)"]
+    D --> F["Run review once (27 sub-agents)"]
     F --> G["Phase 3: Generate Summary"]
     E --> H["Capture baseline test failures"]
     H --> I["Phase 2: Review-Fix Loop"]
-    I --> J["Dispatch 18 sub-agents\n(3 LLMs × 6 domains)"]
+    I --> J["Dispatch 27 sub-agents\n(3 LLMs × 9 domains)"]
     J --> K["Classify findings\nfix | recurring | FP | noise | ignored"]
     K --> L["Fix code in worktree"]
     L --> M["Build & Test"]
