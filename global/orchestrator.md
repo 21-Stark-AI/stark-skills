@@ -35,7 +35,7 @@ multi_review.py
 ├── gemini × regression        ┘
 ```
 
-Each domain prompt is in `~/git/Personal/Prompts/CodeReviews/{agent}/`. Every agent gets its own tailored version of the 9 domain prompts — you get 3 independent perspectives on each domain.
+Each domain prompt is in `~/.claude/code-review/prompts/{agent}/`. Every agent gets its own tailored version of the 9 domain prompts — you get 3 independent perspectives on each domain.
 
 ## Tools
 
@@ -55,7 +55,7 @@ $REVIEW --pr <N> --dry-run --json
 
 ## Workflow
 
-1. Run `multi_review.py --pr <N> --json` to dispatch all 18 sub-agents in parallel
+1. Run `multi_review.py --pr <N> --json` to dispatch all 27 sub-agents in parallel
 2. Parse the JSON output — each result has `agent`, `domain`, `findings`
 3. Cross-reference findings: if 2+ agents flag the same issue, it's higher confidence
 4. Fix every critical, high, and medium issue yourself (edit the code directly)
@@ -79,7 +79,7 @@ Plus: final test output and one-paragraph summary of changes.
 
 ## Key Rules
 
-- **Only YOU fix code.** The 18 sub-agents only review.
+- **Only YOU fix code.** The 27 sub-agents only review.
 - **Fix critical, high, and medium findings.** Only low-severity findings are skipped.
 - **Commit between rounds** so reviewers see updated code.
 - **Cross-reference across agents** — same issue from 2+ agents = high confidence.

@@ -10,7 +10,7 @@ argument-hint: "[PR_NUMBER] [--rounds N] [--dry-run] [--repo ORG/REPO]"
 
 # stark-review
 
-Multi-agent PR review: 3 LLMs (Claude, Codex, Gemini) × 6 domain specializations dispatched in parallel. Autonomous fix-review loop until clean or max rounds.
+Multi-agent PR review: 3 LLMs (Claude, Codex, Gemini) × 9 domain specializations dispatched in parallel. Autonomous fix-review loop until clean or max rounds.
 
 ## Arguments
 
@@ -477,8 +477,8 @@ Set each to `in_progress` BEFORE starting it, `completed` when done. Only one ta
 For Phase 2, create **child tasks dynamically** as each round begins:
 
 ```
-TaskCreate: "Round 1: dispatch 18 sub-agents"
-            activeForm: "Dispatching 18 sub-agents (round 1)"
+TaskCreate: "Round 1: dispatch 27 sub-agents"
+            activeForm: "Dispatching 27 sub-agents (round 1)"
 TaskCreate: "Round 1: classify + fix"
             activeForm: "Classifying and fixing findings"
 TaskCreate: "Round 1: build + test"
@@ -496,12 +496,12 @@ Record `T0` at skill start. Print timestamped lines for every phase transition a
 [HH:MM:SS] Phase 1: Setup — started
 [HH:MM:SS] Phase 1: Setup — done (12s)
 [HH:MM:SS] Phase 2: Review-Fix Loop — started
-[HH:MM:SS]   ▸ Round 1: dispatching 18 sub-agents
-[HH:MM:SS]   ▸ Round 1: 18 complete (14 succeeded, 4 failed: codex:scope, gemini:security, ...) — 127s
+[HH:MM:SS]   ▸ Round 1: dispatching 27 sub-agents
+[HH:MM:SS]   ▸ Round 1: 27 complete (23 succeeded, 4 failed: codex:scope, gemini:security, ...) — 127s
 [HH:MM:SS]   ▸ Round 1: 7 fix, 3 false positive, 2 noise — fixing
 [HH:MM:SS]   ▸ Round 1: build + test — passed
 [HH:MM:SS]   ▸ Round 1: commit + push — done
-[HH:MM:SS]   ▸ Round 2: dispatching 18 sub-agents
+[HH:MM:SS]   ▸ Round 2: dispatching 27 sub-agents
 [HH:MM:SS]   ...
 [HH:MM:SS] Phase 2: Review-Fix Loop — done (8m 43s)
 [HH:MM:SS] Phase 3: Summary — done (5s)
@@ -515,7 +515,7 @@ Record `T0` at skill start. Print timestamped lines for every phase transition a
 If running for 5+ minutes, print a checkpoint at every 5-minute boundary:
 
 ```
-[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 6/18 sub-agents complete
+[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 6/27 sub-agents complete
 [HH:MM:SS] ⏱ Checkpoint — 10m elapsed | Phase 2, Round 2 | fixing 3 findings
 ```
 

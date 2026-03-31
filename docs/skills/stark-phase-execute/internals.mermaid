@@ -19,7 +19,7 @@ graph TD
 
     PUSH --> WT_CREATE["Create review worktree<br/>/tmp/review-{REPO}-pr{N}"]
     WT_CREATE --> REVIEW_ROUND{"1.4 Review round ≤ N?"}
-    REVIEW_ROUND -->|"yes"| DISPATCH["Run multi_review.py<br/>--json-only --dry-run<br/>18 sub-agents (3×6)"]
+    REVIEW_ROUND -->|"yes"| DISPATCH["Run multi_review.py<br/>--json-only --dry-run<br/>27 sub-agents (3×9)"]
     DISPATCH --> CLASSIFY["Classify findings<br/>fix / FP / noise / ignored"]
     CLASSIFY -->|"0 fix findings"| REVIEW_DONE["Review complete"]
     CLASSIFY -->|"has fix findings"| FIX["Fix in worktree → test → commit → push"]

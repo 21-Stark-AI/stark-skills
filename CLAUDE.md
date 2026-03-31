@@ -8,9 +8,12 @@ Multi-agent PR code review system. 3 AI CLI tools (Claude, Codex, Gemini) × N d
 
 - `global/` — global config + prompts, installed to `~/.claude/code-review/`
 - `scripts/` — Python orchestrator + GitHub App auth, installed to `~/.claude/code-review/scripts/`
-- `skill/` — all skills (`skill/stark-*/SKILL.md`), installed as symlinks to `~/.claude/skills/`
+- `skill/` — all skills (`skill/stark-*/SKILL.md`, 26 skills), installed as symlinks to `~/.claude/skills/`
 - `org/evinced/` — Evinced org config, installed to `~/git/Evinced/.code-review/`
-- `docs/specs/` — design spec
+- `data/` — persona roster, review coverage HTML, generated showcase pages
+- `automation/` — CCR automation fleet: 12 triggers, prompts, logs, cost tracking, reports
+- `.github/workflows/` — GitHub Actions: project sync, gate checks, stale detection, heartbeat
+- `docs/` — specs, plans, ADRs, retrospectives, generated skill docs
 - `standards/` — org-wide doc templates and workflows, installed to `~/.claude/code-review/standards/`
 - `install.sh` — symlinks repo contents to install locations
 
@@ -19,11 +22,23 @@ Multi-agent PR code review system. 3 AI CLI tools (Claude, Codex, Gemini) × N d
 - `scripts/multi_review.py` — PR review orchestrator (ThreadPoolExecutor, parallel sub-agents)
 - `scripts/plan_review_dispatch.py` — plan/design review dispatch (N agents × M domains)
 - `scripts/design_to_plan_dispatch.py` — generic generate-and-cross-review dispatch (3 generate + 6 review)
+- `scripts/autopilot_dispatch.py` — tournament-based autonomous implementation (3 agents compete in worktrees)
+- `scripts/tournament.py` — reusable multi-LLM competition engine (semantic, visual, test evaluation)
 - `scripts/github_app.py` — multi-app GitHub auth (stark-claude, stark-codex, stark-gemini)
+- `scripts/github_projects.py` — GitHub Projects V2 GraphQL utility (13 public functions)
+- `scripts/stark_persona.py` — session persona engine (weighted selection, combos, catchphrases)
+- `scripts/flow_extractor.py` — workflow extraction from SKILL.md files
+- `scripts/flow_layout.py` — dagre layout runner for flow diagrams
+- `scripts/flow_schema.py` — FlowDiagram Pydantic model
+- `scripts/generate_skill_docs.py` — multi-LLM documentation generator with viz competition
+- `scripts/metrics.py` — review performance metrics collection
+- `scripts/pr_status.py` — PR analytics dashboard data
+- `scripts/plan_to_tasks_validate.py` — plan decomposition validation (3 LLM passes)
 - `global/config.json` — default config schema
-- `global/prompts/{claude,codex,gemini}/` — per-agent × per-domain PR review prompts
+- `global/prompts/{claude,codex,gemini}/` — per-agent × per-domain PR review prompts (9 domains each)
 - `global/prompts/{design-review,plan-review}/` — per-agent × per-domain doc review prompts
 - `global/prompts/{design-to-plan,prompt-to-design}/` — per-agent generate + cross-review prompts
+- `global/prompts/autopilot/` — per-agent autopilot implementation prompts
 - `standards/templates/` — PR template, ADR template, MkDocs scaffold, staleness config
 - `standards/index.md` — "Start Here" pitch page for adopting the doc system
 
@@ -58,6 +73,7 @@ All skills live in `skill/stark-*/SKILL.md` and are symlinked to `~/.claude/skil
 - `/stark-session [start|end]` — session management: briefing on start, cleanup on end
 - `/stark-release [patch|minor|major]` — cut a release: changelog, tag, GitHub Release
 - `/stark-tournament "prompt" [--config file.yaml]` — multi-LLM competition with configurable evaluation strategies
+- `/stark-persona` — session character voices with weighted selection, combos, catchphrases, and feedback
 
 ### Project Setup & Docs
 

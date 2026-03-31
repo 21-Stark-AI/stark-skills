@@ -313,7 +313,7 @@ git fetch origin main
 merge_base=$(git merge-base origin/main HEAD)
 ```
 
-**The round loop is managed by this skill, not by multi_review.py.** `multi_review.py` does not have a `--rounds` flag — it runs one round of 18 sub-agents and returns JSON.
+**The round loop is managed by this skill, not by multi_review.py.** `multi_review.py` does not have a `--rounds` flag — it runs one round of 27 sub-agents and returns JSON.
 
 For round = 1 to MAX_ROUNDS:
 
