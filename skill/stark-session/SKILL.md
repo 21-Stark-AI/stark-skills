@@ -151,9 +151,34 @@ Recent: 3 commits today on this branch
 Memory: [key context from memory files]
 ```
 
-Then ask: "What are we working on?"
-
 Condense or omit empty sections. Don't dump full CLAUDE.md. Keep it concise.
+
+### Phase 6 — Session Task List
+
+After the briefing, propose a prioritized task list built from what was discovered in phases 1–5. Sources, in priority order:
+
+1. **Open PRs needing action** — review comments to address, failing checks, requested changes
+2. **Uncommitted changes** — dirty working tree, staged files, stashes
+3. **Failing health checks** — test failures, build errors from Phase 3
+4. **Project board items** — issues assigned to Claude with status "Agent Working" (if project config exists)
+5. **Stale branches** — local branches with no commits in the last 7 days
+
+Only include items that actually exist — skip empty categories. Format:
+
+```
+Suggested task list:
+  1. [PR] Address review comments on #42
+  2. [Fix] 3 failing tests in scripts/
+  3. [Git] Uncommitted changes in 2 files
+  4. [Board] #18 — Add retry logic (Agent Working)
+  5. [Stale] feature/old-thing — no activity for 12 days
+```
+
+Then ask: **"Task list look right? Say 'go' to start from the top, or tell me what to focus on."**
+
+When the user says "go" (or equivalent approval), work through the list sequentially. Auto-continue between tasks without prompting "what's next?" after each one. Only pause between tasks if a genuine decision is needed (e.g., a merge conflict, an ambiguous review comment, a failing test that could be skipped or fixed).
+
+If the task list is empty (everything is clean), fall back to: "Everything looks clean. What are we working on?"
 
 ---
 
