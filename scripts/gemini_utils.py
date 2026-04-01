@@ -164,12 +164,15 @@ def gemini_session(
 
 
 def make_gemini_env(gemini_home: str) -> dict[str, str]:
-    """Build env dict with GEMINI_CLI_HOME and GOOGLE_CLOUD_LOCATION set."""
-    return {
+    """Build env dict with GEMINI_CLI_HOME and GEMINI_API_KEY for headless dispatch."""
+    env = {
         **os.environ,
         "GEMINI_CLI_HOME": gemini_home,
-        "GOOGLE_CLOUD_LOCATION": "global",
     }
+    api_key = get_gemini_api_key()
+    if api_key:
+        env["GEMINI_API_KEY"] = api_key
+    return env
 
 
 # ── Output parsing ────────────────────────────────────────────────────
