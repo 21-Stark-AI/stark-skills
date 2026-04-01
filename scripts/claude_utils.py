@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 
 # Default model — pinned to avoid drift when the CLI default changes.
-CLAUDE_MODEL = "claude-opus-4-6"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # Env vars that must NOT leak into CLI subprocesses.
 # Purpose-specific Anthropic keys (e.g., ANTHROPIC_VECTOR_INSIGHTS) are for

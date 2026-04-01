@@ -155,7 +155,7 @@ class TestSubAgentDispatch:
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "claude"
         assert "--model" in cmd
-        assert "claude-opus-4-6" in cmd
+        assert "claude-sonnet-4-6" in cmd
         assert "--no-session-persistence" in cmd
         assert "-" in cmd  # stdin marker
         call_kwargs = mock_run.call_args[1]
@@ -330,9 +330,9 @@ class TestCLIFlagsSmoke:
 
     @pytest.mark.skipif(not shutil.which("claude"), reason="claude CLI not installed")
     def test_claude_accepts_model_flag(self):
-        """claude --model claude-opus-4-6 --help must not error."""
+        """claude --model claude-sonnet-4-6 --help must not error."""
         result = subprocess.run(
-            ["claude", "--model", "claude-opus-4-6", "--help"],
+            ["claude", "--model", "claude-sonnet-4-6", "--help"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0, f"claude rejected flags: {result.stderr}"
