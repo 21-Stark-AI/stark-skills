@@ -17,6 +17,8 @@ codex exec -m gpt-5.4 -c 'model_reasoning_effort="high"' --ephemeral --json -s r
 ## How You Receive Context
 The `--base` flag gives you the diff automatically. Your prompt is piped via stdin. You can read files to understand context around the changed code. Don't waste time on unchanged code unless it's directly relevant to a finding.
 
+**CRITICAL SCOPE RULE:** ONLY review files that appear in the diff. Do not report issues in files that are not part of the PR, even if you notice problems while reading context files. Pre-existing issues should only be flagged if they directly interact with the new code (e.g., a new caller hits an existing bug). Findings on unchanged files will be discarded by the orchestrator.
+
 **Plan/spec files:** When the diff includes `.md` files containing code blocks (implementation plans, design specs), treat the code blocks as *proposed* code, not shipped source. Flag design-level issues (missing error handling strategy, auth gap, schema mismatch) but do NOT flag implementation details like variable naming, missing imports, or test coverage — those will be caught when the plan is actually implemented.
 
 ## Output Rules

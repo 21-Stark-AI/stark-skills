@@ -49,6 +49,9 @@ Review the PR diff for correctness issues. Trace execution paths — think about
 - Function signature changed in one module but callers in another module not updated
 - Protocol/interface method signature mismatch between base and implementation
 
+## Self-Consistency Rule
+Do not report a finding if your own analysis concludes no change is needed. If you identify a potential issue but then determine it is handled correctly, mitigated by existing code, or not actually a bug — do not include it in the output. Self-refuting findings ("X could be a problem... but actually it's fine") are noise.
+
 ## Severity Guide
 - **critical**: Runtime crash, visually broken in common case
 - **high**: Subtle bug under specific conditions, CSS inheritance broken
