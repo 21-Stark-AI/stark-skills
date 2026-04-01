@@ -6,6 +6,8 @@ Review the diff for security vulnerabilities and error handling gaps.
 
 **API Surface Calibration:** Only flag input validation at **public API boundaries** (HTTP endpoints, gRPC handlers, MCP tools, CLI argument parsers). Internal classes receiving already-validated inputs from internal callers do not need redundant validation.
 
+**Pre-existing vs Introduced:** Only flag security issues that are introduced or materially worsened by this PR. If a pattern existed before this PR and the PR does not change it, do not flag it — even if the pattern is insecure. Exception: if new code calls into a pre-existing insecure path, flag the interaction.
+
 **Frontend:**
 - dangerouslySetInnerHTML — sanitized? necessary?
 - User-controlled strings rendered as HTML without escaping

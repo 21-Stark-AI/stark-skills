@@ -9,6 +9,7 @@ Critical rules:
 - Scripts with built-in `--check` / `--verify` / `--dry-run` modes have implicit integration coverage. Only flag missing tests for specific breakable inputs that the self-check doesn't exercise.
 - Unit tests that verify their stated scope are valid. Do NOT flag a unit test for "not exercising the real pipeline" or "using mock data instead of production behavior." Unit tests test units. Integration tests test integration. Evaluate each test against its own stated scope.
 - Schema introspection tests and signature validation tests are a valid test pattern — they verify that the public API surface hasn't regressed. Do NOT rate these as critical or high severity simply because they don't execute the underlying logic. At most, note them as medium ("consider adding behavioral tests") if there is a specific logic bug risk.
+- **Infrastructure/config repos** (majority `.tf`, `.alloy`, `.yml`, `.json` config files): Only flag test gaps for custom scripts or application logic. Do NOT request CI fixtures, unit tests, or integration tests for declarative config (Terraform resources, Grafana dashboards, Prometheus rules, Alloy pipelines). Declarative config is validated by `plan`/`apply`, not unit tests.
 
 Check:
 - Every public prop has at least one test

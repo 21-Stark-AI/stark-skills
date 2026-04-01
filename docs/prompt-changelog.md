@@ -2,6 +2,29 @@
 
 Tracks improvements to review prompts based on stark-review assessments.
 
+## 2026-04-01 — Batch: scope enforcement, self-refuting findings, infra-repo awareness
+
+**Source:** 4 unapplied assessments — infra-ai-platform #4, infra-sentinel #20, infra-sentinel #23, infra-pulse #162
+**Prompts dir:** default (PR code review)
+**Assessment:** Recurring patterns: agents flag pre-existing code (scope leak), codex requests CI for declarative config repos, claude produces self-refuting findings, inconsistent scope enforcement across agents.
+
+### Changes Made
+
+| File | Change | Reason |
+|------|--------|--------|
+| `global/prompts/claude/agent.md` | Added CRITICAL SCOPE RULE (only review files in diff, pre-existing issues only if interacting with new code) | Claude lacked scope enforcement that Gemini already had |
+| `global/prompts/codex/agent.md` | Added same CRITICAL SCOPE RULE | Codex flagging pre-existing conditions in infra-sentinel #20, infra-ai-platform #4 |
+| `global/prompts/claude/01-architecture.md` | Added "Do NOT Flag" rule for dependency-update PRs | Noise on version bumps in infra-sentinel #20 |
+| `global/prompts/codex/05-security.md` | Added "Pre-existing vs Introduced" rule | Codex flagging pre-existing security patterns not changed by PR |
+| `global/prompts/codex/06-test-coverage.md` | Added infra/config repo awareness (skip test demands for .tf/.yml/.alloy) | Impractical CI fixture requests for Terraform/Grafana/Alloy config |
+| `global/prompts/claude/03-correctness.md` | Added self-consistency rule (don't report findings your own analysis refutes) | Claude self-refuting findings in infra-pulse #162 |
+| `global/prompts/gemini/05-security.md` | Strengthened scope rule: pre-existing patterns out of scope | Gemini reviewing pre-existing code in infra-ai-platform #4 |
+
+### Validation
+- [x] Prompt syntax OK
+- [x] Markdown structure preserved
+- [x] 7 files, 12 insertions, 1 deletion
+
 ## 2026-04-01 — Scope bleed and severity calibration
 
 **Source:** PR #99 in GetEvinced/stark-data-core (lint fixes + Phase 5 validation tests)

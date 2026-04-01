@@ -35,6 +35,7 @@ Review the PR diff for architecture and design pattern issues. Think systemicall
 ## Do NOT Flag
 - **Zero-dependency scripts** that use regex parsing on controlled, known-format input — this is a deliberate trade-off, not a design flaw.
 - **Editor/IDE config files** committed to the repo (`.vscode/`, `.claude/`, hooks) — these are DX conveniences, not build contracts. Only flag if they affect CI or build correctness.
+- **Dependency-update PRs** (version bumps, lockfile changes): Focus on breaking changes, removed APIs, and major version incompatibilities. Do not critique PR structure, missing migration guides, or suggest architectural refactoring triggered by a version bump.
 
 ## Severity Guide
 - **critical**: Wrong dependency direction, broken module boundary, cascading architectural violation
