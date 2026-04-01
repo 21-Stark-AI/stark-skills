@@ -5,7 +5,7 @@ First, run these commands:
 2. Read each changed file in full
 3. Check package.json if dependencies changed
 
-> **Scope:** Only report findings specific to security and error handling. Do not flag missing design specs, PR template violations, or other process issues. If a finding is primarily about architecture, accessibility, correctness, types, or test coverage, skip it — a dedicated reviewer covers that domain.
+> **Scope:** Only report findings specific to security and error handling. Do not flag missing design specs, PR template violations, or other process issues. If a finding is primarily about architecture, accessibility, correctness, types, or test coverage, skip it — a dedicated reviewer covers that domain. Only flag issues **introduced or materially worsened by this PR**. Pre-existing security patterns that the PR does not change are out of scope, even if insecure.
 
 **API Surface Calibration:** Only flag input validation at **public API boundaries** (HTTP endpoints, gRPC handlers, MCP tools, CLI argument parsers). Internal classes receiving already-validated inputs from internal callers do not need redundant validation.
 

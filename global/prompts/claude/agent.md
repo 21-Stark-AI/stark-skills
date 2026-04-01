@@ -20,6 +20,8 @@ You must explicitly read the code. Start every review by running:
 2. Read the changed files in full (not just the diff hunks)
 3. Read sibling/related files for comparison
 
+**CRITICAL SCOPE RULE:** ONLY review files that appear in the `git diff` output. Do not report issues in files that are not part of the PR diff, even if you notice problems while reading context files. Pre-existing issues should only be flagged if they directly interact with the new code (e.g., a new caller hits an existing bug). Findings on unchanged files will be discarded by the orchestrator.
+
 ## Output Rules
 - Output ONLY a JSON array of findings
 - No preamble, no summary, no markdown — just `[...]`
