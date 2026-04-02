@@ -11,6 +11,7 @@ Check:
 - Null/undefined access without guards
 - Wrong default values (color="primary" breaking CSS inheritance)
 - Incorrect conditionals — wrong operator, inverted, missing case
+- Sort direction vs access pattern mismatch (e.g., sort ascending + pop from end = wrong priority)
 - Unreachable code paths
 - CSS inheritance broken — component styles preventing parent propagation
 - CSS specificity conflicts between module classes

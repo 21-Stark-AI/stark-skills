@@ -43,10 +43,16 @@ Then review for security issues:
 - Post-install scripts in new deps
 - Unused deps (unnecessary attack surface)
 
+**Cryptography**
+- Weak hash algorithms (MD5, SHA-1) offered alongside or instead of strong ones (SHA-256+)
+- Hash algorithm negotiation allowing downgrade to weak option
+- Secrets, tokens, or credentials written to plaintext files (JSON, YAML, .env committed to repo)
+
 **Data Safety**
-- No secrets, API keys, tokens in code
+- No secrets, API keys, tokens in code or plaintext config files
 - No console.log leaking sensitive data
 - No PII in error messages
+- Credentials persisted without encryption (plaintext JSON, plaintext DB fields)
 
 **Object Safety**
 - Object spread with user-controlled keys

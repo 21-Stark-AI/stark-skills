@@ -626,7 +626,7 @@ def _run_subagent_inner(
             shutil.rmtree(gemini_home, ignore_errors=True)
 
     max_attempts = 2
-    timeout_s = 300 if agent == "gemini" else 900
+    timeout_s = 600 if agent == "gemini" else 900
     run_kwargs: dict[str, Any] = {
         "capture_output": True, "text": True,
         "timeout": timeout_s, "cwd": cwd,

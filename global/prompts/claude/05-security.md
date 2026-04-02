@@ -32,8 +32,13 @@ Only flag input validation issues at **public API boundaries** (HTTP endpoints, 
 - Post-install scripts in new deps
 - Unused dependencies (unnecessary attack surface)
 
+**Cryptography**
+- Weak hash algorithms (MD5, SHA-1) offered alongside or instead of strong ones (SHA-256+)
+- Hash algorithm negotiation allowing downgrade to weak option
+
 **Data Safety**
-- No secrets, API keys, tokens in code
+- No secrets, API keys, tokens in code or plaintext config files
+- Credentials persisted without encryption (plaintext JSON, plaintext DB fields)
 - No console.log leaking sensitive data
 - No PII exposure in error messages
 
