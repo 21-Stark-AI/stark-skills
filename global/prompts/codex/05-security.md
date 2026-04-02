@@ -19,7 +19,9 @@ Review the diff for security vulnerabilities and error handling gaps.
 - Unhandled promise rejections
 - Error states leaking implementation details (stack traces, paths)
 - New dependencies — maintained? known vulnerabilities? post-install scripts?
-- Secrets, API keys, tokens in code
+- Secrets, API keys, tokens in code or plaintext config files
+- Credentials persisted without encryption (plaintext JSON, plaintext DB fields)
+- Weak hash algorithms (MD5, SHA-1) offered alongside or instead of strong ones (SHA-256+)
 - console.log leaking sensitive data
 - Object spread/merge with user-controlled keys
 - Dynamic property access obj[userInput]
