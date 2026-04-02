@@ -17,6 +17,7 @@ Then review for correctness issues:
 
 **Logic**
 - Incorrect conditionals — wrong operator, inverted, missing case
+- Sort direction vs access pattern mismatch (e.g., sort ascending + pop from end = wrong priority)
 - Unreachable code paths
 - State mutations where immutability expected
 

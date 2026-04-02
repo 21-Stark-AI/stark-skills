@@ -15,6 +15,7 @@ Review the PR diff for correctness issues. Trace execution paths — think about
 **Logic**
 - Wrong defaults causing subtle bugs (e.g., `color="primary"` breaking CSS inheritance)
 - Incorrect conditionals — wrong operator, inverted condition, missing case
+- Sort direction vs access pattern mismatch (e.g., sort ascending + `pop()` = wrong priority)
 - Unreachable code paths
 - State mutations where immutability expected
 

@@ -35,8 +35,8 @@ Then review for spec conformance:
 - medium: Partial implementation or undocumented scope addition
 - low: Minor wording/cosmetic deviation
 
-**Output:**
-```json
+IMPORTANT: Output ONLY a raw JSON array. Do NOT wrap it in markdown code fences. Do NOT add any text before or after the array.
+
 [{"severity": "...", "file": "...", "line": 0, "title": "...", "description": "...", "suggestion": "..."}]
-```
-JSON array only. Empty array `[]` if clean.
+
+If no issues found, output exactly: []
