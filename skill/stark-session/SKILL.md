@@ -28,6 +28,8 @@ Read config by checking these locations in order (later overrides earlier):
 2. Walk parent directories from the current repo root looking for `.code-review/config.json` (org level)
 3. Repo root `.code-review/config.json`
 
+Guard each read with `test -f <path> && cat <path> || true` — missing config files are normal, not errors.
+
 Merge the `session` block from each level. If `session.test_command` is null, fall back to the top-level `test_command`.
 
 | Key | Default | Notes |
@@ -119,10 +121,10 @@ python3 -c "
 import sys; sys.path.insert(0, '$HOME/git/Evinced/stark-skills/scripts')
 from emit_queue import pending_count, dead_letter_count
 p, d = pending_count(), dead_letter_count()
-if d > 0: print(f'WARN: {d} dead-lettered events, {p} pending — run: python3 -c \"from emit_queue import retry_dead_letters; retry_dead_letters()\"'); sys.exit(1)
-elif p > 10: print(f'WARN: {p} events pending drain — stark-insights may be down'); sys.exit(1)
+if d > 0: print(f'WARN: {d} dead-lettered events, {p} pending — run: python3 -c \"from emit_queue import retry_dead_letters; retry_dead_letters()\"')
+elif p > 10: print(f'WARN: {p} events pending drain — stark-insights may be down')
 else: print(f'OK: queue healthy ({p} pending, {d} dead)')
-"
+" 2>/dev/null || true
 ```
 
 Report result in the Health line of the briefing. Non-fatal.
@@ -130,8 +132,8 @@ Report result in the Health line of the briefing. Non-fatal.
 ### Phase 4 — Available skills
 
 ```bash
-ls ~/.claude/skills/*/SKILL.md 2>/dev/null
-ls .claude/skills/*/SKILL.md 2>/dev/null
+ls ~/.claude/skills/*/SKILL.md 2>/dev/null || true
+ls .claude/skills/*/SKILL.md 2>/dev/null || true
 ```
 
 Extract skill names from directory paths.
@@ -354,3 +356,4 @@ Substitute actual values from the run. If stark-insights is not running, this fa
 - Don't commit if no staged changes
 - Don't push without asking if not on a tracked branch
 - Don't use GitHub App bots — session ops use user's PAT via `gh`
+- **Every command in a parallel batch must exit 0** — one non-zero exit cancels the entire batch. Use `|| true` on any command that might fail (ls with globs, cat on optional files, health checks). Phases 3, 4, and 4b are commonly parallelized — every command there must be failure-safe.
