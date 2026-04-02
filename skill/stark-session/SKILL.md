@@ -72,11 +72,11 @@ fi
 Fetch open PRs:
 
 ```bash
-gh pr list --author @me --state open --json number,title,headRefName,reviewDecision,url 2>/dev/null
-gh pr view --json number,title,state,reviewDecision,statusCheckRollup 2>/dev/null
+gh pr list --author @me --state open --json number,title,headRefName,reviewDecision,url 2>/dev/null || true
+gh pr view --json number,title,state,reviewDecision,statusCheckRollup 2>/dev/null || true
 ```
 
-If `gh` fails, skip PR info — not fatal.
+Both commands are non-fatal — `|| true` ensures exit code 0 even when there's no PR for the current branch.
 
 ### Project Board Context
 
