@@ -81,7 +81,7 @@ def _compute_stats(pattern_id: str, entries: list[dict], circuits: dict) -> dict
                 ts = datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00"))
                 if ts >= cutoff:
                     aborts_last_7d += 1
-            except Exception:
+            except (KeyError, ValueError, TypeError):
                 pass
 
     success_count = successful_suggests + applied
@@ -97,7 +97,7 @@ def _compute_stats(pattern_id: str, entries: list[dict], circuits: dict) -> dict
             trip_time = datetime.fromisoformat(tripped_at.replace("Z", "+00:00"))
             if datetime.now(timezone.utc) - trip_time < timedelta(hours=24):
                 circuit_open = True
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
     return {

@@ -73,9 +73,19 @@ def _warn(message: str) -> None:
 
 
 def _merge_dict(defaults: dict[str, Any], overrides: Any) -> dict[str, Any]:
+    """Deep-merge *overrides* into a copy of *defaults*.
+
+    Nested dicts are merged recursively so that partial overrides
+    (e.g. ``{"claude": {"enabled": false}}``) don't clobber sibling
+    keys in the defaults (e.g. ``model_id``).
+    """
     merged = deepcopy(defaults)
     if isinstance(overrides, dict):
-        merged.update(overrides)
+        for key, value in overrides.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                merged[key] = _merge_dict(merged[key], value)
+            else:
+                merged[key] = deepcopy(value)
     return merged
 
 

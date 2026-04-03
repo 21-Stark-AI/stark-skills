@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -76,8 +77,13 @@ class SessionState:
     # Persistence
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _sanitize_id(session_id: str) -> str:
+        """Strip path-traversal characters from session IDs."""
+        return re.sub(r"[^a-zA-Z0-9_\-]", "", session_id)
+
     def _path(self) -> Path:
-        return SESSIONS_DIR / f"{self.session_id}.json"
+        return SESSIONS_DIR / f"{self._sanitize_id(self.session_id)}.json"
 
     def save(self) -> None:
         """Persist session state to disk."""
