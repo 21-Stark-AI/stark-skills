@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.5.1] - 2026-04-03
+
+### Fixed
+- Codex `model_id` defaulted to `"codex"` instead of `"gpt-5.4"` — caused 100% CLI failures across all 9 review domains
+- YAML frontmatter parsing in `generate_skill_docs.py` — replaced fragile regex with `yaml.safe_load`, fixing block scalars (`>-`) and single-quoted values
+- Hanging test in `test_plan_review_dispatch.py` — replaced subprocess dispatch with direct argparse validation
+- Codex dispatch `cwd` not passed to subprocess — codex refused to run outside a trusted git directory
+- Codex CLI error stderr now persisted to `~/.claude/code-review/logs/` for debugging
+- Broken `scripts/.venv` (stale interpreter path from repo rename)
+
+### Changed
+- Codex `08-ui-design-conformance.md` prompt strengthened — bolded scope rules, explicit backend early-exit (was producing security/correctness findings on pure backend PRs)
+- Cross-domain dedup instruction added to both `claude/agent.md` and `codex/agent.md` — agents now defer to specialized domain reviewers instead of duplicating findings
+- Scope calibration added to 4 Claude domain prompts for small PRs
+- Design-review domain count updated to 12 (new test-plan domain)
+
 ## [v0.5.0] - 2026-04-03
 
 ### Added
