@@ -64,18 +64,17 @@ Create round tasks dynamically as each round begins — don't pre-create all rou
 Alongside the task UI, print timestamped log lines for key events. These provide a textual record that persists in the conversation:
 
 ```
-[HH:MM:SS] === stark-team-review started ===
-[HH:MM:SS] Phase 1: Setup — started
-[HH:MM:SS] Phase 1: Setup — done (12s)
-[HH:MM:SS] Phase 2: Review-Fix Loop — started
-[HH:MM:SS]   ▸ Round 1: dispatching 27 sub-agents
-[HH:MM:SS]   ▸ Round 1: 27 complete (23 succeeded, 4 failed) — 127s
-[HH:MM:SS]   ▸ Round 1: 7 fix, 3 false positive, 2 noise — fixing
-[HH:MM:SS]   ▸ Round 1: build + test — passed
-[HH:MM:SS] Phase 2: Review-Fix Loop — done (8m 43s)
+[14:30:05] === stark-team-review started ===
+[14:30:17] Phase 1: Setup — done (12s)
+[14:30:17] Phase 2: Review-Fix Loop — started
+[14:30:17]   ▸ Round 1: dispatching 27 sub-agents
+[14:32:24]   ▸ Round 1: 27 complete (23 succeeded, 4 failed) — 127s
+[14:32:24]   ▸ Round 1: 7 fix, 3 false positive, 2 noise — fixing
+[14:32:30]   ▸ Round 1: build + test — passed
+[14:39:00] Phase 2: Review-Fix Loop — done (8m 43s)
 ```
 
-Record `T0` at skill start. All elapsed time calculations are relative to `T0`.
+**CRITICAL: Timestamps must be real wall-clock times, never fabricated.** Claude cannot read the system clock from its own context. To get the current time, run `date +%T` via the Bash tool before printing each log block. Cache the result for lines printed in quick succession (no need to call `date` for every single line in a batch). Never guess, estimate, or reuse a stale timestamp.
 
 ### 3. Checkpoint Every 5 Minutes
 
@@ -205,7 +204,7 @@ The `activeForm` should be a present-continuous verb phrase that fits naturally 
 
 ## Implementation Notes
 
-- Timestamps use `HH:MM:SS` in local time (matches the user's terminal)
+- Timestamps use `HH:MM:SS` in local time — **always obtained via `date +%T`**, never fabricated
 - Durations under 60s: show as `Xs` (e.g., `12s`)
 - Durations 60s+: show as `Xm Ys` (e.g., `2m 15s`)
 - Durations 60m+: show as `Xh Ym` (e.g., `1h 12m`)
