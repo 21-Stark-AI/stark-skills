@@ -175,25 +175,19 @@ def check_cost_hard_stop() -> tuple[str, str]:
 
 
 def check_deprecated_config() -> tuple[str, str]:
-    """Warn if both old config keys (model_pins) and new key (models) coexist."""
+    """Warn if org/repo overrides still contain deprecated model_pins key."""
     try:
         from config_loader import load_config
         config = load_config()
     except Exception as exc:
         return "warn", f"could not load config: {exc}"
 
-    old_keys_found: list[str] = []
-    if "model_pins" in config:
-        old_keys_found.append("model_pins")
     automation = config.get("automation", {})
     if isinstance(automation, dict) and "model_pins" in automation:
-        old_keys_found.append("automation.model_pins")
-
-    if old_keys_found and "models" in config:
         return (
             "warn",
-            f"deprecated keys still present alongside 'models': {', '.join(old_keys_found)} "
-            "— remove deprecated keys to avoid confusion",
+            "automation.model_pins found in org/repo config override — "
+            "remove it; use the 'models' block instead",
         )
     return "pass", "no deprecated config keys"
 

@@ -109,11 +109,6 @@
       "codex":  { "app_id": 3066834, "installation_id": 115650994 },
       "gemini": { "app_id": 3066689, "installation_id": 115648971 }
     },
-    "model_pins": {
-      "claude": { "file": "scripts/claude_utils.py", "constant": "CLAUDE_MODEL" },
-      "codex":  { "file": "scripts/codex_utils.py",  "constant": "CODEX_MODEL" },
-      "gemini": { "file": "scripts/gemini_utils.py",  "constant": "GEMINI_MODEL" }
-    },
     "cost_alert_threshold_usd_per_week": 50.0,
     "slack_channel": "#stark-automation",
     "triggers": {

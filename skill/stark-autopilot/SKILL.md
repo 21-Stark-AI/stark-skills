@@ -199,6 +199,20 @@ $PYTHON $SCRIPTS/autopilot_dispatch.py \
 
 Print step summary, then move to next step. The next step's agents will work from the current HEAD, which includes the winner's changes.
 
+### 2i. Session state update
+
+After each step completes:
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+Call `add_task("{step_id}")` programmatically, or note the step completion in context. The session state tracks which autopilot steps have completed so a crashed session can identify what was already done.
+
+Every `context_compaction.checkpoint_interval_minutes` minutes (from config, default 15), generate a checkpoint:
+```bash
+python3 ~/.claude/code-review/scripts/context_compactor.py --json 2>/dev/null || true
+```
+Track the last checkpoint time and skip if not enough time has elapsed.
+
 ## Phase 2.5: End-of-Run Verification (MANDATORY)
 
 After ALL steps complete, run full import chain test, smoke test, and SDK API spot-check. For verification procedures, see [references/verification-gates.md](references/verification-gates.md).

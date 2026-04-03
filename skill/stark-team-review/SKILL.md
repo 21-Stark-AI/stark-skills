@@ -352,6 +352,20 @@ Analyze patterns across all rounds:
 
 **Recommend only — do NOT modify prompts.**
 
+## Phase 3b: Skill Suggestions
+
+After review completion, surface relevant follow-up skills:
+
+```bash
+python3 ~/.claude/code-review/scripts/skill_router.py --context review --json 2>/dev/null || true
+```
+
+Parse the JSON. Display at most 2 suggestions:
+```
+Next steps: /stark-review-improvement, /stark-metrics
+```
+Skip silently if the command fails or returns no suggestions.
+
 ## Phase 4: Post & Persist
 
 If `auth_failed`: skip all posting (4.1–4.3). Print summary to terminal with a note: "Review not posted to PR (auth failed). Copy the above to post manually." Jump to 4.4.

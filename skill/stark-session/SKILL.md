@@ -58,6 +58,19 @@ Security note: all commands execute through Claude Code's standard permission sy
 
 ## Start Mode
 
+### Phase 0b — Session State
+
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+
+Parse the JSON output:
+- Display: `Session: {session_id} | Branch: {branch} | Started: {started_at}`
+- If `tasks_completed` is non-empty (resuming): display `Resuming session: {N} tasks completed`
+- If `last_checkpoint` is set: display `Last checkpoint: {last_checkpoint}`
+
+If the command fails, skip silently — session state is optional.
+
 ### Phase 1 — Gather context (silent)
 
 Read and internalize — do NOT display any of this content.
@@ -196,6 +209,18 @@ If it fails, skip silently — persona is optional, never blocks session start.
 
 The random pop-up survey (1-in-5 chance) fires AFTER persona selection, not before. If the survey triggers, present ONE question after the briefing.
 
+### Phase 4c — Skill Suggestions
+
+```bash
+python3 ~/.claude/code-review/scripts/skill_router.py --context session --json 2>/dev/null || true
+```
+
+Parse the JSON. If `suggestions` is non-empty, display at most 2:
+```
+Suggested: /stark-housekeeping, /stark-skill-analytics
+```
+If the command fails or returns no suggestions, skip silently.
+
 ### Phase 5 — Briefing
 
 Present a concise briefing:
@@ -290,6 +315,26 @@ Uses user's PAT via `gh` CLI — NOT the GitHub App bots.
 - If no devlog configured, still ask for a summary for commit message
 - `git diff --cached --stat` — if empty, skip commit
 - Commit: `git commit -m "docs: session update — <summary>"`
+
+### Phase 3b — Session Checkpoint
+
+Generate a final checkpoint for context window recovery:
+
+```bash
+python3 ~/.claude/code-review/scripts/context_compactor.py --json 2>/dev/null || true
+```
+
+Parse the JSON and note: `Checkpoint written: {checkpoint_path}`
+
+If the command fails, skip silently — checkpointing is optional.
+
+Record the end-of-session state (including the checkpoint path just written):
+
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+
+This loads the current session state, which triggers an auto-save — persisting the final snapshot (tasks completed, last checkpoint, end-of-session context). If it fails, skip silently.
 
 ### Phase 4 — Project Field Updates
 

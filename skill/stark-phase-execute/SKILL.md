@@ -477,6 +477,19 @@ Append to the observability JSON:
 
 Print: `[HH:MM:SS]   ✓ Task #{NUMBER} merged (PR #{PR_NUM}, {rounds} rounds, {duration})`
 
+### 1.7b Session state update
+
+After each task merges successfully, update session state and optionally checkpoint:
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+Record `"phase/{SLUG}/issue-{NUMBER}"` as a completed task. Track elapsed time since last checkpoint; if `context_compaction.checkpoint_interval_minutes` has elapsed (from config), generate one:
+```bash
+python3 ~/.claude/code-review/scripts/context_compactor.py --json 2>/dev/null || true
+```
+
+Both calls are best-effort — wrap in `|| true` or `2>/dev/null`. Never let session state failure block task execution.
+
 ### 1.8 Error handling
 
 If any step fails for a task:
@@ -566,6 +579,22 @@ ${DEPLOY_COMMAND}
 ## Phase 4: Dashboard
 
 Present a comprehensive summary after everything completes. See [references/dashboard-format.md](references/dashboard-format.md) for table formats (task summary, aggregate stats, agent scorecard, failed tasks).
+
+---
+
+## Phase 4b: Skill Suggestions
+
+After all tasks complete, suggest relevant follow-up skills:
+
+```bash
+python3 ~/.claude/code-review/scripts/skill_router.py --context implementation --json 2>/dev/null || true
+```
+
+Parse the JSON. Display at most 2 suggestions:
+```
+Next steps: /stark-init-docs, /stark-extract-docs
+```
+Skip silently if the command fails or returns no suggestions.
 
 ---
 
