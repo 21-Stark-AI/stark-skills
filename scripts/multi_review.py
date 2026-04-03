@@ -687,6 +687,17 @@ def _run_subagent_inner(
                     f"{stderr_snippet}",
                     file=sys.stderr,
                 )
+                # Persist full stderr to disk for post-mortem debugging
+                _err_dir = Path.home() / ".claude" / "code-review" / "logs"
+                _err_dir.mkdir(parents=True, exist_ok=True)
+                _err_file = _err_dir / f"{agent}-{domain_key}-error.log"
+                _err_file.write_text(
+                    f"exit_code={result.returncode}\n"
+                    f"cmd={' '.join(cmd)}\n"
+                    f"attempt={attempt}/{max_attempts}\n"
+                    f"stderr:\n{result.stderr}\n"
+                    f"stdout:\n{result.stdout[:1000]}\n"
+                )
                 if (
                     agent == "gemini"
                     and attempt < max_attempts
