@@ -134,6 +134,24 @@ If `.github/project-config.json` exists in the repo root:
 
 If project config is missing, skip silently.
 
+### Phase 2b — Unacknowledged Alerts
+
+Check for unacknowledged critical alerts before proceeding:
+
+```bash
+python3 ~/.claude/code-review/scripts/alert_delivery.py --check --json 2>/dev/null || true
+```
+
+Parse the JSON. If `unacknowledged` is non-empty, display prominently **before** the briefing:
+
+```
+ALERT: {N} unacknowledged alert(s) require attention:
+  {for each: marker path}
+Run: python3 ~/.claude/code-review/scripts/alert_delivery.py --check
+```
+
+Non-fatal — continue with session start even if alerts exist. If the command fails, skip silently.
+
 ### Phase 3 — Health checks
 
 Run each command in `session.health_checks` from config. Capture stdout/stderr on failure for display in briefing. Report pass/fail — non-fatal, never blocking.

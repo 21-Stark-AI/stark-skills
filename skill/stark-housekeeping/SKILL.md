@@ -358,6 +358,7 @@ Checkpoint files removed:  {N}
 Stale locks removed:       {N}
 Logs rotated:              {N}
 Validation logs removed:   {N}
+Artifacts archived:        {N} files into {M} archives
 
 Potential duplicates: {N}
   {for each: #{A} and #{B}: "{title}"}
@@ -464,6 +465,48 @@ Present the list. If `--dry-run`, stop here. Otherwise delete them.
 
 Report: `Validation logs removed: {N}`
 
+### 5.6 Artifact archival
+
+Archive automation logs and autopilot history older than 30 days.
+
+**Archive sources:**
+- `automation/logs/` — automation run logs
+- `~/.claude/code-review/history/autopilot/` — autopilot session history
+
+**Archive destination:** `~/.claude/code-review/archives/`
+
+**Naming:** `{source-slug}-{YYYY-MM}.tar.gz` — one archive per source per calendar month.
+
+For each source directory:
+1. Find files older than 30 days: `find <dir> -maxdepth 1 -type f -mtime +30`
+2. Group by calendar month of last modification (YYYY-MM)
+3. For each month group, check if `archives/{source-slug}-{YYYY-MM}.tar.gz` already exists
+   - If it exists, append to it (use `tar -rf`); otherwise create new archive
+
+In `--dry-run` mode:
+```
+Artifacts to archive:
+  automation/logs/ → 12 files → archives/automation-logs-2025-12.tar.gz (8 files), archives/automation-logs-2026-01.tar.gz (4 files)
+  history/autopilot/ → 3 files → archives/autopilot-2026-01.tar.gz (3 files)
+```
+
+In normal mode:
+```bash
+ARCHIVE_DIR=~/.claude/code-review/archives
+mkdir -p "$ARCHIVE_DIR"
+
+# For each source and month group:
+tar -czf "$ARCHIVE_DIR/{slug}-{YYYY-MM}.tar.gz" -C <parent> <files...>
+# Verify archive (test extraction succeeds):
+tar -tzf "$ARCHIVE_DIR/{slug}-{YYYY-MM}.tar.gz" > /dev/null
+# Only delete originals after successful verification:
+rm <files...>
+```
+
+If archive creation or verification fails, leave originals in place and report the error.
+
+Report: `Artifacts archived: {N} files into {M} archives`
+
 ---
 
 ## Observability
@@ -487,6 +530,7 @@ $SCRIPTS/stark-emit skill_invocation \
   session_files_removed=$SESSION_FILES checkpoint_files_removed=$CHECKPOINT_FILES \
   stale_locks_removed=$STALE_LOCKS logs_rotated=$LOGS_ROTATED \
   validation_logs_removed=$VALIDATION_LOGS \
+  artifacts_archived_files=$ARCHIVED_FILES artifacts_archived_count=$ARCHIVED_COUNT \
   dry_run=$DRY_RUN aggressive=$AGGRESSIVE
 ```
 
