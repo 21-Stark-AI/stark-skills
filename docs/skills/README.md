@@ -12,7 +12,7 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 **Step 1 — `/stark-design`** takes a prompt or requirements file and produces a design document. Three agents each write their own design, then cross-review each other on completeness, clarity, feasibility, extensibility, and security. The orchestrator synthesizes the winner with the best elements from the runners-up.
 
-**Step 2 — `/stark-review-design`** puts that design through 10 domain specialists (general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience) running across 2-3 agents. It fixes issues autonomously for up to 3 rounds, then runs a final review-only pass.
+**Step 2 — `/stark-review-design`** puts that design through 12 domain specialists (general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility, test-plan) running across 2-3 agents. It fixes issues autonomously for up to 3 rounds, then runs a final review-only pass.
 
 **Step 3 — `/stark-design-to-plan`** converts the reviewed design into a phased implementation plan. Same 3-generate + 6-cross-review pattern, but scoring on completeness, feasibility, phasing, risk coverage, and testability.
 

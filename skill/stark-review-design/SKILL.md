@@ -1,7 +1,7 @@
 ---
 name: stark-review-design
 description: >-
-  Multi-agent design/spec review: multi-LLM x 11 domains. Use for review design, review spec, review architecture.
+  Multi-agent design/spec review: multi-LLM x 12 domains. Use for review design, review spec, review architecture.
 argument-hint: "<path> [--rounds N] [--dry-run] [--force] [--tournament]"
 disable-model-invocation: true
 model: opus
@@ -9,7 +9,7 @@ model: opus
 
 # stark-review-design
 
-Multi-agent architecture/spec review: N agents × 10 domain specializations dispatched in parallel
+Multi-agent architecture/spec review: N agents × 12 domain specializations dispatched in parallel
 (default: 2 agents — Claude + Codex; configurable up to 3 with Gemini). Review-fix loop for up to
 N rounds, then final review-only round. Answers the question: **"Is this the right system?"**
 
@@ -23,9 +23,9 @@ N rounds, then final review-only round. Answers the question: **"Is this the rig
 
 **Raw input:** `$ARGUMENTS`
 
-## Domains (10)
+## Domains (12)
 
-`general`, `completeness`, `security`, `scope`, `api-design`, `data-modeling`, `consistency`, `scalability`, `extensibility`, `resilience`
+`general`, `completeness`, `security`, `scope`, `api-design`, `data-modeling`, `consistency`, `scalability`, `extensibility`, `resilience`, `accessibility`, `test-plan`
 
 ## Constants
 
@@ -83,15 +83,15 @@ max_rounds=3
 
 When `--tournament` is passed, skip the normal Phase 2 / Phase 3 loop and run this instead:
 
-Each of the 3 agents (Claude, Codex, Gemini) independently reviews the **entire design document across ALL 11 domains** in a single comprehensive pass. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead, the skill orchestrator:
+Each of the 3 agents (Claude, Codex, Gemini) independently reviews the **entire design document across ALL 12 domains** in a single comprehensive pass. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead, the skill orchestrator:
 
-1. Combines all 10 domain prompts into a single comprehensive prompt per agent
+1. Combines all 12 domain prompts into a single comprehensive prompt per agent
 2. Dispatches each agent ONCE with the combined prompt (directly via CLI, not via plan_review_dispatch.py)
 3. Collects 3 full review documents (one per agent)
 4. Calls `evaluate_review()` from `tournament.py` to judge them
 
 The 3 competing reviews are evaluated by `tournament.py`'s `evaluate_review()` function. The judge evaluates on:
-- Coverage — did the agent find issues across all 11 domains?
+- Coverage — did the agent find issues across all 12 domains?
 - Severity accuracy — are severity ratings calibrated correctly?
 - False positive rate — are flagged issues real?
 - Actionability — are findings specific enough to act on?
@@ -133,7 +133,7 @@ For round = 1 to max_rounds:
 $PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir design-review --file "$path" --round $round --timeout 300
 ```
 
-Capture stdout as JSON. This dispatches all N×11 sub-agents (N agents × 11 domains, default N=2) in parallel and returns structured results.
+Capture stdout as JSON. This dispatches all N×12 sub-agents (N agents × 12 domains, default N=2) in parallel and returns structured results.
 
 Parse the JSON output. Extract findings from `results[].findings[]`.
 
@@ -418,7 +418,7 @@ For tournament mode:
 
 ```
 [HH:MM:SS] === stark-review-design (tournament) started ===
-[HH:MM:SS]   ▸ Dispatching 3 comprehensive reviews (all 11 domains)
+[HH:MM:SS]   ▸ Dispatching 3 comprehensive reviews (all 12 domains)
 [HH:MM:SS]   ▸ All 3 agents returned — 240s
 [HH:MM:SS]   ▸ Judge evaluation pass 1
 [HH:MM:SS]   ▸ Judge evaluation pass 2 (order swapped)
