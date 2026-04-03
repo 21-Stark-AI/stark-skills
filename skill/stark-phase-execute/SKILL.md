@@ -8,6 +8,18 @@ context: fork
 model: opus
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-phase-execute --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue.
+- If `overall` is "ready": continue silently.
+- In non-interactive automation contexts, a blocked preflight must emit a `preflight_check` event with `status=blocked`, append an entry to `~/.claude/code-review/alerts.jsonl`, and exit non-zero so the trigger is marked failed.
+
 # stark-phase-execute
 
 Autonomous execution engine for development phases. Takes a plan slug (or plan file path), fetches all associated GitHub issues, and executes each one through a complete development lifecycle: branch → implement → test → PR → multi-agent review → fix → merge → next. If no issues exist yet, automatically runs `/stark-plan-to-tasks` to decompose the plan first.
@@ -67,6 +79,7 @@ Resolve plan slug from argument:
   - Example: `docs/superpowers/plans/2026-03-23-stark-signals.md` → `SLUG=2026-03-23-stark-signals`
   - **MUST match `/stark-plan-to-tasks`** — if you change this, change both skills.
 - Otherwise: treat as slug directly (`SLUG=$1`)
+- Track the resolved plan path as `plan_path` whenever a plan file is provided or discovered later.
 
 ---
 
@@ -160,6 +173,12 @@ Otherwise:
 3. **Re-fetch tasks** using the same logic from 0.2 (project-based or label-based) and filter per 0.2. The newly created issues should now appear.
 
 4. If still no tasks → stop: "Decomposition ran but produced no issues. Check /stark-plan-to-tasks output for errors."
+
+### 0.3b Approach Contract
+Before dispatching expensive implementation work, confirm the approach:
+```bash
+python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file <plan_path> --force-confirm
+```
 
 ### 0.4 Phase briefing
 

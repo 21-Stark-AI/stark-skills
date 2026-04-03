@@ -31,12 +31,33 @@ from gemini_utils import (
     parse_json_output as parse_gemini_output,
 )
 
+try:
+    from config_loader import get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
+
 # ── Config ──────────────────────────────────────────────────────────────
 
 
-AGENTS = ["claude", "codex", "gemini"]
+AGENTS = [a for a in ["claude", "codex", "gemini"] if is_agent_enabled(a)]
+if not AGENTS:
+    AGENTS = ["claude", "codex", "gemini"]
 CODEX_REASONING_CONFIG = CODEX_REASONING_EFFORT_MEDIUM
 DEFAULT_TIMEOUT = 900  # Implementation needs more time
+
+
+def _resolve_model(agent: str) -> str:
+    if agent == "claude":
+        return get_model_id(agent) or "claude"
+    if agent == "codex":
+        return get_model_id(agent) or CODEX_MODEL
+    if agent == "gemini":
+        return get_model_id(agent) or GEMINI_MODEL
+    raise ValueError(f"Unknown agent: {agent}")
 
 
 # ── Data structures ────────────────────────────────────────────────────
@@ -191,6 +212,10 @@ def _run_implementation_agent(
     result = StepResult(agent=agent, step_id=step_id, worktree_path=worktree_path)
     t0 = time.monotonic()
 
+    if not is_agent_enabled(agent):
+        result.error = "agent_disabled"
+        return result
+
     gemini_home = None
     stdin_input = None
 
@@ -201,7 +226,7 @@ def _run_implementation_agent(
     elif agent == "codex":
         cmd = [
             "codex", "exec",
-            "-m", CODEX_MODEL,
+            "-m", _resolve_model("codex"),
             "-c", CODEX_REASONING_CONFIG,
             "--ephemeral", "--json",
             "--full-auto",
@@ -213,7 +238,7 @@ def _run_implementation_agent(
         gemini_home = setup_gemini_home("gemini-autopilot-", worktree_path, "autopilot")
         cmd = [
             "gemini",
-            "-m", GEMINI_MODEL,
+            "-m", _resolve_model("gemini"),
             "-p", prompt,
             "--yolo",
         ]
@@ -326,11 +351,18 @@ def run_step_tournament(
     """
     if agents is None:
         agents = list(AGENTS)
+        skipped_agents: list[str] = []
+    else:
+        requested_agents = list(agents)
+        agents = [agent for agent in requested_agents if is_agent_enabled(agent)]
+        skipped_agents = [agent for agent in requested_agents if not is_agent_enabled(agent)]
 
     total = len(agents)
     print(f"\n{'=' * 60}", file=sys.stderr)
     print(f"  Step: {step_id} — {total} agents competing", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
+    for agent in skipped_agents:
+        print(f"  [{agent}] skipped: disabled in config", file=sys.stderr)
 
     # Create worktrees
     worktrees: dict[str, str] = {}
@@ -438,6 +470,8 @@ def cleanup_step(repo_root: str, step_id: str, agents: list[str] | None = None) 
     """Clean up all worktrees and branches for a step."""
     if agents is None:
         agents = list(AGENTS)
+    else:
+        agents = [agent for agent in agents if is_agent_enabled(agent)]
     for agent in agents:
         branch_name = f"autopilot/{agent}/{step_id}"
         worktree_dir = os.path.join(repo_root, ".worktrees", f"autopilot-{agent}-{step_id}")

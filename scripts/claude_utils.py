@@ -7,8 +7,26 @@ from __future__ import annotations
 
 import os
 
+try:
+    from config_loader import get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
+
+try:
+    from runtime_env import build_agent_env
+except ImportError:  # pragma: no cover - backward compat for older installs
+    build_agent_env = None
+
 # Default model — pinned to avoid drift when the CLI default changes.
 CLAUDE_MODEL = "claude-sonnet-4-6"
+
+
+class AgentDisabledError(RuntimeError):
+    pass
 
 # Vertex AI config for headless sub-agent dispatch.
 # Bypasses OAuth login — uses ADC (gcloud auth application-default login).
@@ -31,6 +49,9 @@ def make_clean_env() -> dict[str, str]:
     injects Vertex AI env vars so sub-agents authenticate via ADC
     instead of requiring interactive OAuth login.
     """
+    if build_agent_env is not None:
+        return build_agent_env("claude", "review")
+
     env = {
         k: v for k, v in os.environ.items()
         if k not in _STRIPPED_ENV_VARS
@@ -55,11 +76,14 @@ def build_claude_cmd(
         allowed_tools: Comma-separated tool allowlist (e.g. "Edit,Write,Read,Bash").
             If None, Claude runs with default permissions (no tool auto-approval).
     """
+    if not is_agent_enabled("claude"):
+        raise AgentDisabledError("claude agent is disabled in config")
+    model_id = get_model_id("claude") or CLAUDE_MODEL
     cmd = [
         "claude",
         "-p", "-",
         "--output-format", output_format,
-        "--model", CLAUDE_MODEL,
+        "--model", model_id,
         "--no-session-persistence",
     ]
     if allowed_tools:

@@ -7,6 +7,18 @@ disable-model-invocation: true
 model: opus
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-autopilot --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue with available agents.
+- If `overall` is "ready": continue silently.
+- In non-interactive automation contexts, a blocked preflight must emit a `preflight_check` event with `status=blocked`, append an entry to `~/.claude/code-review/alerts.jsonl`, and exit non-zero so the trigger is marked failed.
+
 # stark-autopilot
 
 Autonomous implementation with tournament-per-step. Claude orchestrates while all 3 agents
@@ -49,6 +61,8 @@ Two input modes:
 
 **Inline prompt:** If input is a description, decompose it into steps yourself. For complex tasks, create 3-5 implementation steps that build on each other. For simple tasks, a single step is fine.
 
+When a plan file path is available, retain it as `plan_path` for the approach contract step.
+
 ### 1.2 Extract steps
 
 Parse the plan into an ordered list of steps. Each step needs:
@@ -87,6 +101,12 @@ Each step: 3 agents compete in parallel worktrees → tournament → winner merg
 ```
 
 If `--dry-run`, stop here.
+
+### 1.5 Approach Contract
+Before dispatching agents, confirm the approach:
+```bash
+python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file <plan_path> --force-confirm
+```
 
 ## Phase 2: Execute Steps
 
