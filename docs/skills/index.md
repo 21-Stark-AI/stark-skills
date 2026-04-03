@@ -5,7 +5,7 @@
 | Skill | Description | Docs |
 |-------|-------------|------|
 | `/stark-design` | Generate design doc from requirements — 3 agents generate, 6 cross-review, synthesize winner | [usage](stark-design/usage.md) · [internals](stark-design/internals.md) |
-| `/stark-review-design` | Multi-agent design/spec review — N agents × 10 domains with fix loop | [usage](stark-review-design/usage.md) · [internals](stark-review-design/internals.md) |
+| `/stark-review-design` | Multi-agent design/spec review — N agents × 12 domains with fix loop | [usage](stark-review-design/usage.md) · [internals](stark-review-design/internals.md) |
 | `/stark-design-to-plan` | Generate implementation plan from design — 3 agents generate, 6 cross-review, synthesize | [usage](stark-design-to-plan/usage.md) · [internals](stark-design-to-plan/internals.md) |
 | `/stark-review-plan` | Multi-agent plan review — N agents × 10 adversarial domains with fix loop | [usage](stark-review-plan/usage.md) · [internals](stark-review-plan/internals.md) |
 | `/stark-plan-to-tasks` | Decompose plan into phased GitHub issues with story points | [usage](stark-plan-to-tasks/usage.md) · [internals](stark-plan-to-tasks/internals.md) |

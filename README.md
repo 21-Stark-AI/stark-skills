@@ -45,7 +45,7 @@ Review artifacts before they ship. Each review skill dispatches 3 LLMs in parall
 |-------|----------------|-------------|
 | `/stark-review` | PR code changes | Quick review. 1 LLM × 9 domains — fast, cheap, default agent configurable per domain. |
 | [`/stark-team-review`](docs/skills/stark-team-review/usage.md) | PR code changes | Thorough review. 3 LLMs × 9 domains, autonomous fix loop. |
-| [`/stark-review-design`](docs/skills/stark-review-design/usage.md) | Architecture and design docs | Before committing to a design. Reviews across 10 domains (completeness, security, scalability, etc.). |
+| [`/stark-review-design`](docs/skills/stark-review-design/usage.md) | Architecture and design docs | Before committing to a design. Reviews across 12 domains (completeness, security, scalability, etc.). |
 | [`/stark-review-plan`](docs/skills/stark-review-plan/usage.md) | Execution plans and deployment plans | Before executing. Adversarial SRE review across 10 failure vectors — assumes the plan will break. |
 | [`/stark-review-improvement`](docs/skills/stark-review-improvement/usage.md) | Review prompt effectiveness | After reviews produce too many false positives. Tunes agent prompts based on assessment data. |
 | [`/stark-review-design-improvement`](docs/skills/stark-review-design-improvement/usage.md) | Design review prompt effectiveness | After design reviews produce too many false positives. Wraps `/stark-review-improvement` with design-review prompts. |

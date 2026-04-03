@@ -23,6 +23,8 @@ import html.parser
 import json
 import re
 import shutil
+
+import yaml
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -76,21 +78,13 @@ def parse_skill_md(path: Path) -> SkillData:
     argument_hint = ""
     fm_match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
     if fm_match:
-        fm = fm_match.group(1)
-        m = re.search(r"^name:\s*(.+)", fm, re.MULTILINE)
-        if m:
-            name = m.group(1).strip()
-        # description may span multiple lines (YAML folded scalar >)
-        m = re.search(r"^description:\s*>\s*\n((?:\s+.+\n?)*)", fm, re.MULTILINE)
-        if m:
-            description = " ".join(m.group(1).split())
-        else:
-            m = re.search(r"^description:\s*(.+)", fm, re.MULTILINE)
-            if m:
-                description = m.group(1).strip()
-        m = re.search(r"^argument-hint:\s*(.+)", fm, re.MULTILINE)
-        if m:
-            argument_hint = m.group(1).strip().strip('"')
+        try:
+            fm = yaml.safe_load(fm_match.group(1)) or {}
+        except yaml.YAMLError:
+            fm = {}
+        name = fm.get("name", name)
+        description = fm.get("description", description)
+        argument_hint = fm.get("argument-hint", argument_hint)
 
     complexity = "simple" if line_count < 100 else "medium" if line_count <= 400 else "complex"
 

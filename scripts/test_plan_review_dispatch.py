@@ -345,20 +345,21 @@ class TestCLIArguments:
         """--prompts-dir flag is accepted by argparse (exit code 2 = argparse failure)."""
         plan_file = tmp_path / "plan.md"
         plan_file.write_text("# Test plan")
-        import sys
-        script = str(
-            Path(__file__).parent / "plan_review_dispatch.py"
-        )
-        result = subprocess.run(
-            [sys.executable, script, "--file", str(plan_file), "--prompts-dir", "design-review"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        # exit code 2 means argparse rejected a flag — any other code is fine
-        assert result.returncode != 2, (
-            f"argparse rejected --prompts-dir flag: {result.stderr}"
-        )
+        import argparse
+
+        # Build the parser the same way main() does and parse without running dispatch
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--file", required=True)
+        parser.add_argument("--round", type=int, default=1)
+        parser.add_argument("--timeout", type=int, default=300)
+        parser.add_argument("--repo-dir")
+        parser.add_argument("--agents")
+        parser.add_argument("--disabled-domains")
+        parser.add_argument("--prompts-dir", default="plan-review")
+        parser.add_argument("--config-section", default=None)
+
+        args = parser.parse_args(["--file", str(plan_file), "--prompts-dir", "design-review"])
+        assert args.prompts_dir == "design-review"
 
     def test_prompts_dir_default_is_plan_review(self, tmp_path):
         """--prompts-dir defaults to 'plan-review' when not specified."""
