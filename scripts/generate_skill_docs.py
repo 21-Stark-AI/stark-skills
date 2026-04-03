@@ -38,7 +38,7 @@ SCRIPT_VERSION = "1.0.0"
 MAX_WORKERS = 6
 
 from tournament import (
-    AGENTS,
+    AGENTS, _ALL_AGENTS,
     dispatch_competitor as _run_viz_agent,
     evaluate_visual as run_evaluation,
     build_eval_prompt as build_evaluation_prompt,
@@ -389,7 +389,8 @@ def _parse_viz_response(raw: str) -> dict[str, Any]:
 
 def stamp_winner_html(html: str, winner: str, score: float) -> str:
     """Replace footer placeholder with winning LLM attribution badge."""
-    badge = f'Visualization by {AGENTS[winner]["label"]} · Score: {score:.1f}/10 · Generated from SKILL.md'
+    agent_info = AGENTS.get(winner) or _ALL_AGENTS.get(winner, {"label": winner.title()})
+    badge = f'Visualization by {agent_info["label"]} · Score: {score:.1f}/10 · Generated from SKILL.md'
     return re.sub(
         r'<div class="footer">.*?</div>',
         f'<div class="footer"><div class="winner-badge">{badge}</div></div>',

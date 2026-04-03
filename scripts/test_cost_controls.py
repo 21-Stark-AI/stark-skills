@@ -157,16 +157,17 @@ class TestCheckCosts:
         result = self._check(tmp_path, [_entry(10.0, "test")])
         assert result["budget_remaining_usd"] == pytest.approx(40.0)
 
-    def test_critical_when_daily_exceeds_hard_stop(self, tmp_path):
-        # daily_alert_usd=15, hard_stop_usd=100 — daily spend of 101 triggers critical
-        # via the elif branch (not weekly hard_stop path)
+    def test_hard_stop_when_daily_exceeds_hard_stop(self, tmp_path):
+        # daily spend of 101 exceeds hard_stop_usd=100 — triggers hard_stop
         config = {**_DEFAULT_CONFIG, "weekly_budget_usd": 200.0, "hard_stop_usd": 100.0}
         result = self._check(tmp_path, [_entry(101.0, "test")], config=config)
-        assert result["alert_level"] == "critical"
+        assert result["alert_level"] == "hard_stop"
 
     def test_malformed_jsonl_lines_are_skipped(self, tmp_path):
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         tracking = tmp_path / "cost-tracking.jsonl"
-        tracking.write_text('not-json\n{"timestamp":"2026-01-01T00:00:00Z","cost_usd":5.0,"source":"x"}\n')
+        tracking.write_text(f'not-json\n{{"timestamp":"{now_str}","cost_usd":5.0,"source":"x"}}\n')
         result = cost_controls.check_costs(
             tracking_path=tracking,
             alerts_path=tmp_path / "alerts.jsonl",
