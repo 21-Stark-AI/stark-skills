@@ -20,7 +20,7 @@ import statistics
 import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -76,6 +76,13 @@ class RunRecord:
     metrics: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
+
+# ---------------------------------------------------------------------------
+# Failure telemetry paths
+# ---------------------------------------------------------------------------
+
+HEALER_LOG = Path.home() / ".claude" / "code-review" / "healer.jsonl"
+VALIDATION_LOG_DIR = Path.home() / ".claude" / "code-review" / "logs"
 
 # ---------------------------------------------------------------------------
 # History loading & normalization
@@ -318,6 +325,77 @@ def _parse_findings_summary(data: dict) -> FindingSummary:
     )
 
 
+def load_failure_metrics() -> dict:
+    """Parse healer.jsonl and validation logs to compute failure telemetry metrics."""
+    result: dict = {
+        "validation_pass_rate": None,
+        "top_failure_categories": {},
+        "heal_success_rate": None,
+        "heal_attempts_total": 0,
+    }
+
+    # --- Parse healer.jsonl for heal_attempt events ---
+    heal_attempts = 0
+    heal_successes = 0
+    category_counts: Counter = Counter()
+
+    if HEALER_LOG.exists():
+        try:
+            for line in HEALER_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # failure_classifier entries have "category" field
+                category = entry.get("category")
+                if category and category != "UNCLASSIFIED":
+                    category_counts[category] += 1
+                # self_healer entries have "action" + "status"
+                action = entry.get("action")
+                status = entry.get("status")
+                if action and status in ("applied", "suggested", "skipped"):
+                    heal_attempts += 1
+                    if status == "applied":
+                        verify_passed = entry.get("verify_passed", False)
+                        if verify_passed:
+                            heal_successes += 1
+        except OSError:
+            pass
+
+    result["heal_attempts_total"] = heal_attempts
+    if heal_attempts > 0:
+        result["heal_success_rate"] = round(heal_successes / heal_attempts * 100, 1)
+    result["top_failure_categories"] = dict(category_counts.most_common(5))
+
+    # --- Parse validation log dir for pass/fail counts ---
+    validation_pass = 0
+    validation_fail = 0
+
+    if VALIDATION_LOG_DIR.exists():
+        try:
+            for log_file in sorted(VALIDATION_LOG_DIR.glob("*.stderr")):
+                # A non-empty stderr file means the validation failed
+                try:
+                    content = log_file.read_text(encoding="utf-8", errors="replace")
+                    if content.strip():
+                        validation_fail += 1
+                    else:
+                        validation_pass += 1
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    validation_total = validation_pass + validation_fail
+    if validation_total > 0:
+        result["validation_pass_rate"] = round(validation_pass / validation_total * 100, 1)
+
+    return result
+
+
 def load_all_records() -> list[RunRecord]:
     """Load and normalize all history into RunRecords."""
     records: list[RunRecord] = []
@@ -377,6 +455,136 @@ def _fmt_duration(seconds: float) -> str:
     if seconds < 3600:
         return f"{seconds / 60:.0f}m {seconds % 60:.0f}s"
     return f"{seconds / 3600:.0f}h {(seconds % 3600) / 60:.0f}m"
+
+
+def _kpi_status(value: float | None, good: float, warn: float, lower_is_better: bool = False) -> str:
+    """Return good/warning/critical/unknown based on thresholds."""
+    if value is None:
+        return "unknown"
+    if lower_is_better:
+        if value <= good:
+            return "good"
+        elif value <= warn:
+            return "warning"
+        return "critical"
+    else:
+        if value >= good:
+            return "good"
+        elif value >= warn:
+            return "warning"
+        return "critical"
+
+
+def compute_kpis(records: list[RunRecord], failure_telemetry: dict | None = None) -> dict:
+    """Compute 8 KPIs with value, trend (vs previous period), and status."""
+    if failure_telemetry is None:
+        failure_telemetry = {}
+
+    now = datetime.now()
+    cutoff_current = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+    cutoff_previous = (now - timedelta(days=60)).strftime("%Y-%m-%d")
+    current = [r for r in records if r.started_at[:10] >= cutoff_current]
+    previous = [r for r in records if cutoff_previous <= r.started_at[:10] < cutoff_current]
+    # Fall back to all records if current period has too few data points
+    if len(current) < 2:
+        current = records
+        previous = []
+
+    def _vals(recs: list[RunRecord]) -> dict:
+        review_recs = [r for r in recs if "review" in r.skill.lower()]
+        total_review = len(review_recs)
+
+        # 1. review_coverage: % of review runs that produced findings
+        if total_review > 0:
+            with_findings = sum(1 for r in review_recs if r.findings and r.findings.total_raw > 0)
+            review_coverage: float | None = round(with_findings / total_review * 100, 1)
+        else:
+            review_coverage = None
+
+        # 2. mean_time_to_review: mean dispatch duration across review runs
+        durations: list[float] = []
+        for r in review_recs:
+            if r.agents and r.agents.results:
+                d = sum(ar.duration_s for ar in r.agents.results)
+                if d > 0:
+                    durations.append(d)
+            elif r.duration_s > 0:
+                durations.append(r.duration_s)
+        mean_ttr: float | None = round(statistics.mean(durations), 1) if durations else None
+
+        # 3. finding_density: avg findings per review run
+        densities: list[float] = []
+        for r in review_recs:
+            if r.findings:
+                n = r.findings.total_raw if r.findings.total_raw > 0 else r.findings.deduplicated
+                densities.append(float(n))
+        finding_density: float | None = round(statistics.mean(densities), 1) if densities else None
+
+        # 4. fix_rate: % of classified findings marked "fix"
+        total_classified = sum(
+            sum(r.findings.by_outcome.values())
+            for r in recs if r.findings and r.findings.by_outcome
+        )
+        fix_count = sum(
+            r.findings.by_outcome.get("fix", 0)
+            for r in recs if r.findings and r.findings.by_outcome
+        )
+        fix_rate: float | None = round(fix_count / total_classified * 100, 1) if total_classified > 0 else None
+
+        # 5. agent_agreement: % of raw findings that were duplicates (flagged by multiple agents)
+        total_raw = sum(r.findings.total_raw for r in recs if r.findings)
+        total_dedup = sum(r.findings.deduplicated for r in recs if r.findings and r.findings.deduplicated > 0)
+        if total_raw > 0 and total_dedup > 0:
+            agent_agreement: float | None = round((total_raw - total_dedup) / total_raw * 100, 1)
+        else:
+            agent_agreement = None
+
+        # 8. skill_adoption: distinct skills used as % of skills available
+        distinct = len({r.skill for r in recs})
+        skills_dir = Path.home() / ".claude" / "skills"
+        try:
+            total_skills = max(len([p for p in skills_dir.iterdir()]), 1)
+        except OSError:
+            total_skills = 26  # fallback constant
+        skill_adoption: float = round(distinct / total_skills * 100, 1)
+
+        return {
+            "review_coverage": review_coverage,
+            "mean_time_to_review": mean_ttr,
+            "finding_density": finding_density,
+            "fix_rate": fix_rate,
+            "agent_agreement": agent_agreement,
+            "skill_adoption": skill_adoption,
+        }
+
+    cur = _vals(current)
+    prev = _vals(previous) if previous else {}
+
+    def _trend(key: str) -> float | None:
+        c, p = cur.get(key), prev.get(key)
+        return round(c - p, 1) if c is not None and p is not None else None
+
+    ft = failure_telemetry
+
+    def _kpi(value: float | None, trend_val: float | None, good: float, warn: float,
+             lower: bool = False, unit: str = "") -> dict:
+        return {
+            "value": value,
+            "unit": unit,
+            "trend": trend_val,
+            "status": _kpi_status(value, good, warn, lower),
+        }
+
+    return {
+        "review_coverage":      _kpi(cur["review_coverage"],      _trend("review_coverage"),      80,  50,  unit="%"),
+        "mean_time_to_review":  _kpi(cur["mean_time_to_review"],  _trend("mean_time_to_review"),  300, 600, lower=True, unit="s"),
+        "finding_density":      _kpi(cur["finding_density"],      _trend("finding_density"),      3,   1,   unit="findings/review"),
+        "fix_rate":             _kpi(cur["fix_rate"],             _trend("fix_rate"),             20,  10,  unit="%"),
+        "agent_agreement":      _kpi(cur["agent_agreement"],      _trend("agent_agreement"),      30,  10,  unit="%"),
+        "validation_pass_rate": _kpi(ft.get("validation_pass_rate"), None,                       90,  70,  unit="%"),
+        "heal_success_rate":    _kpi(ft.get("heal_success_rate"),    None,                       70,  40,  unit="%"),
+        "skill_adoption":       _kpi(cur["skill_adoption"],       _trend("skill_adoption"),       50,  25,  unit="%"),
+    }
 
 
 def compute_report(records: list[RunRecord]) -> dict:
@@ -578,12 +786,60 @@ def compute_report(records: list[RunRecord]) -> dict:
 
     report["recommendations"] = recommendations
 
+    # --- Failure telemetry (healer + validation logs) ---
+    report["failure_telemetry"] = load_failure_metrics()
+
+    # --- KPIs ---
+    report["kpis"] = compute_kpis(records, report["failure_telemetry"])
+
     return report
 
 
 # ---------------------------------------------------------------------------
 # Formatters
 # ---------------------------------------------------------------------------
+
+def _format_kpi_value(kpi: dict) -> str:
+    v = kpi.get("value")
+    unit = kpi.get("unit", "")
+    if v is None:
+        return "—"
+    if unit == "s":
+        return _fmt_duration(float(v))
+    if unit == "%":
+        return f"{v}%"
+    if unit == "findings/review":
+        return f"{v} /review"
+    return str(v)
+
+
+_KPI_LABELS = {
+    "review_coverage":      "Review Coverage",
+    "mean_time_to_review":  "Mean Time to Review",
+    "finding_density":      "Finding Density",
+    "fix_rate":             "Fix Rate",
+    "agent_agreement":      "Agent Agreement",
+    "validation_pass_rate": "Validation Pass Rate",
+    "heal_success_rate":    "Heal Success Rate",
+    "skill_adoption":       "Skill Adoption",
+}
+
+
+def _format_kpis(kpis: dict) -> str:
+    lines: list[str] = []
+    for key, label in _KPI_LABELS.items():
+        kpi = kpis.get(key, {})
+        val_str = _format_kpi_value(kpi)
+        status = kpi.get("status", "unknown")
+        trend = kpi.get("trend")
+        if trend is not None:
+            sign = "+" if trend >= 0 else ""
+            trend_str = f"  ({sign}{trend})"
+        else:
+            trend_str = ""
+        lines.append(f"  {label:<25} {val_str:<22} [{status}]{trend_str}")
+    return "\n".join(lines)
+
 
 def format_human(report: dict) -> str:
     """Format report as human-readable terminal output."""
@@ -682,6 +938,30 @@ def format_human(report: dict) -> str:
             )
         lines.append("")
 
+    # Failure Telemetry
+    ft = report.get("failure_telemetry", {})
+    if ft.get("heal_attempts_total", 0) > 0 or ft.get("validation_pass_rate") is not None:
+        lines.append("Failure Telemetry")
+        lines.append("─" * 40)
+        if ft.get("validation_pass_rate") is not None:
+            lines.append(f"Validation pass rate:  {ft['validation_pass_rate']}%")
+        lines.append(f"Heal attempts:         {ft.get('heal_attempts_total', 0)}")
+        if ft.get("heal_success_rate") is not None:
+            lines.append(f"Heal success rate:     {ft['heal_success_rate']}%")
+        if ft.get("top_failure_categories"):
+            lines.append("Top failure categories:")
+            for cat, count in ft["top_failure_categories"].items():
+                lines.append(f"  {cat:<25} {count}")
+        lines.append("")
+
+    # KPIs
+    kpis = report.get("kpis", {})
+    if kpis:
+        lines.append("KPI Dashboard")
+        lines.append("─" * 40)
+        lines.append(_format_kpis(kpis))
+        lines.append("")
+
     # Recommendations
     recs = report["recommendations"]
     lines.append("Recommendations")
@@ -703,10 +983,21 @@ def format_human(report: dict) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Stark skill metrics aggregator")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument(
+        "--format", choices=["json", "human"], default=None,
+        help="Output format: json or human (overrides --json)",
+    )
     parser.add_argument("--repo", help="Filter by repo (e.g., GetEvinced/infra-pulse)")
     parser.add_argument("--skill", help="Filter by skill type (e.g., stark-team-review)")
     parser.add_argument("--since", help="Filter by date (YYYY-MM-DD)")
+    parser.add_argument("--kpi", action="store_true", help="Output only KPIs")
     args = parser.parse_args()
+
+    # --format json overrides --json flag; --format human suppresses it
+    if args.format == "json":
+        args.json = True
+    elif args.format == "human":
+        args.json = False
 
     if not HISTORY_DIR.exists():
         print("No history directory found at", HISTORY_DIR, file=sys.stderr)
@@ -731,6 +1022,16 @@ def main():
         sys.exit(1)
 
     report = compute_report(records)
+
+    if args.kpi:
+        kpis = report.get("kpis", {})
+        if args.json:
+            print(json.dumps(kpis, indent=2, default=str))
+        else:
+            print("KPI Dashboard")
+            print("─" * 40)
+            print(_format_kpis(kpis))
+        return
 
     if args.json:
         print(json.dumps(report, indent=2, default=str))

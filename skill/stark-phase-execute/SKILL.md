@@ -8,6 +8,18 @@ context: fork
 model: opus
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-phase-execute --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue.
+- If `overall` is "ready": continue silently.
+- In non-interactive automation contexts, a blocked preflight must emit a `preflight_check` event with `status=blocked`, append an entry to `~/.claude/code-review/alerts.jsonl`, and exit non-zero so the trigger is marked failed.
+
 # stark-phase-execute
 
 Autonomous execution engine for development phases. Takes a plan slug (or plan file path), fetches all associated GitHub issues, and executes each one through a complete development lifecycle: branch → implement → test → PR → multi-agent review → fix → merge → next. If no issues exist yet, automatically runs `/stark-plan-to-tasks` to decompose the plan first.
@@ -67,6 +79,7 @@ Resolve plan slug from argument:
   - Example: `docs/superpowers/plans/2026-03-23-stark-signals.md` → `SLUG=2026-03-23-stark-signals`
   - **MUST match `/stark-plan-to-tasks`** — if you change this, change both skills.
 - Otherwise: treat as slug directly (`SLUG=$1`)
+- Track the resolved plan path as `plan_path` whenever a plan file is provided or discovered later.
 
 ---
 
@@ -160,6 +173,12 @@ Otherwise:
 3. **Re-fetch tasks** using the same logic from 0.2 (project-based or label-based) and filter per 0.2. The newly created issues should now appear.
 
 4. If still no tasks → stop: "Decomposition ran but produced no issues. Check /stark-plan-to-tasks output for errors."
+
+### 0.3b Approach Contract
+Before dispatching expensive implementation work, confirm the approach:
+```bash
+python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file <plan_path> --force-confirm
+```
 
 ### 0.4 Phase briefing
 
@@ -261,6 +280,39 @@ If the implementation subagent reports ambiguity and project config is loaded:
 4. `unset GH_TOKEN`
 5. Post comment on issue explaining what's ambiguous
 6. Skip to next task
+
+### 1.2b Validation chain
+
+After the implementation subagent completes, run the validation → classify → heal → re-validate chain:
+
+```bash
+python3 $SCRIPTS/validation_gate.py --json --repo-root $(pwd)
+```
+
+Parse the result:
+- If `overall` is "pass": continue to 1.3.
+- If `overall` is "fail": extract `stderr_path` from the result, then classify:
+
+```bash
+python3 $SCRIPTS/failure_classifier.py --stderr-file $STDERR_PATH --json
+```
+
+If `pattern_id` is non-null, attempt to heal (max 2 attempts total across this task):
+
+```bash
+python3 $SCRIPTS/self_healer.py --pattern-id $PATTERN_ID --stderr-file $STDERR_PATH --mode auto --json
+```
+
+Re-run validation after each heal attempt. Stop the heal loop as soon as validation passes.
+
+**Stop condition:** if validation still fails after 2 heal attempts, escalate to the user — do not continue implementing or pushing. Log: `"Task #{NUMBER}: validation failed after 2 heal attempts (pattern={PATTERN_ID}), escalating."` Set task status to `blocked` and stop the phase.
+
+If `pattern_id` is null (UNCLASSIFIED failure): log the category and continue — this is an agent code issue, not an environment issue.
+
+Log the validation result in the task observability entry:
+```json
+{"validation": {"passed": true, "heal_attempts": 0, "pattern_id": null}}
+```
 
 ### 1.3 Push & create PR
 
@@ -425,6 +477,19 @@ Append to the observability JSON:
 
 Print: `[HH:MM:SS]   ✓ Task #{NUMBER} merged (PR #{PR_NUM}, {rounds} rounds, {duration})`
 
+### 1.7b Session state update
+
+After each task merges successfully, update session state and optionally checkpoint:
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+Record `"phase/{SLUG}/issue-{NUMBER}"` as a completed task. Track elapsed time since last checkpoint; if `context_compaction.checkpoint_interval_minutes` has elapsed (from config), generate one:
+```bash
+python3 ~/.claude/code-review/scripts/context_compactor.py --json 2>/dev/null || true
+```
+
+Both calls are best-effort — wrap in `|| true` or `2>/dev/null`. Never let session state failure block task execution.
+
 ### 1.8 Error handling
 
 If any step fails for a task:
@@ -514,6 +579,22 @@ ${DEPLOY_COMMAND}
 ## Phase 4: Dashboard
 
 Present a comprehensive summary after everything completes. See [references/dashboard-format.md](references/dashboard-format.md) for table formats (task summary, aggregate stats, agent scorecard, failed tasks).
+
+---
+
+## Phase 4b: Skill Suggestions
+
+After all tasks complete, suggest relevant follow-up skills:
+
+```bash
+python3 ~/.claude/code-review/scripts/skill_router.py --context implementation --json 2>/dev/null || true
+```
+
+Parse the JSON. Display at most 2 suggestions:
+```
+Next steps: /stark-init-docs, /stark-extract-docs
+```
+Skip silently if the command fails or returns no suggestions.
 
 ---
 

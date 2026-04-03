@@ -52,6 +52,15 @@ from gemini_utils import (
     should_fallback_to_api_key, try_gemini_api_key_fallback,
 )
 
+try:
+    from config_loader import get_model_id as _config_get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def _config_get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
+
 # ── Config ──────────────────────────────────────────────────────────────
 
 
@@ -62,7 +71,7 @@ GITHUB_APP = str(SCRIPTS_DIR / "github_app.py")
 GLOBAL_PROMPTS_DIR = Path.home() / ".claude" / "code-review" / "prompts"
 
 # Agent definitions — CLI tool + GitHub App mapping
-AGENTS = {
+_ALL_AGENTS = {
     "claude": {
         "app": "stark-claude",
         "emoji": "\U0001f9e0",
@@ -79,6 +88,9 @@ AGENTS = {
         "label": "Gemini",
     },
 }
+AGENTS = {agent: cfg for agent, cfg in _ALL_AGENTS.items() if is_agent_enabled(agent)}
+if not AGENTS:
+    AGENTS = dict(_ALL_AGENTS)
 
 # ── Hierarchical config ───────────────────────────────────────────────
 
@@ -100,6 +112,16 @@ DEFAULT_CONFIG = {
 }
 
 CODEX_REASONING_CONFIG = CODEX_REASONING_EFFORT_HIGH  # re-exported for backward compat
+
+
+def _resolve_model(agent: str) -> str:
+    if agent == "claude":
+        return _config_get_model_id(agent) or "claude"
+    if agent == "codex":
+        return _config_get_model_id(agent) or CODEX_MODEL
+    if agent == "gemini":
+        return _config_get_model_id(agent) or GEMINI_MODEL
+    raise ValueError(f"Unknown agent: {agent}")
 
 REPLACE_FIELDS = {
     "agents",
@@ -554,6 +576,14 @@ def _run_subagent_inner(
 ) -> SubAgentResult:
     """Inner implementation — called with gemini semaphore held if needed."""
     t0 = time.time()
+    if not is_agent_enabled(agent):
+        return SubAgentResult(
+            agent=agent,
+            domain=domain_key,
+            raw_output="",
+            error="agent_disabled",
+            duration_s=0.0,
+        )
     preamble = _load_agent_preamble(agent, cwd=cwd)
     domain_prompt = _load_domain_prompt(agent, domain_key, cwd=cwd)
     if preamble and spec_context:
@@ -590,7 +620,7 @@ def _run_subagent_inner(
         )
         cmd = [
             "codex", "exec",
-            "-m", CODEX_MODEL,
+            "-m", _resolve_model("codex"),
             "-c", CODEX_REASONING_CONFIG,
             "--ephemeral", "--json",
             "-s", "read-only",
@@ -611,7 +641,7 @@ def _run_subagent_inner(
         )
         cmd = [
             "gemini",
-            "-m", GEMINI_MODEL,
+            "-m", _resolve_model("gemini"),
             "-p", prompt,
             "-o", "json",
         ]
@@ -759,6 +789,7 @@ def run_review_round(
         config = discover_config(cwd=cwd)
         if agents is None:
             agents = [a for a in config.get("agents", list(AGENTS.keys())) if a in AGENTS]
+            agents = [a for a in agents if is_agent_enabled(a)]
         if domains is None:
             disabled = set(config.get("disabled_domains", []))
             domains = [d for d in DOMAINS if d not in disabled]
@@ -772,9 +803,16 @@ def run_review_round(
     )
     print(f"{'=' * 60}", file=out)
 
+    if total == 0:
+        print("  No enabled agents available for this round.", file=out)
+        return rnd
+
     with ThreadPoolExecutor(max_workers=min(total, MAX_WORKERS)) as pool:
         futures = {}
         for agent in agents:
+            if not is_agent_enabled(agent):
+                print(f"  [{agent}] skipped: disabled in config", file=out)
+                continue
             agent_cfg = AGENTS[agent]
             for domain_key in domains:
                 domain_cfg = DOMAINS[domain_key]
@@ -846,11 +884,18 @@ def run_single_agent_round(
     )
     print(f"{'=' * 60}", file=out)
 
+    if total == 0:
+        print("  No enabled agents available for this round.", file=out)
+        return rnd
+
     with ThreadPoolExecutor(max_workers=min(total, MAX_WORKERS)) as pool:
         futures = {}
         for domain_key, agent in domain_agent_map.items():
             if agent not in AGENTS:
                 print(f"  [!] Unknown agent '{agent}' for {domain_key}, skipping", file=out)
+                continue
+            if not is_agent_enabled(agent):
+                print(f"  [{agent}] skipped for {domain_key}: disabled in config", file=out)
                 continue
             agent_cfg = AGENTS[agent]
             domain_cfg = DOMAINS.get(domain_key, {"label": domain_key})
