@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config_loader import get_models_config, is_agent_enabled
 import emit_queue
 import github_app
+import lock_helpers
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -173,6 +174,25 @@ def check_cost_hard_stop() -> tuple[str, str]:
     return "pass", "no hard stop"
 
 
+def check_stale_locks() -> tuple[str, str]:
+    """Scan known lock locations for stale lock files."""
+    lock_dirs = [
+        Path.home() / ".claude" / "code-review",
+        Path("/tmp"),
+    ]
+    stale: list[str] = []
+    for lock_dir in lock_dirs:
+        if not lock_dir.exists():
+            continue
+        for lock_file in lock_dir.glob("*.lock"):
+            if lock_helpers.is_lock_stale(str(lock_file)):
+                stale.append(str(lock_file))
+
+    if stale:
+        return "warn", f"stale lock files: {', '.join(stale)}"
+    return "pass", "no stale locks"
+
+
 # ---------------------------------------------------------------------------
 # Check registry: (name, fn, is_critical)
 # critical=True → a "fail" status sets overall to "blocked"
@@ -189,6 +209,7 @@ _CHECKS: list[tuple[str, Callable[[], tuple[str, str]], bool]] = [
     ("check_working_dir",      check_working_dir,      False),
     ("check_model_resolution", check_model_resolution, True),
     ("check_cost_hard_stop",   check_cost_hard_stop,   True),
+    ("check_stale_locks",      check_stale_locks,      False),
 ]
 
 

@@ -1,0 +1,49 @@
+[
+  {
+    "id": "auth-stale",
+    "category": "AUTH_STALE",
+    "regex": "(401|Bad credentials|token expired)",
+    "guard": "security find-generic-password -s STARK_CLAUDE_PRIVATE_KEY -w",
+    "action": "refresh_token",
+    "verify_command": "python3 scripts/github_app.py token",
+    "requires_confirmation": false,
+    "max_per_session": 1
+  },
+  {
+    "id": "missing-import",
+    "category": "MISSING_IMPORT",
+    "regex": "No module named '([^']+)'",
+    "guard": "python3 -c 'import sys; sys.exit(0)'",
+    "action": "add_import",
+    "verify_command": "python3 -c 'import {module}'",
+    "requires_confirmation": true,
+    "allowlisted_packages": ["json", "os", "sys", "pathlib", "re", "functools", "datetime", "uuid", "sqlite3", "subprocess", "shutil", "time", "collections", "typing", "dataclasses"]
+  },
+  {
+    "id": "syntax-error",
+    "category": "SYNTAX_ERROR",
+    "regex": "(SyntaxError|IndentationError)",
+    "guard": null,
+    "action": "fix_syntax",
+    "verify_command": "python3 -c 'compile(open(\"{file}\").read(), \"{file}\", \"exec\")'",
+    "requires_confirmation": false
+  },
+  {
+    "id": "migration-conflict",
+    "category": "MIGRATION_CONFLICT",
+    "regex": "(alembic.*revision|duplicate.*migration)",
+    "guard": "ls migrations/versions/ 2>/dev/null",
+    "action": "resolve_migration_head",
+    "verify_command": "alembic heads",
+    "requires_confirmation": true
+  },
+  {
+    "id": "stale-lock",
+    "category": "RESOURCE_EXHAUSTED",
+    "regex": "(lock.*held|database.*locked|file.*locked)",
+    "guard": null,
+    "action": "release_stale_lock",
+    "verify_command": "ls",
+    "requires_confirmation": false
+  }
+]

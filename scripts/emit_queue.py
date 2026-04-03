@@ -51,6 +51,7 @@ _VALID_TYPES = {
     "code_change", "bug_fix", "pr_event", "tool_usage", "ci_signal",
     "tournament_result",
     "preflight_check", "approach_contract",
+    "validation_result", "heal_attempt",
 }
 
 # ---------------------------------------------------------------------------
