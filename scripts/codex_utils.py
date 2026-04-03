@@ -3,7 +3,18 @@
 Constants and helpers used across all dispatch scripts that invoke the Codex CLI.
 """
 
+from __future__ import annotations
+
 import json
+
+try:
+    from config_loader import get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
 
 # Default model — pinned to avoid silent changes from CLI updates.
 CODEX_MODEL = "gpt-5.4"
@@ -11,6 +22,16 @@ CODEX_MODEL = "gpt-5.4"
 # Reasoning effort config for -c flag (TOML key=value format).
 CODEX_REASONING_EFFORT_HIGH = 'model_reasoning_effort="high"'
 CODEX_REASONING_EFFORT_MEDIUM = 'model_reasoning_effort="medium"'
+
+
+class AgentDisabledError(RuntimeError):
+    pass
+
+
+def get_codex_model() -> str:
+    if not is_agent_enabled("codex"):
+        raise AgentDisabledError("codex agent is disabled in config")
+    return get_model_id("codex") or CODEX_MODEL
 
 
 def parse_jsonl_output(raw: str) -> str:

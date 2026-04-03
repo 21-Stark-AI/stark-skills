@@ -270,9 +270,10 @@ class TestMakeEvent:
         assert event["type"] == "skill_invocation"
         assert event["cli"] == "claude"
         assert event["source"] == "skill"
-        assert event["schema_version"] == 1
+        assert event["schema_version"] == 2
         assert event["payload"] == {"skill": "test"}
         assert "timestamp" in event
+        assert "event_id" in event
 
     def test_session_id_generates_dedupe_key(self):
         event = emit_queue.make_event(
@@ -290,7 +291,8 @@ class TestMakeEvent:
 
     def test_optional_fields_omitted_when_none(self):
         event = emit_queue.make_event("prompt", {})
-        assert "session_id" not in event
+        # session_id is always auto-resolved in v2; project and user_id are optional
+        assert "session_id" in event
         assert "project" not in event
         assert "user_id" not in event
 
@@ -547,3 +549,26 @@ class TestDrainToBuffer:
 
 
 import sys
+
+
+# ---------------------------------------------------------------------------
+# New event types introduced in p1-1 (validation_result, heal_attempt)
+# ---------------------------------------------------------------------------
+
+
+class TestNewEventTypes:
+    def _base(self, type_):
+        return {
+            "type": type_,
+            "timestamp": "2026-04-03T10:00:00Z",
+            "cli": "claude",
+            "source": "skill",
+            "schema_version": 1,
+            "payload": {},
+        }
+
+    def test_validation_result_accepted(self):
+        assert emit_queue.validate(self._base("validation_result")) == []
+
+    def test_heal_attempt_accepted(self):
+        assert emit_queue.validate(self._base("heal_attempt")) == []

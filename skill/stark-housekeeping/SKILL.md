@@ -353,6 +353,13 @@ Unreleased commits: {N} since {last_tag}
 
 Dangling symlinks removed: {N}
 
+Session files removed:     {N}
+Checkpoint files removed:  {N}
+Stale locks removed:       {N}
+Logs rotated:              {N}
+Validation logs removed:   {N}
+Artifacts archived:        {N} files into {M} archives
+
 Potential duplicates: {N}
   {for each: #{A} and #{B}: "{title}"}
 
@@ -361,6 +368,144 @@ Duplicate labels: {N} pairs
 
 Unused default labels: {N}
 ```
+
+---
+
+## Phase 5: Infrastructure Cleanup
+
+### 5.1 Session file cleanup
+
+Remove session files older than 30 days from `~/.claude/code-review/sessions/`:
+
+```bash
+find ~/.claude/code-review/sessions/ -maxdepth 1 -name "*.json" \
+  -mtime +30 -type f 2>/dev/null
+```
+
+Present the list of files to be removed. If `--dry-run`, stop here. Otherwise:
+
+```bash
+find ~/.claude/code-review/sessions/ -maxdepth 1 -name "*.json" \
+  -mtime +30 -type f -delete 2>/dev/null
+```
+
+Report: `Session files removed: {N}`
+
+### 5.2 Checkpoint cleanup
+
+Remove checkpoint files older than 7 days from session subdirectories:
+
+```bash
+find ~/.claude/code-review/sessions/ -mindepth 2 -name "checkpoint-*.md" \
+  -mtime +7 -type f 2>/dev/null
+```
+
+Present the list. If `--dry-run`, stop here. Otherwise delete them.
+
+Report: `Checkpoint files removed: {N}`
+
+### 5.3 Stale lock cleanup
+
+Scan for stale lock files using `lock_helpers.is_lock_stale()`:
+
+```bash
+$PYTHON -c "
+import sys, pathlib
+sys.path.insert(0, '$SCRIPTS')
+import lock_helpers
+lock_dirs = [pathlib.Path.home() / '.claude' / 'code-review', pathlib.Path('/tmp')]
+stale = []
+for d in lock_dirs:
+    if d.exists():
+        for f in d.glob('*.lock'):
+            if lock_helpers.is_lock_stale(str(f)):
+                stale.append(str(f))
+print('\n'.join(stale))
+" 2>/dev/null
+```
+
+Present the list. If `--dry-run`, stop here. Otherwise delete each stale lock file.
+
+Report: `Stale lock files removed: {N}`
+
+### 5.4 Log rotation
+
+Rotate these log files — keep the last 1000 lines of each:
+- `~/.claude/code-review/healer.jsonl`
+- `~/.claude/code-review/preflight.jsonl`
+- `~/.claude/code-review/approach-contracts.jsonl`
+
+For each file that exists:
+
+```bash
+LOG=~/.claude/code-review/healer.jsonl
+if [ -f "$LOG" ]; then
+    LINES=$(wc -l < "$LOG")
+    if [ "$LINES" -gt 1000 ]; then
+        tail -1000 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+        echo "Rotated $LOG: $LINES → 1000 lines"
+    fi
+fi
+```
+
+If `--dry-run`, report what would be rotated (files with > 1000 lines) without modifying.
+
+Report: `Logs rotated: {N} files`
+
+### 5.5 Validation log cleanup
+
+Remove `~/.claude/code-review/logs/*.stderr` files older than 14 days:
+
+```bash
+find ~/.claude/code-review/logs/ -name "*.stderr" \
+  -mtime +14 -type f 2>/dev/null
+```
+
+Present the list. If `--dry-run`, stop here. Otherwise delete them.
+
+Report: `Validation logs removed: {N}`
+
+### 5.6 Artifact archival
+
+Archive automation logs and autopilot history older than 30 days.
+
+**Archive sources:**
+- `automation/logs/` — automation run logs
+- `~/.claude/code-review/history/autopilot/` — autopilot session history
+
+**Archive destination:** `~/.claude/code-review/archives/`
+
+**Naming:** `{source-slug}-{YYYY-MM}.tar.gz` — one archive per source per calendar month.
+
+For each source directory:
+1. Find files older than 30 days: `find <dir> -maxdepth 1 -type f -mtime +30`
+2. Group by calendar month of last modification (YYYY-MM)
+3. For each month group, check if `archives/{source-slug}-{YYYY-MM}.tar.gz` already exists
+   - If it exists, append to it (use `tar -rf`); otherwise create new archive
+
+In `--dry-run` mode:
+```
+Artifacts to archive:
+  automation/logs/ → 12 files → archives/automation-logs-2025-12.tar.gz (8 files), archives/automation-logs-2026-01.tar.gz (4 files)
+  history/autopilot/ → 3 files → archives/autopilot-2026-01.tar.gz (3 files)
+```
+
+In normal mode:
+```bash
+ARCHIVE_DIR=~/.claude/code-review/archives
+mkdir -p "$ARCHIVE_DIR"
+
+# For each source and month group:
+tar -czf "$ARCHIVE_DIR/{slug}-{YYYY-MM}.tar.gz" -C <parent> <files...>
+# Verify archive (test extraction succeeds):
+tar -tzf "$ARCHIVE_DIR/{slug}-{YYYY-MM}.tar.gz" > /dev/null
+# Only delete originals after successful verification:
+rm <files...>
+```
+
+If archive creation or verification fails, leave originals in place and report the error.
+
+Report: `Artifacts archived: {N} files into {M} archives`
 
 ---
 
@@ -382,6 +527,10 @@ After the state report, emit a completion event:
 $SCRIPTS/stark-emit skill_invocation \
   skill=stark-housekeeping duration_s=$TOTAL_SECONDS success=true \
   issues_closed=$CLOSED branches_deleted=$BRANCHES worktrees_cleaned=$WORKTREES \
+  session_files_removed=$SESSION_FILES checkpoint_files_removed=$CHECKPOINT_FILES \
+  stale_locks_removed=$STALE_LOCKS logs_rotated=$LOGS_ROTATED \
+  validation_logs_removed=$VALIDATION_LOGS \
+  artifacts_archived_files=$ARCHIVED_FILES artifacts_archived_count=$ARCHIVED_COUNT \
   dry_run=$DRY_RUN aggressive=$AGGRESSIVE
 ```
 

@@ -8,6 +8,18 @@ context: fork
 model: opus
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-team-review --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue.
+- If `overall` is "ready": continue silently.
+- In non-interactive automation contexts, a blocked preflight must emit a `preflight_check` event with `status=blocked`, append an entry to `~/.claude/code-review/alerts.jsonl`, and exit non-zero so the trigger is marked failed.
+
 # stark-team-review
 
 Multi-agent PR review: 3 LLMs (Claude, Codex, Gemini) × 9 domain specializations dispatched in parallel. Autonomous fix-review loop until clean or max rounds.
@@ -339,6 +351,20 @@ Analyze patterns across all rounds:
 | Recurring false positives for a specific code pattern | Add `severity_overrides` in org/repo config |
 
 **Recommend only — do NOT modify prompts.**
+
+## Phase 3b: Skill Suggestions
+
+After review completion, surface relevant follow-up skills:
+
+```bash
+python3 ~/.claude/code-review/scripts/skill_router.py --context review --json 2>/dev/null || true
+```
+
+Parse the JSON. Display at most 2 suggestions:
+```
+Next steps: /stark-review-improvement, /stark-metrics
+```
+Skip silently if the command fails or returns no suggestions.
 
 ## Phase 4: Post & Persist
 

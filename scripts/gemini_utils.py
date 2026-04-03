@@ -15,8 +15,27 @@ import sys
 from collections.abc import Generator
 from pathlib import Path
 
+try:
+    from config_loader import get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
+
 # Default model — pinned to avoid auto-routing unpredictability in automation.
 GEMINI_MODEL = "gemini-3.1-pro-preview"
+
+
+class AgentDisabledError(RuntimeError):
+    pass
+
+
+def get_gemini_model() -> str:
+    if not is_agent_enabled("gemini"):
+        raise AgentDisabledError("gemini agent is disabled in config")
+    return get_model_id("gemini") or GEMINI_MODEL
 
 # Auth files to copy from the real Gemini home to isolated session dirs.
 _AUTH_FILES = ("settings.json", "oauth_creds.json", "google_accounts.json", "installation_id")
