@@ -32,13 +32,16 @@ from gemini_utils import (
 )
 
 try:
-    from config_loader import get_model_id, is_agent_enabled
+    from config_loader import get_model_id, is_agent_enabled, get_self_heal_config
 except ImportError:  # pragma: no cover - backward compat for older installs
     def get_model_id(agent: str) -> str | None:
         return None
 
     def is_agent_enabled(agent: str) -> bool:
         return True
+
+    def get_self_heal_config() -> dict:
+        return {"enabled": False, "mode": "suggest"}
 
 # ── Config ──────────────────────────────────────────────────────────────
 
@@ -329,8 +332,94 @@ def _run_implementation_agent(
     except Exception as e:
         result.error = f"diff_collection_failed: {e}"
 
+    # Run validation chain (informational — does not block the tournament)
+    try:
+        result.test_passed = _run_validation_chain(worktree_path, step_id)
+    except Exception as e:
+        print(f"  [{agent}:{step_id}] validation chain error: {e}", file=sys.stderr)
+        result.test_passed = None
+
     result.duration_s = time.monotonic() - t0
     return result
+
+
+# ── Validation chain ──────────────────────────────────────────────────
+
+
+def _run_validation_chain(worktree_path: str, step_id: str) -> bool:
+    """Run validation → classify → heal → re-validate chain in a worktree.
+
+    Returns True if validation passes (initially or after healing), False otherwise.
+    Does not block the tournament — just provides test_passed signal for scoring.
+    """
+    scripts_dir = Path(__file__).parent
+
+    def _run_validation() -> tuple[bool, str]:
+        """Run validation_gate. Returns (passed, stderr_path)."""
+        try:
+            result = subprocess.run(
+                [sys.executable, str(scripts_dir / "validation_gate.py"),
+                 "--json", "--repo-root", worktree_path],
+                capture_output=True, text=True, timeout=120,
+            )
+            data = json.loads(result.stdout)
+            return data.get("overall") == "pass", data.get("stderr_path", "")
+        except Exception as e:
+            print(f"    [validation] error: {e}", file=sys.stderr)
+            return False, ""
+
+    passed, stderr_path = _run_validation()
+    if passed:
+        return True
+
+    # Classify the failure
+    if not stderr_path or not Path(stderr_path).exists():
+        print(f"    [{step_id}] validation failed, no stderr log to classify", file=sys.stderr)
+        return False
+
+    try:
+        cls_result = subprocess.run(
+            [sys.executable, str(scripts_dir / "failure_classifier.py"),
+             "--stderr-file", stderr_path, "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        cls_data = json.loads(cls_result.stdout)
+    except Exception as e:
+        print(f"    [{step_id}] classifier error: {e}", file=sys.stderr)
+        return False
+
+    pattern_id = cls_data.get("pattern_id")
+    if not pattern_id:
+        print(
+            f"    [{step_id}] validation failed, category={cls_data.get('category')} "
+            "(no healer pattern — unfixable)",
+            file=sys.stderr,
+        )
+        return False
+
+    # Attempt to heal
+    heal_mode = get_self_heal_config().get("mode", "suggest")
+    try:
+        subprocess.run(
+            [sys.executable, str(scripts_dir / "self_healer.py"),
+             "--pattern-id", pattern_id,
+             "--stderr-file", stderr_path,
+             "--mode", heal_mode,
+             "--json"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        print(f"    [{step_id}] healer error: {e}", file=sys.stderr)
+        return False
+
+    # Re-validate
+    passed, _ = _run_validation()
+    if not passed:
+        print(
+            f"    [{step_id}] still failing after heal attempt (pattern={pattern_id})",
+            file=sys.stderr,
+        )
+    return passed
 
 
 # ── Step dispatch ──────────────────────────────────────────────────────

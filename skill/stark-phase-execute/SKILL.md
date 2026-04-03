@@ -281,6 +281,39 @@ If the implementation subagent reports ambiguity and project config is loaded:
 5. Post comment on issue explaining what's ambiguous
 6. Skip to next task
 
+### 1.2b Validation chain
+
+After the implementation subagent completes, run the validation → classify → heal → re-validate chain:
+
+```bash
+python3 $SCRIPTS/validation_gate.py --json --repo-root $(pwd)
+```
+
+Parse the result:
+- If `overall` is "pass": continue to 1.3.
+- If `overall` is "fail": extract `stderr_path` from the result, then classify:
+
+```bash
+python3 $SCRIPTS/failure_classifier.py --stderr-file $STDERR_PATH --json
+```
+
+If `pattern_id` is non-null, attempt to heal (max 2 attempts total across this task):
+
+```bash
+python3 $SCRIPTS/self_healer.py --pattern-id $PATTERN_ID --stderr-file $STDERR_PATH --mode auto --json
+```
+
+Re-run validation after each heal attempt. Stop the heal loop as soon as validation passes.
+
+**Stop condition:** if validation still fails after 2 heal attempts, escalate to the user — do not continue implementing or pushing. Log: `"Task #{NUMBER}: validation failed after 2 heal attempts (pattern={PATTERN_ID}), escalating."` Set task status to `blocked` and stop the phase.
+
+If `pattern_id` is null (UNCLASSIFIED failure): log the category and continue — this is an agent code issue, not an environment issue.
+
+Log the validation result in the task observability entry:
+```json
+{"validation": {"passed": true, "heal_attempts": 0, "pattern_id": null}}
+```
+
 ### 1.3 Push & create PR
 
 ```bash

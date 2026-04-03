@@ -78,6 +78,13 @@ class RunRecord:
 
 
 # ---------------------------------------------------------------------------
+# Failure telemetry paths
+# ---------------------------------------------------------------------------
+
+HEALER_LOG = Path.home() / ".claude" / "code-review" / "healer.jsonl"
+VALIDATION_LOG_DIR = Path.home() / ".claude" / "code-review" / "logs"
+
+# ---------------------------------------------------------------------------
 # History loading & normalization
 # ---------------------------------------------------------------------------
 
@@ -316,6 +323,77 @@ def _parse_findings_summary(data: dict) -> FindingSummary:
         by_outcome=data.get("by_outcome", {}),
         by_severity=data.get("by_severity", {}),
     )
+
+
+def load_failure_metrics() -> dict:
+    """Parse healer.jsonl and validation logs to compute failure telemetry metrics."""
+    result: dict = {
+        "validation_pass_rate": None,
+        "top_failure_categories": {},
+        "heal_success_rate": None,
+        "heal_attempts_total": 0,
+    }
+
+    # --- Parse healer.jsonl for heal_attempt events ---
+    heal_attempts = 0
+    heal_successes = 0
+    category_counts: Counter = Counter()
+
+    if HEALER_LOG.exists():
+        try:
+            for line in HEALER_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # failure_classifier entries have "category" field
+                category = entry.get("category")
+                if category and category != "UNCLASSIFIED":
+                    category_counts[category] += 1
+                # self_healer entries have "action" + "status"
+                action = entry.get("action")
+                status = entry.get("status")
+                if action and status in ("applied", "suggested", "skipped"):
+                    heal_attempts += 1
+                    if status == "applied":
+                        verify_passed = entry.get("verify_passed", False)
+                        if verify_passed:
+                            heal_successes += 1
+        except OSError:
+            pass
+
+    result["heal_attempts_total"] = heal_attempts
+    if heal_attempts > 0:
+        result["heal_success_rate"] = round(heal_successes / heal_attempts * 100, 1)
+    result["top_failure_categories"] = dict(category_counts.most_common(5))
+
+    # --- Parse validation log dir for pass/fail counts ---
+    validation_pass = 0
+    validation_fail = 0
+
+    if VALIDATION_LOG_DIR.exists():
+        try:
+            for log_file in sorted(VALIDATION_LOG_DIR.glob("*.stderr")):
+                # A non-empty stderr file means the validation failed
+                try:
+                    content = log_file.read_text(encoding="utf-8", errors="replace")
+                    if content.strip():
+                        validation_fail += 1
+                    else:
+                        validation_pass += 1
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    validation_total = validation_pass + validation_fail
+    if validation_total > 0:
+        result["validation_pass_rate"] = round(validation_pass / validation_total * 100, 1)
+
+    return result
 
 
 def load_all_records() -> list[RunRecord]:
@@ -578,6 +656,9 @@ def compute_report(records: list[RunRecord]) -> dict:
 
     report["recommendations"] = recommendations
 
+    # --- Failure telemetry (healer + validation logs) ---
+    report["failure_telemetry"] = load_failure_metrics()
+
     return report
 
 
@@ -682,6 +763,22 @@ def format_human(report: dict) -> str:
             )
         lines.append("")
 
+    # Failure Telemetry
+    ft = report.get("failure_telemetry", {})
+    if ft.get("heal_attempts_total", 0) > 0 or ft.get("validation_pass_rate") is not None:
+        lines.append("Failure Telemetry")
+        lines.append("─" * 40)
+        if ft.get("validation_pass_rate") is not None:
+            lines.append(f"Validation pass rate:  {ft['validation_pass_rate']}%")
+        lines.append(f"Heal attempts:         {ft.get('heal_attempts_total', 0)}")
+        if ft.get("heal_success_rate") is not None:
+            lines.append(f"Heal success rate:     {ft['heal_success_rate']}%")
+        if ft.get("top_failure_categories"):
+            lines.append("Top failure categories:")
+            for cat, count in ft["top_failure_categories"].items():
+                lines.append(f"  {cat:<25} {count}")
+        lines.append("")
+
     # Recommendations
     recs = report["recommendations"]
     lines.append("Recommendations")
@@ -703,10 +800,20 @@ def format_human(report: dict) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Stark skill metrics aggregator")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument(
+        "--format", choices=["json", "human"], default=None,
+        help="Output format: json or human (overrides --json)",
+    )
     parser.add_argument("--repo", help="Filter by repo (e.g., GetEvinced/infra-pulse)")
     parser.add_argument("--skill", help="Filter by skill type (e.g., stark-team-review)")
     parser.add_argument("--since", help="Filter by date (YYYY-MM-DD)")
     args = parser.parse_args()
+
+    # --format json overrides --json flag; --format human suppresses it
+    if args.format == "json":
+        args.json = True
+    elif args.format == "human":
+        args.json = False
 
     if not HISTORY_DIR.exists():
         print("No history directory found at", HISTORY_DIR, file=sys.stderr)

@@ -128,6 +128,16 @@ Run each command in `session.health_checks` from config. Capture stdout/stderr o
 **Built-in check — telemetry queue health:**
 
 ```bash
+python3 ~/.claude/code-review/scripts/emit_queue.py --health 2>/dev/null || true
+```
+
+Parse the JSON output (`queue_depth`, `last_event_timestamp`) and display:
+- `queue_depth`: number of events pending delivery
+- `last_event_timestamp`: ISO8601 timestamp of the most recent event
+
+Also run the queue depth check:
+
+```bash
 python3 -c "
 import sys; sys.path.insert(0, '$HOME/git/Evinced/stark-skills/scripts')
 from emit_queue import pending_count, dead_letter_count
@@ -138,7 +148,27 @@ else: print(f'OK: queue healthy ({p} pending, {d} dead)')
 " 2>/dev/null || true
 ```
 
-Report result in the Health line of the briefing. Non-fatal.
+If `~/.claude/code-review/healer.jsonl` exists, show a failure category summary:
+
+```bash
+python3 -c "
+import json, collections, pathlib
+log = pathlib.Path.home() / '.claude/code-review/healer.jsonl'
+if not log.exists(): exit(0)
+cats = collections.Counter()
+for line in log.read_text().splitlines():
+    try:
+        e = json.loads(line)
+        cat = e.get('category')
+        if cat: cats[cat] += 1
+    except Exception: pass
+if cats:
+    print('Failure categories (last session):')
+    for cat, n in cats.most_common(5): print(f'  {cat}: {n}')
+" 2>/dev/null || true
+```
+
+Report all results in the Health line of the briefing. Non-fatal — never blocking.
 
 ### Phase 4 — Available skills
 

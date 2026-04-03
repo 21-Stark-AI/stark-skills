@@ -174,6 +174,30 @@ def check_cost_hard_stop() -> tuple[str, str]:
     return "pass", "no hard stop"
 
 
+def check_deprecated_config() -> tuple[str, str]:
+    """Warn if both old config keys (model_pins) and new key (models) coexist."""
+    try:
+        from config_loader import load_config
+        config = load_config()
+    except Exception as exc:
+        return "warn", f"could not load config: {exc}"
+
+    old_keys_found: list[str] = []
+    if "model_pins" in config:
+        old_keys_found.append("model_pins")
+    automation = config.get("automation", {})
+    if isinstance(automation, dict) and "model_pins" in automation:
+        old_keys_found.append("automation.model_pins")
+
+    if old_keys_found and "models" in config:
+        return (
+            "warn",
+            f"deprecated keys still present alongside 'models': {', '.join(old_keys_found)} "
+            "— remove deprecated keys to avoid confusion",
+        )
+    return "pass", "no deprecated config keys"
+
+
 def check_stale_locks() -> tuple[str, str]:
     """Scan known lock locations for stale lock files."""
     lock_dirs = [
@@ -208,8 +232,9 @@ _CHECKS: list[tuple[str, Callable[[], tuple[str, str]], bool]] = [
     ("check_github_app",       check_github_app,       True),
     ("check_working_dir",      check_working_dir,      False),
     ("check_model_resolution", check_model_resolution, True),
-    ("check_cost_hard_stop",   check_cost_hard_stop,   True),
-    ("check_stale_locks",      check_stale_locks,      False),
+    ("check_cost_hard_stop",       check_cost_hard_stop,       True),
+    ("check_stale_locks",          check_stale_locks,          False),
+    ("check_deprecated_config",    check_deprecated_config,    False),
 ]
 
 
