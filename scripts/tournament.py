@@ -38,6 +38,15 @@ from gemini_utils import (
     should_fallback_to_api_key, try_gemini_api_key_fallback,
 )
 
+try:
+    from config_loader import get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
+
 # Re-export for backward compat
 __all__ = [
     "FACTOR_WEIGHTS", "AGENTS", "CLAUDE_MODEL", "CODEX_REASONING_CONFIG", "CODEX_MODEL", "GEMINI_MODEL",
@@ -204,15 +213,28 @@ class TournamentResult:
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = Path(__file__).parent
 
-AGENTS = {
+_ALL_AGENTS = {
     "claude": {"emoji": "\U0001f9e0", "label": "Claude"},
     "codex":  {"emoji": "\U0001f4bb", "label": "Codex"},
     "gemini": {"emoji": "\u2728",     "label": "Gemini"},
 }
+AGENTS = {agent: cfg for agent, cfg in _ALL_AGENTS.items() if is_agent_enabled(agent)}
+if not AGENTS:
+    AGENTS = dict(_ALL_AGENTS)
 
 PYTHON = sys.executable
 GITHUB_APP = str(SCRIPTS_DIR / "github_app.py")
 CODEX_REASONING_CONFIG = CODEX_REASONING_EFFORT_HIGH
+
+
+def _resolve_model(agent: str) -> str:
+    if agent == "claude":
+        return get_model_id(agent) or CLAUDE_MODEL
+    if agent == "codex":
+        return get_model_id(agent) or CODEX_MODEL
+    if agent == "gemini":
+        return get_model_id(agent) or GEMINI_MODEL
+    raise ValueError(f"Unknown agent: {agent}")
 
 
 
@@ -416,6 +438,12 @@ def dispatch_competitor(agent: str, skill, audience: str):
     gemini_home: str | None = None
     used_api_key_fallback = False
 
+    if not is_agent_enabled(agent):
+        return VizResult(
+            agent=agent, skill=skill.name, audience=audience,
+            error="agent_disabled",
+        )
+
     if agent == "claude":
         cmd = build_claude_cmd()
         stdin_input = prompt
@@ -423,7 +451,7 @@ def dispatch_competitor(agent: str, skill, audience: str):
     elif agent == "codex":
         cmd = [
             "codex", "exec",
-            "-m", CODEX_MODEL,
+            "-m", _resolve_model("codex"),
             "-c", CODEX_REASONING_CONFIG,
             "--ephemeral", "--json",
             "--full-auto",
@@ -437,7 +465,7 @@ def dispatch_competitor(agent: str, skill, audience: str):
         )
         cmd = [
             "gemini",
-            "-m", GEMINI_MODEL,
+            "-m", _resolve_model("gemini"),
             "-p", prompt,
             "-o", "json",
         ]
@@ -977,7 +1005,25 @@ class Tournament:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         config = self.config
-        competitors = config.competitors
+        competitors = []
+        for competitor in config.competitors:
+            if is_agent_enabled(competitor.agent):
+                competitors.append(competitor)
+            else:
+                print(
+                    f"[tournament] skipping {competitor.id} ({competitor.agent}): disabled in config",
+                    file=sys.stderr,
+                )
+
+        if not competitors:
+            return TournamentResult(
+                winner=None,
+                winner_score=0.0,
+                scores={},
+                artifacts={},
+                audit={"error": "no_enabled_competitors"},
+                quality_flag="error",
+            )
 
         # Step 1-2: Dispatch all competitors in parallel
         outputs: dict[str, str] = {}

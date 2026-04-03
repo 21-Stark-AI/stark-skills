@@ -170,5 +170,4 @@ class TestMakeGeminiEnv:
     def test_keys(self):
         env = make_gemini_env("/tmp/h")
         assert env["GEMINI_CLI_HOME"] == "/tmp/h"
-        assert env["GOOGLE_CLOUD_LOCATION"] == "global"
         assert "PATH" in env

@@ -36,15 +36,36 @@ from gemini_utils import (
     should_fallback_to_api_key, try_gemini_api_key_fallback,
 )
 
+try:
+    from config_loader import get_model_id, is_agent_enabled
+except ImportError:  # pragma: no cover - backward compat for older installs
+    def get_model_id(agent: str) -> str | None:
+        return None
+
+    def is_agent_enabled(agent: str) -> bool:
+        return True
+
 # ── Config ──────────────────────────────────────────────────────────────
 
 
 SCRIPTS_DIR = Path(__file__).parent
 DEFAULT_PROMPTS_DIR = "design-to-plan"
 
-AGENTS = ["claude", "codex", "gemini"]
+AGENTS = [a for a in ["claude", "codex", "gemini"] if is_agent_enabled(a)]
+if not AGENTS:
+    AGENTS = ["claude", "codex", "gemini"]
 CODEX_REASONING_CONFIG = CODEX_REASONING_EFFORT_HIGH
 DEFAULT_TIMEOUT = 600  # Generation needs more time than review
+
+
+def _resolve_model(agent: str) -> str:
+    if agent == "claude":
+        return get_model_id(agent) or "claude"
+    if agent == "codex":
+        return get_model_id(agent) or CODEX_MODEL
+    if agent == "gemini":
+        return get_model_id(agent) or GEMINI_MODEL
+    raise ValueError(f"Unknown agent: {agent}")
 
 
 def _get_prompts_dir(prompts_dir: str | None = None) -> Path:
@@ -152,6 +173,9 @@ def _build_cmd_and_kwargs(
         "capture_output": True, "text": True, "timeout": timeout,
     }
 
+    if not is_agent_enabled(agent):
+        raise ValueError(f"Agent disabled: {agent}")
+
     if agent == "claude":
         cmd = build_claude_cmd()
         run_kwargs["input"] = prompt if stdin_content is None else f"{prompt}\n\n{stdin_content}"
@@ -161,7 +185,7 @@ def _build_cmd_and_kwargs(
         effective_timeout = timeout * 2
         cmd = [
             "codex", "exec",
-            "-m", CODEX_MODEL,
+            "-m", _resolve_model("codex"),
             "-c", CODEX_REASONING_CONFIG,
             "--ephemeral", "--json",
             "--full-auto",
@@ -177,7 +201,7 @@ def _build_cmd_and_kwargs(
         )
         cmd = [
             "gemini",
-            "-m", GEMINI_MODEL,
+            "-m", _resolve_model("gemini"),
             "-p", prompt,
             "-o", "json",
         ]
@@ -275,9 +299,24 @@ def generate_plans(
     """
     if agents is None:
         agents = list(AGENTS)
+    else:
+        requested_agents = list(agents)
+        agents = []
+        for agent in requested_agents:
+            if is_agent_enabled(agent):
+                agents.append(agent)
+            else:
+                print(f"  [{agent}] skipped: disabled in config", file=sys.stderr)
 
     results: list[PlanOutput] = []
     total = len(agents)
+
+    if total == 0:
+        return {
+            "mode": "generate",
+            "results": [],
+            "summary": {"total": 0, "succeeded": 0, "failed": 0},
+        }
 
     print(f"\n{'=' * 60}", file=sys.stderr)
     print(f"  Phase 1: Generate — {total} agents", file=sys.stderr)
@@ -405,6 +444,14 @@ def cross_review_plans(
     """
     if agents is None:
         agents = list(AGENTS)
+    else:
+        requested_agents = list(agents)
+        agents = []
+        for agent in requested_agents:
+            if is_agent_enabled(agent):
+                agents.append(agent)
+            else:
+                print(f"  [{agent}] skipped: disabled in config", file=sys.stderr)
 
     # Build work items: (reviewer, plan_author)
     work_items = []
@@ -415,6 +462,15 @@ def cross_review_plans(
 
     results: list[CrossReviewOutput] = []
     total = len(work_items)
+
+    if total == 0:
+        return {
+            "mode": "cross-review",
+            "results": [],
+            "plan_averages": {author: 0.0 for author in plans},
+            "winner": None,
+            "summary": {"total": 0, "succeeded": 0, "failed": 0},
+        }
 
     print(f"\n{'=' * 60}", file=sys.stderr)
     print(f"  Phase 2: Cross-Review — {total} reviews", file=sys.stderr)

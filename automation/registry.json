@@ -15,7 +15,8 @@
     "stark-self-review": {
       "trigger_id": "trig_01AZpFdyg9DPxXgXbj8Fd2Rk",
       "last_registered": "2026-03-28T09:24:13.265340+00:00",
-      "enabled": true
+      "enabled": true,
+      "validation_chain": true
     },
     "stark-dependency-audit": {
       "trigger_id": "trig_01MjSKH3HQbrciYSfpvoh2FQ",
@@ -50,17 +51,29 @@
     "stark-observability-check": {
       "trigger_id": "trig_012SBD7LuU3H5NUmDZsrxMRB",
       "last_registered": "2026-03-28T09:24:13.265340+00:00",
-      "enabled": true
+      "enabled": true,
+      "telemetry_v2": true
     },
     "stark-automation-monitor": {
       "trigger_id": "trig_01PcJEPLiw667i7Q14vbA2xU",
       "last_registered": "2026-03-28T09:24:13.265340+00:00",
-      "enabled": true
+      "enabled": true,
+      "validation_gate_check": true
     },
     "stark-hooks-auditor": {
       "trigger_id": "trig_01CC8KFTWbYZLXN3rCZszkzg",
       "last_registered": "2026-03-28T09:24:13.265340+00:00",
       "enabled": false
+    },
+    "stark-dashboard-refresh": {
+      "trigger_id": "trig_01DshRfr3shXXmN8pQv2KYzJ",
+      "last_registered": "2026-04-03T00:00:00.000000+00:00",
+      "enabled": true
+    },
+    "stark-learning-capture": {
+      "trigger_id": "trig_01LrnCptr7wkN2Xp4bZvAqHm",
+      "last_registered": "2026-04-03T00:00:00.000000+00:00",
+      "enabled": true
     }
   }
 }

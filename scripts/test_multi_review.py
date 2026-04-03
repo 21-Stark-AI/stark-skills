@@ -112,8 +112,9 @@ class TestModelFlags:
         assert "-a" not in cmd  # -a/--ask-for-approval not valid on codex exec
         assert cmd[-1] == "-"  # stdin marker
 
+    @patch("multi_review.is_agent_enabled", return_value=True)
     @patch("multi_review.subprocess.run")
-    def test_gemini_uses_plan_mode_and_pinned_model(self, mock_run):
+    def test_gemini_uses_plan_mode_and_pinned_model(self, mock_run, _mock_enabled):
         mock_run.return_value = MagicMock(
             stdout='{"response": "[]"}', returncode=0,
         )
@@ -446,8 +447,9 @@ class TestReturnCodeHandling:
         assert result.error == "empty_output"
         assert len(result.findings) == 0
 
+    @patch("multi_review.is_agent_enabled", return_value=True)
     @patch("multi_review.subprocess.run")
-    def test_whitespace_stdout_sets_empty_output(self, mock_run):
+    def test_whitespace_stdout_sets_empty_output(self, mock_run, _mock_enabled):
         mock_run.return_value = MagicMock(stdout="   \n  ", stderr="", returncode=0)
         result = multi_review._run_subagent("gemini", "architecture", "abc123")
         assert result.error == "empty_output"

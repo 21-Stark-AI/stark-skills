@@ -32,6 +32,91 @@ info()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; }
 
+validate_json_config() {
+    local config_path="$REPO_DIR/global/config.json"
+
+    if ! python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$config_path" 2>/tmp/stark-install-config.err; then
+        error "Config validation failed for $config_path"
+        sed 's/^/  /' /tmp/stark-install-config.err >&2 || true
+        rm -f /tmp/stark-install-config.err
+        return 1
+    fi
+
+    rm -f /tmp/stark-install-config.err
+    info "Config JSON: valid"
+}
+
+provision_infrastructure() {
+    echo ""
+    echo "Provisioning local infrastructure..."
+
+    mkdir -p \
+        "$HOME/.stark-insights" \
+        "$CODE_REVIEW_DIR/history/autopilot" \
+        "$CODE_REVIEW_DIR/history/design-reviews" \
+        "$CODE_REVIEW_DIR/sessions" \
+        "$CODE_REVIEW_DIR/staged" \
+        "$CODE_REVIEW_DIR/dashboard" \
+        "$REPO_DIR/tests/fixtures"
+
+    info "Created local directories"
+
+    python3 - <<'PY'
+from pathlib import Path
+import os
+import sqlite3
+
+queue_db = Path.home() / ".stark-insights" / "queue.db"
+buffer_db = Path.home() / ".stark-insights" / "buffer.db"
+
+schemas = {
+    queue_db: """
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS pending(
+            id INTEGER PRIMARY KEY,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            retries INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS dead_letter(
+            id INTEGER PRIMARY KEY,
+            payload TEXT NOT NULL,
+            failed_at TEXT NOT NULL,
+            error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS inflight(
+            id INTEGER PRIMARY KEY,
+            payload TEXT NOT NULL,
+            locked_at TEXT NOT NULL,
+            lock_id TEXT
+        );
+    """,
+    buffer_db: """
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS events(
+            id INTEGER PRIMARY KEY,
+            type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            session_id TEXT
+        );
+    """,
+}
+
+for db_path, schema in schemas.items():
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(db_path))
+    try:
+        connection.executescript(schema)
+        connection.commit()
+    finally:
+        connection.close()
+    os.chmod(db_path, 0o600)
+PY
+
+    info "Provisioned SQLite databases"
+}
+
 link_dir() {
     local src="$1"
     local dst="$2"
@@ -91,6 +176,8 @@ install() {
     echo ""
     echo "Installing stark-skills from $REPO_DIR"
     echo ""
+
+    validate_json_config
 
     # 1. Global: ~/.claude/code-review/ → repo/global/
     #    But we need scripts/ at the same level, so we link them separately
@@ -224,6 +311,8 @@ install() {
     # 7. User config: ~/.claude/settings.json + statusline → repo/config/
     link_dir "$REPO_DIR/config/settings.json" "$CLAUDE_DIR/settings.json" "Settings"
     link_dir "$REPO_DIR/config/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh" "Status line"
+
+    provision_infrastructure
 
     echo ""
     info "Note: To enable staleness detection in a repo, copy or reference:"

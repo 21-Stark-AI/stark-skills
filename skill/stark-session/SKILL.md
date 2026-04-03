@@ -7,6 +7,17 @@ disable-model-invocation: true
 model: opus
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-session --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue.
+- If `overall` is "ready": continue silently.
+
 # stark-session
 
 Session lifecycle management with two modes: **start** (context load + briefing) and **end** (test + merge + commit + push).
@@ -46,6 +57,19 @@ Security note: all commands execute through Claude Code's standard permission sy
 ---
 
 ## Start Mode
+
+### Phase 0b — Session State
+
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+
+Parse the JSON output:
+- Display: `Session: {session_id} | Branch: {branch} | Started: {started_at}`
+- If `tasks_completed` is non-empty (resuming): display `Resuming session: {N} tasks completed`
+- If `last_checkpoint` is set: display `Last checkpoint: {last_checkpoint}`
+
+If the command fails, skip silently — session state is optional.
 
 ### Phase 1 — Gather context (silent)
 
@@ -110,11 +134,39 @@ If `.github/project-config.json` exists in the repo root:
 
 If project config is missing, skip silently.
 
+### Phase 2b — Unacknowledged Alerts
+
+Check for unacknowledged critical alerts before proceeding:
+
+```bash
+python3 ~/.claude/code-review/scripts/alert_delivery.py --check --json 2>/dev/null || true
+```
+
+Parse the JSON. If `unacknowledged` is non-empty, display prominently **before** the briefing:
+
+```
+ALERT: {N} unacknowledged alert(s) require attention:
+  {for each: marker path}
+Run: python3 ~/.claude/code-review/scripts/alert_delivery.py --check
+```
+
+Non-fatal — continue with session start even if alerts exist. If the command fails, skip silently.
+
 ### Phase 3 — Health checks
 
 Run each command in `session.health_checks` from config. Capture stdout/stderr on failure for display in briefing. Report pass/fail — non-fatal, never blocking.
 
 **Built-in check — telemetry queue health:**
+
+```bash
+python3 ~/.claude/code-review/scripts/emit_queue.py --health 2>/dev/null || true
+```
+
+Parse the JSON output (`queue_depth`, `last_event_timestamp`) and display:
+- `queue_depth`: number of events pending delivery
+- `last_event_timestamp`: ISO8601 timestamp of the most recent event
+
+Also run the queue depth check:
 
 ```bash
 python3 -c "
@@ -127,7 +179,39 @@ else: print(f'OK: queue healthy ({p} pending, {d} dead)')
 " 2>/dev/null || true
 ```
 
-Report result in the Health line of the briefing. Non-fatal.
+If `~/.claude/code-review/healer.jsonl` exists, show a failure category summary:
+
+```bash
+python3 -c "
+import json, collections, pathlib
+log = pathlib.Path.home() / '.claude/code-review/healer.jsonl'
+if not log.exists(): exit(0)
+cats = collections.Counter()
+for line in log.read_text().splitlines():
+    try:
+        e = json.loads(line)
+        cat = e.get('category')
+        if cat: cats[cat] += 1
+    except Exception: pass
+if cats:
+    print('Failure categories (last session):')
+    for cat, n in cats.most_common(5): print(f'  {cat}: {n}')
+" 2>/dev/null || true
+```
+
+**Built-in check — healer canary status:**
+
+```bash
+python3 ~/.claude/code-review/scripts/healer_canary.py --status --json 2>/dev/null || true
+```
+
+Parse the JSON (`patterns` array). Display any notable items:
+- Any pattern with `circuit == "open"`: `WARN: healer circuit open: {id}`
+- Any pattern with `mode == "suggest"` and `successful_suggests >= 3`: `Near promotion: {id} ({n}/5 suggests)`
+
+Skip silently if command fails or output is empty.
+
+Report all results in the Health line of the briefing. Non-fatal — never blocking.
 
 ### Phase 4 — Available skills
 
@@ -154,6 +238,18 @@ Persona: {persona} ({source}) — "{catchphrase}"
 If it fails, skip silently — persona is optional, never blocks session start.
 
 The random pop-up survey (1-in-5 chance) fires AFTER persona selection, not before. If the survey triggers, present ONE question after the briefing.
+
+### Phase 4c — Skill Suggestions
+
+```bash
+python3 ~/.claude/code-review/scripts/skill_router.py --context session --json 2>/dev/null || true
+```
+
+Parse the JSON. If `suggestions` is non-empty, display at most 2:
+```
+Suggested: /stark-housekeeping, /stark-skill-analytics
+```
+If the command fails or returns no suggestions, skip silently.
 
 ### Phase 5 — Briefing
 
@@ -249,6 +345,26 @@ Uses user's PAT via `gh` CLI — NOT the GitHub App bots.
 - If no devlog configured, still ask for a summary for commit message
 - `git diff --cached --stat` — if empty, skip commit
 - Commit: `git commit -m "docs: session update — <summary>"`
+
+### Phase 3b — Session Checkpoint
+
+Generate a final checkpoint for context window recovery:
+
+```bash
+python3 ~/.claude/code-review/scripts/context_compactor.py --json 2>/dev/null || true
+```
+
+Parse the JSON and note: `Checkpoint written: {checkpoint_path}`
+
+If the command fails, skip silently — checkpointing is optional.
+
+Record the end-of-session state (including the checkpoint path just written):
+
+```bash
+python3 ~/.claude/code-review/scripts/session_state.py --json 2>/dev/null || true
+```
+
+This loads the current session state, which triggers an auto-save — persisting the final snapshot (tasks completed, last checkpoint, end-of-session context). If it fails, skip silently.
 
 ### Phase 4 — Project Field Updates
 
