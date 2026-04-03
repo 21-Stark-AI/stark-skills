@@ -36,6 +36,54 @@
     "max_quality_gate_rounds": 3,
     "max_validation_iterations": 2
   },
+  "models": {
+    "claude": { "enabled": true, "model_id": "claude-sonnet-4-6" },
+    "codex": { "enabled": true, "model_id": "codex" },
+    "gemini": { "enabled": false, "model_id": "gemini-2.5-pro" }
+  },
+  "runtime": {
+    "lock_ttl_minutes": 30,
+    "subagent_env_allowlist": [
+      "PATH", "HOME", "USER", "SHELL", "LANG", "TERM",
+      "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
+      "GOOGLE_APPLICATION_CREDENTIALS"
+    ],
+    "max_concurrent_agents": 3,
+    "temp_dir_prefix": "stark-env"
+  },
+  "self_heal": {
+    "enabled": true,
+    "mode": "suggest",
+    "max_auto_retries": 0,
+    "patterns_file": "healer_patterns.json",
+    "circuit_breaker_threshold": 3
+  },
+  "validation_gate": {
+    "enabled": true,
+    "run_on": ["implementation", "autopilot"],
+    "skip_domains": [],
+    "timeout_seconds": 60
+  },
+  "skill_activation": {
+    "enabled": true,
+    "suggest_after_review_rounds": 3,
+    "max_suggestions": 2,
+    "cooldown_hours": 24,
+    "suppressed_skills": [],
+    "activation_signals": ["review_finding", "correction", "skill_invocation"]
+  },
+  "context_compaction": {
+    "enabled": true,
+    "checkpoint_interval_minutes": 15,
+    "max_checkpoint_size_kb": 50,
+    "include_file_summaries": true
+  },
+  "cost": {
+    "weekly_budget_usd": 50.0,
+    "daily_alert_usd": 15.0,
+    "hard_stop_usd": 100.0,
+    "track_rolling_7d": true
+  },
   "design_review": {
     "agents": ["claude", "codex"],
     "fix_threshold": "medium",
