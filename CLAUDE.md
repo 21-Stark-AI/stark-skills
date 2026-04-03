@@ -57,7 +57,7 @@ All skills live in `skill/stark-*/SKILL.md` and are symlinked to `~/.claude/skil
 ### Pipeline (end-to-end, in order)
 
 - `/stark-design "prompt" | <path>` — generate design doc from requirements (3 agents generate, 6 cross-reviews, synthesized)
-- `/stark-review-design <path>` — multi-agent design/spec review (N agents × 11 domains, default N=2)
+- `/stark-review-design <path>` — multi-agent design/spec review (N agents × 12 domains, default N=2)
 - `/stark-design-to-plan <path>` — generate implementation plan from design doc (3 agents, 6 cross-reviews, synthesized)
 - `/stark-review-plan <path>` — multi-agent execution plan review (N agents × 10 adversarial domains, default N=2)
 - `/stark-plan-to-tasks <path> [--dry-run] [--cleanup <slug>]` — decompose plan into phased GitHub issues (3 LLM passes)

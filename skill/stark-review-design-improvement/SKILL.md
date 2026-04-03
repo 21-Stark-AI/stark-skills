@@ -54,10 +54,10 @@ Invoke `/stark-review-improvement --prompts-dir design-review` with the extracte
 
 When the delegated skill presents action items for confirmation, add context about the design review pipeline:
 
-- **Domain prompts** are at `global/prompts/design-review/{claude,codex,gemini}/00-general.md` through `10-accessibility.md`
+- **Domain prompts** are at `global/prompts/design-review/{claude,codex,gemini}/00-general.md` through `11-test-plan.md`
 - **Agent preamble** is at `global/prompts/design-review/{agent}/agent.md`
 - **Dispatch script** is `scripts/plan_review_dispatch.py` (not `multi_review.py`)
-- **11 domains:** general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility
+- **12 domains:** general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility, test-plan
 
 ### Common design review improvements
 
