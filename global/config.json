@@ -17,6 +17,7 @@
   "verify_before_clean": true,
   "disabled_domains": [],
   "extra_domains": [],
+  "context_files": [],
   "severity_overrides": {},
   "github_apps": {
     "claude": "stark-claude",
