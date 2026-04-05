@@ -102,6 +102,7 @@ DEFAULT_CONFIG = {
     "verify_before_clean": True,
     "disabled_domains": [],
     "extra_domains": [],
+    "context_files": [],
     "domain_agents": {},
     "severity_overrides": {},
     "github_apps": {
@@ -130,6 +131,7 @@ REPLACE_FIELDS = {
     "build_command",
     "verify_before_clean",
     "disabled_domains",
+    "context_files",
 }
 ADDITIVE_FIELDS = {"extra_domains"}
 DEEP_MERGE_FIELDS = {"severity_overrides", "github_apps", "domain_agents", "triage"}
@@ -239,6 +241,32 @@ def resolve_spec_content(spec_link: str, cwd: str) -> str | None:
         with open(spec_path, 'r') as f:
             return f.read()
     return None
+
+
+def resolve_context_files(patterns: list[str], cwd: str) -> str | None:
+    """Resolve context_files glob patterns and return concatenated content.
+
+    Each pattern is evaluated relative to cwd. Matching files are read and
+    concatenated under a header. Returns None if no files matched or the
+    patterns list is empty.
+    """
+    if not patterns:
+        return None
+    matched: list[tuple[str, str]] = []
+    root = Path(cwd)
+    for pattern in patterns:
+        for p in sorted(root.glob(pattern)):
+            if p.is_file() and p.stat().st_size < 200_000:  # skip very large files
+                try:
+                    matched.append((str(p.relative_to(root)), p.read_text()))
+                except (OSError, UnicodeDecodeError):
+                    continue
+    if not matched:
+        return None
+    sections = []
+    for relpath, content in matched:
+        sections.append(f"### {relpath}\n\n{content}")
+    return "## Context Files\nThe following files from the repo provide architectural context:\n\n" + "\n\n---\n\n".join(sections)
 
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -536,14 +564,39 @@ def apply_severity_overrides(
     findings: list[Finding],
     overrides: dict[str, dict],
 ) -> list[Finding]:
-    """Apply severity_overrides: findings below min_severity get downgraded to 'low'."""
+    """Apply severity_overrides: findings below min_severity or matching title_patterns get capped.
+
+    Config format:
+        "severity_overrides": {
+            "<domain>": {
+                "min_severity": "medium",         # findings below this → "low"
+                "title_patterns": {               # title substring matches → cap severity
+                    "unbounded memory": {"max_severity": "low", "reason": "..."},
+                    "global state singleton": {"max_severity": "low", "reason": "..."}
+                }
+            }
+        }
+    """
     for f in findings:
         domain_override = overrides.get(f.domain)
         if not domain_override:
             continue
+        # min_severity: downgrade findings below threshold
         min_sev = domain_override.get("min_severity")
         if min_sev and SEVERITY_ORDER.get(f.severity, 99) > SEVERITY_ORDER.get(min_sev, 99):
             f.severity = "low"
+        # title_patterns: cap severity for known patterns
+        title_pats = domain_override.get("title_patterns", {})
+        if title_pats:
+            title_lower = f.title.lower()
+            desc_lower = f.description.lower()
+            for pattern, rule in title_pats.items():
+                pattern_lower = pattern.lower()
+                if pattern_lower in title_lower or pattern_lower in desc_lower:
+                    max_sev = rule.get("max_severity", "low")
+                    if SEVERITY_ORDER.get(f.severity, 99) < SEVERITY_ORDER.get(max_sev, 99):
+                        f.severity = max_sev
+                    break  # first match wins
     return findings
 
 
@@ -1040,31 +1093,90 @@ def _dedup_key(f: Finding) -> tuple[str, int, str]:
     Line numbers within ±5 lines are bucketed together so that findings
     about the same location from different agents/domains collapse.
     """
-    line_bucket = (f.line // 10) * 10  # bucket to nearest 10
+    line_bucket = f.line // 5  # bucket to nearest 5 lines
     title_norm = re.sub(r"[^a-z0-9]+", " ", f.title.lower()).strip()
     return (f.file, line_bucket, title_norm)
+
+
+def _title_words(title: str) -> set[str]:
+    """Extract significant words from a finding title for fuzzy matching."""
+    norm = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    # Drop common filler words that don't carry semantic meaning
+    stop = {"the", "a", "an", "is", "in", "on", "of", "for", "to", "and", "or", "not", "no", "be"}
+    return {w for w in norm.split() if w not in stop and len(w) > 1}
+
+
+def _titles_overlap(a: str, b: str, threshold: float = 0.5) -> bool:
+    """Check whether two finding titles are about the same issue.
+
+    Uses Jaccard similarity on significant words. A threshold of 0.5 means
+    at least half the words overlap — catches "dual cache inconsistency" vs
+    "cache stores duplicate data" while rejecting genuinely different findings.
+    """
+    wa, wb = _title_words(a), _title_words(b)
+    if not wa or not wb:
+        return False
+    intersection = wa & wb
+    union = wa | wb
+    return len(intersection) / len(union) >= threshold
 
 
 def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     """Collapse duplicate findings across agents/domains.
 
-    When multiple agents or domains report the same issue (same file,
-    similar line, similar title), keep the highest-severity instance and
-    append confirmation notes from the others.
+    Two-pass dedup:
+    1. Exact key match: same file, same 5-line bucket, same normalized title.
+    2. Fuzzy proximity match: same file, lines within ±5, title word overlap ≥50%.
+
+    Keeps the highest-severity instance and records confirmers.
     """
+    # --- Pass 1: exact key grouping ---
     groups: dict[tuple, list[Finding]] = {}
     for f in findings:
         key = _dedup_key(f)
         groups.setdefault(key, []).append(f)
 
+    intermediates: list[list[Finding]] = list(groups.values())
+
+    # --- Pass 2: merge groups that are close in location + similar in title ---
+    merged: list[list[Finding]] = []
+    used = [False] * len(intermediates)
+    for i, group_a in enumerate(intermediates):
+        if used[i]:
+            continue
+        combined = list(group_a)
+        rep_a = group_a[0]
+        for j in range(i + 1, len(intermediates)):
+            if used[j]:
+                continue
+            rep_b = intermediates[j][0]
+            if rep_a.file != rep_b.file:
+                continue
+            if abs(rep_a.line - rep_b.line) > 5:
+                continue
+            if _titles_overlap(rep_a.title, rep_b.title):
+                combined.extend(intermediates[j])
+                used[j] = True
+        used[i] = True
+        merged.append(combined)
+
     deduped: list[Finding] = []
-    for group in groups.values():
+    for group in merged:
         # Keep the highest-severity finding
         group.sort(key=lambda f: SEVERITY_ORDER.get(f.severity, 99))
         best = group[0]
         if len(group) > 1:
-            confirmers = [f"{f.agent}/{f.domain}" for f in group[1:]]
-            best.description += f" (also flagged by: {', '.join(confirmers)})"
+            # Deduplicate confirmer labels (same agent/domain shouldn't appear twice)
+            seen_confirmers: set[str] = set()
+            confirmers: list[str] = []
+            for f in group[1:]:
+                label = f"{f.agent}/{f.domain}"
+                if label not in seen_confirmers:
+                    seen_confirmers.add(label)
+                    confirmers.append(label)
+            if confirmers:
+                best.description += f" (also flagged by: {', '.join(confirmers)})"
+                best.cross_validated_by = list(seen_confirmers)
         deduped.append(best)
 
     return sorted(deduped, key=lambda f: SEVERITY_ORDER.get(f.severity, 99))
@@ -1432,6 +1544,11 @@ def review_pr_single(
     else:
         spec_context = None
 
+    # Auto-discover context files (specs, design docs) from config globs
+    ctx_files_content = resolve_context_files(config.get("context_files", []), effective_cwd)
+    if ctx_files_content:
+        spec_context = f"{spec_context}\n\n{ctx_files_content}" if spec_context else ctx_files_content
+
     rnd = run_single_agent_round(base, 1, da_map, cwd=cwd, out=out, spec_context=spec_context)
 
     if sev_overrides:
@@ -1556,6 +1673,11 @@ def review_pr(
     else:
         # N/A
         spec_context = None
+
+    # Auto-discover context files (specs, design docs) from config globs
+    ctx_files_content = resolve_context_files(config.get("context_files", []), effective_cwd)
+    if ctx_files_content:
+        spec_context = f"{spec_context}\n\n{ctx_files_content}" if spec_context else ctx_files_content
 
     rounds: list[ReviewRound] = []
     round_num = 0

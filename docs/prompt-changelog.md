@@ -2,6 +2,29 @@
 
 Tracks improvements to review prompts based on stark-team-review assessments.
 
+## 2026-04-05 — Cross-agent dedup, spec context injection, generator protocol, severity overrides
+
+**Source:** PR #179 in GetEvinced/stark-data-core
+**Prompts dir:** default (PR code review)
+**Assessment:** 61% signal-to-noise; 5 agent×domain pairs flagged same dual-cache issue; 5 noise items would have been filtered with spec context; agents missed critical Strawberry generator protocol bug
+
+### Changes Made
+
+| File | Change | Reason |
+|------|--------|--------|
+| `scripts/multi_review.py` | Two-pass dedup: exact key grouping + fuzzy proximity merge (±5 lines, Jaccard title overlap ≥0.5) | 5 agent×domain pairs flagged identical `stats.py` dual-cache issue |
+| `scripts/multi_review.py` + `global/config.json` | Added `context_files` config field and `resolve_context_files()` — auto-discovers spec/design docs via glob patterns | 5 noise items would have been filtered if agents had the spec document |
+| `{claude,codex,gemini}/03-correctness.md` | Added "Framework Generator Protocols" section — Strawberry `contextlib.contextmanager` yield/send caveat | No agent caught `result = yield` returns None inside `@contextmanager` |
+| `org/evinced/config.json` | Added `title_patterns` under `security` severity overrides for "unbounded memory" and "global state singleton" | Security prompts flagged spec-approved architecture as high severity |
+| `scripts/multi_review.py` | Extended `apply_severity_overrides()` to support `title_patterns` substring matching | Enable org-level severity caps for known spec-addressed patterns |
+
+### Validation
+- [x] Prompt syntax OK
+- [x] Python compiles
+- [x] Config valid JSON
+
+---
+
 ## 2026-04-04 — DB enum coercion FP + existing-test detection FP
 
 **Source:** PR #141 in GetEvinced/stark-data-core

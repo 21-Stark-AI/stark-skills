@@ -26,6 +26,10 @@ Check:
 - className not merged — user className lost
 - ...rest applied to wrong element
 
+**Framework Generator Protocols:**
+- For Strawberry SchemaExtension hooks, verify that yield-based generators receive the expected value — `contextlib.contextmanager` sends `None` on `yield`, not the execution result. Code that does `result = yield` inside a `@contextmanager` always gets `None`.
+- For any framework that uses generator-based middleware (ASGI, Starlette, Strawberry), confirm the yield/send contract matches the framework's actual behavior.
+
 **Concurrency & Async (Backend):**
 - TOCTOU races — read-then-write without transactions (e.g., check existence then delete)
 - Non-atomic check-and-act on shared state (databases, distributed locks)
