@@ -734,7 +734,7 @@ Runtime storage has configurable retention:
 }
 ```
 
-`stark-housekeeping` enforces retention. Growth estimate: ~50KB per review run, ~500 runs/year = ~25MB/year — retention policy is for hygiene, not capacity pressure.
+Retention is enforced by `stark-housekeeping`, which is deferred to Phase C. Until then, retention is manual (`find ~/.stark/runtime/artifacts -mtime +30 -delete` or equivalent). Growth estimate: ~50KB per review run, ~500 runs/year = ~25MB/year — retention is for hygiene, not capacity pressure. No automated enforcement is needed in Phase A/B at this scale.
 
 ### File permissions
 
@@ -1325,7 +1325,7 @@ Introduce shared tooling:
 - contracts and prompts are present for configured workflows
 - host install state (wrappers present, symlinks valid)
 - worker CLI availability and auth status
-- stale lock recovery (locks older than TTL)
+- stale lock recovery (PID liveness check + heartbeat expiry, per the lock protocol in Concurrency model)
 - prints remediation steps per host
 
 Deferred to Phase B — not required for Phase A (the conformance test suite validates architecture during Phase A).
@@ -1433,7 +1433,7 @@ This spec makes these concrete decisions:
 10. **Keep Claude operational through compatibility shims while removing its accidental ownership of the architecture**
 11. **Scope Phase A contracts to first-wave workflows only** — do not contractize all 26 workflows upfront
 12. **Telemetry is best-effort** — never blocks workflow execution
-13. **V1 telemetry uses `events.jsonl` only** — no premature DB infrastructure
+13. **V1 local telemetry uses `events.jsonl` as canonical store** — no premature DB infrastructure. `stark-insights` remains an optional downstream sink, not part of the runtime source of truth
 
 ---
 
