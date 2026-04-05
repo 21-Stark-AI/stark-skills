@@ -62,7 +62,7 @@ The right solution is not "duplicate the skills for Codex." The right solution i
 1. **No shared package reads `~/.claude` directly** - all host-specific paths are accessed only through host adapters
 2. **Claude remains operational** - the current Claude-based entrypoints still work during and after migration
 3. **Codex first wave ships natively** - `stark-review`, `stark-team-review`, `stark-design`, `stark-design-to-plan`, and `stark-review-plan` are usable from Codex without Claude compatibility shims in the shared engine
-4. **Runtime state is normalized** - new runs write history, sessions, telemetry, and artifacts under `~/.stark/runtime/`
+4. **Runtime state is normalized** - new runs write history, telemetry, and artifacts under `~/.stark/runtime/` (sessions are deferred to Phase C)
 5. **Shared behavior is tested once** - shared workflow contracts and output semantics are verified by host-independent tests
 6. **Host wrappers are intentionally thin** - each host product mainly handles invocation UX, capability mapping, and result rendering
 7. **Provider/worker concepts remain separate from host concepts** - "Codex the worker" and "Codex the host" are represented distinctly in config and code
@@ -317,7 +317,7 @@ The center of gravity moves from giant host markdown into explicit workflow defi
 
 ### Workflow definition
 
-Each workflow gets a canonical definition in `packages/contracts/workflows/<workflow>.json` and a matching implementation in `packages/core/python/stark_core/workflows/`.
+Each workflow gets a canonical definition in `contracts/workflows/<workflow>.json` and a matching implementation in `stark_core/workflows/`.
 
 Example schema shape:
 
@@ -461,20 +461,36 @@ Optional capabilities degrade gracefully — shared core skips them if the adapt
 The adapter is split into a required base and optional capability protocols:
 
 ```python
+@dataclass
+class ProgressHandle:
+    """Thread-safe handle for updating progress from worker threads."""
+    def update(self, phase: str, status: str, detail: str | None = None) -> None: ...
+    def end(self, outcome: str) -> None: ...
+
+@dataclass
+class EnvironmentInfo:
+    host_id: str
+    host_version: str | None
+    install_root: Path
+    cli_available: dict[str, bool]  # worker CLI availability
+
 class HostAdapterBase(Protocol):
-    """Required — every host must implement this."""
+    """Required — every host must implement this.
+    Thread-safety: progress() and its ProgressHandle must be thread-safe.
+    ask_choice() is serialized by shared core (never called from worker threads).
+    """
     host_id: str                    # canonical host ID (e.g., "claude-code", "codex-cli")
     host_version: str | None
 
-    # Progress (context manager pattern to reduce call-site noise)
+    # Progress (context manager — thread-safe)
     @contextmanager
     def progress(self, workflow_id: str, phases: list[str]) -> Iterator[ProgressHandle]: ...
 
-    # Runtime paths
+    # Runtime paths — failure here is BLOCKING (workflow cannot proceed)
     def runtime_root(self) -> Path: ...
     def compatibility_paths(self) -> dict[str, Path]: ...
 
-    # Interaction
+    # Interaction (serialized by shared core)
     def ask_choice(self, prompt: str, options: list[str], default: str | None = None) -> str: ...
 
     # Environment
@@ -503,7 +519,7 @@ class ArtifactPresenter(Protocol):
 
 - All adapter method calls in shared core are wrapped with try/except at the call site
 - Adapter exceptions for non-critical capabilities (`progress`, `telemetry_sink`) are logged as `host_adapter_failure` telemetry events and silently tolerated
-- Adapter exceptions for critical capabilities (`runtime_paths`) surface as workflow-level `degraded` outcomes
+- Adapter exceptions for critical capabilities (`runtime_paths`) surface as workflow-level `blocked` outcomes — the workflow cannot proceed without a valid runtime root
 - Adapters that cannot fulfill a declared capability raise `AdapterCapabilityError`; shared core probes `supported_capabilities()` at workflow start
 
 ### Adapter concurrency contract
@@ -558,6 +574,7 @@ class WorkerDispatchRequest:
     prompt_family: str      # e.g., "pr-review/architecture"
     inputs: dict            # workflow-specific inputs
     timeout_s: int = 300    # per-worker timeout budget
+    max_retries: int = 1    # retry once on transient failure (auth refresh, network)
 
 @dataclass
 class WorkerDispatchResult:
@@ -665,16 +682,20 @@ Every workflow invocation is assigned a run ID (`<workflow>-<timestamp>-<short-u
 
 ### Telemetry model (V1)
 
-V1 telemetry uses `events.jsonl` as the single canonical store — append-only, no lock coordination needed for concurrent writers (OS-level atomic append for lines < PIPE_BUF). No SQLite databases in V1. DB infrastructure is added later only if a measured throughput or reliability requirement demands it.
+V1 telemetry uses `events.jsonl` as the single canonical store. No SQLite databases in V1. DB infrastructure is added later only if a measured throughput or reliability requirement demands it.
 
-Telemetry writes are **best-effort, not blocking**. A full or corrupt telemetry store logs a warning and skips the event — it does not block the workflow. Only artifact and history writes are on the critical path.
+Concurrent writes to `events.jsonl` use `flock(LOCK_EX)` with a short timeout (100ms). If the lock cannot be acquired, the event is dropped with a warning — telemetry is best-effort. Each event is a single JSON line terminated by newline.
+
+Telemetry writes are **best-effort, not blocking**. A full, corrupt, or contended telemetry store logs a warning and skips the event — it does not block the workflow. Only artifact and history writes are on the critical path.
+
+Telemetry events must not contain secrets, credentials, or raw source code. Events that include code excerpts (e.g., review findings) use a truncated hash reference to the artifact, not inline content.
 
 ### Concurrency model
 
 - Artifact writes are isolated by run-scoped directories — parallel runs cannot collide
 - History writes use atomic temp-then-rename within run-scoped paths
-- `locks/` uses file locks with a defined TTL (default: 10 minutes). `stark_doctor.py` recovers stale locks
-- Telemetry appends are safe for concurrent writers (atomic line append)
+- `locks/` uses file locks with a defined TTL (default: 10 minutes) and acquisition timeout (default: 30 seconds). If acquisition times out, the workflow fails as `blocked`. `stark_doctor.py` recovers stale locks (older than TTL)
+- Telemetry appends use `flock` with short timeout; contention drops the event rather than blocking
 - Multiple workflows from different hosts writing to the same runtime root is supported without coordination beyond the file-lock convention
 
 ### Retention policy
@@ -1012,7 +1033,9 @@ When both legacy and new runtime contain data for the same logical entity:
 2. **Copy-then-verify** — copy records in batches, verify each batch, write checkpoint
 3. **Mark complete** — write migration epoch to `manifest.json`
 
-The script supports `--dry-run` (report only), `--batch-size N` (bound memory), and `--rollback` (remove migrated records from Stark runtime, restore read-through). Legacy data is never deleted by the migration script — only marked as migrated.
+The script supports `--dry-run` (report only), `--batch-size N` (bound memory), and `--rollback` (restore read-through for pre-migration records). Legacy data is never deleted by the migration script — only marked as migrated.
+
+**Rollback limitation:** Runs that completed after migration started wrote artifacts only to `~/.stark/runtime/` — they have no legacy copy. Rollback restores read-through for pre-migration records but cannot undo post-migration runs. The rollback command warns about this and lists affected run IDs so the operator can decide whether to proceed.
 
 ### Write safety
 
@@ -1320,7 +1343,7 @@ Deliver:
 
 Exit criteria: both hosts pass adapter conformance + golden tests + smoke tests. `stark-review` produces equivalent artifacts from both hosts.
 
-**Blocking prerequisite for Codex:** validate that `codex-cli` supports a configurable extension/agents directory before starting Codex wrappers.
+**Blocking prerequisite for Codex:** validate that `codex-cli` supports a configurable extension/agents directory before starting Codex wrappers. **Owner: Aryeh. Deadline: before Phase B Codex work begins.** If Codex CLI does not support this, the fallback is a Python CLI entrypoint (`python3 -m stark_core.cli stark-review ...`) that Codex invokes via its tool-use or shell capabilities.
 
 ### Phase C — Redesign host-bound workflows
 
