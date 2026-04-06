@@ -113,41 +113,31 @@ fi
 # ── Token counts (cumulative session totals) ─────────────────────────────
 tokens_in=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
 tokens_out=$(echo "$input" | jq -r '.context_window.total_output_tokens // empty')
-cache_write=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
 model_id=$(echo "$input" | jq -r '.model.id // ""')
 
 # ── Cost estimation ───────────────────────────────────────────────────────
 # Prices per million tokens (USD). Cumulative session totals.
 session_cost=""
 if [ -n "$tokens_in" ] && [ -n "$tokens_out" ] && [ -n "$model_id" ]; then
-  session_cost=$(python3 - <<PYEOF
-import sys
+  session_cost=$(STARK_MODEL_ID="$model_id" STARK_TOKENS_IN="$tokens_in" \
+    STARK_TOKENS_OUT="$tokens_out" python3 - <<'PYEOF'
+import os
 
-model = "$model_id"
-tokens_in = int("$tokens_in" or 0)
-tokens_out = int("$tokens_out" or 0)
-cache_write = int("$cache_write" or 0)
-cache_read = int("$cache_read" or 0)
+model = os.environ.get("STARK_MODEL_ID", "")
+tokens_in = int(os.environ.get("STARK_TOKENS_IN") or 0)
+tokens_out = int(os.environ.get("STARK_TOKENS_OUT") or 0)
 
-# Pricing per million tokens (USD)
-# Source: https://www.anthropic.com/pricing
 PRICES = {
-    # Claude 4 family
-    "claude-opus-4":    {"in": 15.0, "out": 75.0, "cw": 18.75, "cr": 1.5},
-    "claude-sonnet-4":  {"in": 3.0,  "out": 15.0, "cw": 3.75,  "cr": 0.3},
-    # Claude 3.7
-    "claude-sonnet-3-7": {"in": 3.0, "out": 15.0, "cw": 3.75,  "cr": 0.3},
-    # Claude 3.5
-    "claude-opus-3-5":   {"in": 15.0,"out": 75.0, "cw": 18.75, "cr": 1.5},
-    "claude-sonnet-3-5": {"in": 3.0, "out": 15.0, "cw": 3.75,  "cr": 0.3},
-    "claude-haiku-3-5":  {"in": 0.8, "out": 4.0,  "cw": 1.0,   "cr": 0.08},
-    # Claude 3
-    "claude-opus-3":    {"in": 15.0, "out": 75.0, "cw": 18.75, "cr": 1.5},
-    "claude-haiku-3":   {"in": 0.25, "out": 1.25, "cw": 0.3,   "cr": 0.03},
+    "claude-opus-4":    {"in": 15.0, "out": 75.0},
+    "claude-sonnet-4":  {"in": 3.0,  "out": 15.0},
+    "claude-sonnet-3-7": {"in": 3.0, "out": 15.0},
+    "claude-opus-3-5":   {"in": 15.0,"out": 75.0},
+    "claude-sonnet-3-5": {"in": 3.0, "out": 15.0},
+    "claude-haiku-3-5":  {"in": 0.8, "out": 4.0},
+    "claude-opus-3":    {"in": 15.0, "out": 75.0},
+    "claude-haiku-3":   {"in": 0.25, "out": 1.25},
 }
 
-# Match model by prefix (handles versioned IDs like claude-sonnet-4-6-20250514)
 price = None
 for key in sorted(PRICES.keys(), key=len, reverse=True):
     normalized_model = model.replace(".", "-")
@@ -156,21 +146,15 @@ for key in sorted(PRICES.keys(), key=len, reverse=True):
         break
 
 if price is None:
-    # Default to Sonnet 4 pricing if unknown
-    price = {"in": 3.0, "out": 15.0, "cw": 3.75, "cr": 0.3}
+    price = {"in": 3.0, "out": 15.0}
 
 M = 1_000_000
-cost = (
-    (tokens_in / M) * price["in"] +
-    (tokens_out / M) * price["out"] +
-    (cache_write / M) * price["cw"] +
-    (cache_read / M) * price["cr"]
-)
+cost = (tokens_in / M) * price["in"] + (tokens_out / M) * price["out"]
 
 if cost < 0.01:
-    print(f"\${cost*100:.3f}¢")
+    print(f"${cost*100:.3f}¢")
 else:
-    print(f"\${cost:.3f}")
+    print(f"${cost:.3f}")
 PYEOF
   )
 fi
@@ -206,7 +190,7 @@ SEP=" ${C_DIM}|${RESET} "
 out="${C_YELLOW}${dir_display}${RESET}"
 if [ -n "$git_branch_str" ]; then
   out="${out} ${C_GREEN}${git_branch_str}${RESET}"
-  [ -n "$git_dirty_str" ] && out="${out} ${git_dirty_str}"
+  [ -n "$git_dirty_str" ] && out="${out} ${C_MAROON}${git_dirty_str}${RESET}"
 fi
 
 # model — compress "Opus 4.6 (1M context)" → "Opus[1M]", "Sonnet 4.6" → "Sonnet" etc.

@@ -4,7 +4,6 @@
 
 - [Pipeline](pipeline.html)
 - [Ecosystem](ecosystem.html)
-- [Future Architecture](monorepo-architecture.html)
 
 ## Pipeline Skills (in order)
 
