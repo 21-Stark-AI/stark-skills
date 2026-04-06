@@ -124,18 +124,22 @@ if [ -n "$tokens_in" ] && [ -n "$tokens_out" ] && [ -n "$model_id" ]; then
 import os
 
 model = os.environ.get("STARK_MODEL_ID", "")
-tokens_in = int(os.environ.get("STARK_TOKENS_IN") or 0)
-tokens_out = int(os.environ.get("STARK_TOKENS_OUT") or 0)
+try:
+    tokens_in = int(float(os.environ.get("STARK_TOKENS_IN") or 0))
+    tokens_out = int(float(os.environ.get("STARK_TOKENS_OUT") or 0))
+except (ValueError, TypeError):
+    tokens_in = tokens_out = 0
 
 PRICES = {
-    "claude-opus-4":    {"in": 15.0, "out": 75.0},
-    "claude-sonnet-4":  {"in": 3.0,  "out": 15.0},
-    "claude-sonnet-3-7": {"in": 3.0, "out": 15.0},
-    "claude-opus-3-5":   {"in": 15.0,"out": 75.0},
-    "claude-sonnet-3-5": {"in": 3.0, "out": 15.0},
-    "claude-haiku-3-5":  {"in": 0.8, "out": 4.0},
-    "claude-opus-3":    {"in": 15.0, "out": 75.0},
-    "claude-haiku-3":   {"in": 0.25, "out": 1.25},
+    "claude-opus-4":     {"in": 15.0, "out": 75.0},
+    "claude-sonnet-4":   {"in": 3.0,  "out": 15.0},
+    "claude-sonnet-3-7": {"in": 3.0,  "out": 15.0},
+    "claude-opus-3-5":   {"in": 15.0, "out": 75.0},
+    "claude-sonnet-3-5": {"in": 3.0,  "out": 15.0},
+    "claude-haiku-4-5":  {"in": 0.8,  "out": 4.0},
+    "claude-haiku-3-5":  {"in": 0.8,  "out": 4.0},
+    "claude-opus-3":     {"in": 15.0, "out": 75.0},
+    "claude-haiku-3":    {"in": 0.25, "out": 1.25},
 }
 
 price = None
@@ -152,7 +156,7 @@ M = 1_000_000
 cost = (tokens_in / M) * price["in"] + (tokens_out / M) * price["out"]
 
 if cost < 0.01:
-    print(f"${cost*100:.3f}¢")
+    print(f"{cost*100:.3f}\u00a2")
 else:
     print(f"${cost:.3f}")
 PYEOF
