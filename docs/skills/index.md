@@ -1,5 +1,11 @@
 # Skill Documentation Index
 
+## Overview Visuals
+
+- [Pipeline](pipeline.html)
+- [Ecosystem](ecosystem.html)
+- [Future Architecture](monorepo-architecture.html)
+
 ## Pipeline Skills (in order)
 
 | Skill | Description | Docs |
