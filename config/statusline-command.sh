@@ -149,18 +149,15 @@ for key in sorted(PRICES.keys(), key=len, reverse=True):
         price = PRICES[key]
         break
 
-if price is None:
-    price = {"in": 3.0, "out": 15.0}
-
-M = 1_000_000
-cost = (tokens_in / M) * price["in"] + (tokens_out / M) * price["out"]
-
-if cost < 0.01:
-    print(f"{cost*100:.3f}\u00a2")
-else:
-    print(f"${cost:.3f}")
+if price is not None:
+    M = 1_000_000
+    cost = (tokens_in / M) * price["in"] + (tokens_out / M) * price["out"]
+    if cost < 0.01:
+        print(f"{cost*100:.3f}\u00a2")
+    else:
+        print(f"${cost:.3f}")
 PYEOF
-  )
+  2>/dev/null)
 fi
 
 # ── Session start time (persisted per session_id) ─────────────────────────
