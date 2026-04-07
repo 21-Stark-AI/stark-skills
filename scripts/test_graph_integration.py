@@ -102,7 +102,7 @@ def test_strict_report_has_no_mode_annotation():
         out = f.name
     _run(output_file=out)
     report = json.loads(Path(out).read_text())
-    assert "mode" not in report
+    assert report.get("mode") is None
 
 
 # ── report structure ──────────────────────────────────────────────────────

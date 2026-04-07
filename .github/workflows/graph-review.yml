@@ -1,0 +1,166 @@
+name: Graph Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+
+concurrency:
+  group: graph-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze graph artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPO_NAME: ${{ github.repository }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      WORKDIR: .stark-graph/pr-${{ github.event.pull_request.number }}
+      STRICT_MODE: ${{ vars.STARK_GRAPH_STRICT }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+
+      - name: Install graph dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements-graph.txt
+
+      - name: Run validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORKDIR"
+          warn_flag=()
+          if [[ "${STRICT_MODE:-false}" != "true" ]]; then
+            warn_flag+=(--warn)
+          fi
+
+          set +e
+          python scripts/stark_graph.py \
+            --repo . \
+            --repo-name "$REPO_NAME" \
+            --stage validate \
+            --base "$BASE_SHA" \
+            --pr "$PR_NUMBER" \
+            --workdir "$WORKDIR" \
+            "${warn_flag[@]}"
+          exit_code=$?
+          set -e
+
+          printf '%s\n' "$exit_code" > "$WORKDIR/exit-code.txt"
+          if [[ "$exit_code" -gt 1 ]]; then
+            exit "$exit_code"
+          fi
+
+      - name: Run diff
+        run: |
+          python scripts/stark_graph.py \
+            --repo . \
+            --repo-name "$REPO_NAME" \
+            --stage diff \
+            --base "$BASE_SHA" \
+            --pr "$PR_NUMBER" \
+            --workdir "$WORKDIR"
+
+      - name: Upload graph artifacts
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+        with:
+          name: graph-review-${{ github.event.pull_request.number }}
+          path: ${{ env.WORKDIR }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  comment:
+    name: Post graph comment
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - analyze
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPO_NAME: ${{ github.repository }}
+      ARTIFACT_DIR: graph-artifacts
+    steps:
+      - name: Checkout trusted base ref
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: |
+            scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+
+      - name: Install graph dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements-graph.txt
+
+      - name: Download graph artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: graph-review-${{ github.event.pull_request.number }}
+          path: ${{ env.ARTIFACT_DIR }}
+
+      - name: Post or update graph comment
+        env:
+          STARK_APP_ID: ${{ secrets.STARK_APP_ID }}
+          STARK_INSTALL_ID: ${{ secrets.STARK_INSTALL_ID }}
+          STARK_PRIVATE_KEY_B64: ${{ secrets.STARK_PRIVATE_KEY_B64 }}
+        run: |
+          python scripts/graph/pr_commenter.py \
+            --repo "$REPO_NAME" \
+            --pr "$PR_NUMBER" \
+            --diff "$ARTIFACT_DIR/diff_report.json" \
+            --validation "$ARTIFACT_DIR/validation_report.json"
+
+  gate:
+    name: Graph gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - analyze
+    permissions:
+      contents: read
+    env:
+      STRICT_MODE: ${{ vars.STARK_GRAPH_STRICT }}
+      ARTIFACT_DIR: graph-artifacts
+    steps:
+      - name: Download graph artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: graph-review-${{ github.event.pull_request.number }}
+          path: ${{ env.ARTIFACT_DIR }}
+
+      - name: Enforce graph gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          exit_code="$(tr -d '\n' < "$ARTIFACT_DIR/exit-code.txt")"
+          echo "strict_mode=${STRICT_MODE:-false}"
+          echo "validation_exit_code=$exit_code"
+          if [[ "${STRICT_MODE:-false}" == "true" && "$exit_code" == "1" ]]; then
+            echo "stark-graph gate failed in strict mode"
+            exit 1
+          fi
