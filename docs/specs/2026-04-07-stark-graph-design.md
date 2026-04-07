@@ -3,6 +3,7 @@
 **Date:** 2026-04-07
 **Status:** Design
 **Approach:** B — Pluggable Pipeline
+**Schema Version:** 1
 **MVP Target:** stark-showcase backend (full vertical slice)
 
 ## Problem
@@ -18,50 +19,71 @@ A pluggable pipeline that:
 4. Enriches review agent prompts with graph context for blast radius awareness
 5. Posts dependency change summaries as PR comments
 
+## Alternatives Considered
+
+- **Approach A — Monolithic Script:** Single file handling parse/validate/diff/render. Simple to build, but adding a second language or repo requires rewriting. Rejected for poor extensibility.
+- **Approach C — LSP-Backed Graph:** Use Pyright/tsserver for type-aware dependency resolution. Most accurate, but LSP startup overhead (2-5s), hard dependency on language servers in CI, and per-project-only scope (no cross-repo). Rejected for CI complexity.
+
 ## Graph Model
 
-Hierarchical graph with three node layers and typed edges. One JSON file per repo (`dependency-graph.json`), merged at query time for cross-repo views.
+Hierarchical graph with two node layers (MVP) and typed edges. One JSON file per repo stored as a CI artifact (not committed to repo), merged at query time for cross-repo views (Phase 2).
 
 ### Node
 
-```
-id:         "repo:path:qualname"     # globally unique across repos
-layer:      module | class | function
-parent:     "parent node id"         # null for modules
-declared:   [Depends, CalledBy, Publishes]  # from docstring
-file_path:  "/absolute/path.py"
-line:       42
-```
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | `"repo:relative_path"` for modules, `"repo:relative_path:ClassName"` for classes |
+| `layer` | enum | yes | `module` or `class` (MVP); `function` added in Phase 2 |
+| `parent` | string | no | Parent node ID. Null for modules, module ID for classes |
+| `depends` | list[string] | no | Parsed from `Depends:` docstring field. Qualified names (see Parsing Rules). |
+| `publishes` | list[string] | no | Parsed from `Publishes:` docstring field. Event names (trust-only). |
+| `called_by` | list[string] | no | Parsed from `Called by:` docstring field. Informational only in MVP — not strictly validated. |
+| `file_path` | string | yes | Repo-relative path |
+| `line` | int | yes | Line number of definition |
 
 ### Edge
 
-```
-source:  "node id"
-target:  "node id"
-type:    imports | inherits | calls | depends
-origin:  ast | docstring            # how we discovered this edge
-```
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | yes | Full node ID |
+| `target` | string | yes | Full node ID |
+| `type` | string | yes | One of: `imports`, `inherits`, `depends`. Open string — unknown types accepted by consumers with default styling. |
+| `origin` | enum | yes | `ast` or `docstring` — how we discovered this edge |
+
+Edge types are an open set. MVP uses `imports`, `inherits`, and `depends`. Phase 2 may add `publishes`, `subscribes`, `calls`. Consumers must ignore unknown types gracefully.
 
 ### Graph Envelope
 
+```json
+{
+  "schema_version": "1",
+  "repo": "GetEvinced/stark-showcase",
+  "generated": "2026-04-07T13:00:00Z",
+  "commit_sha": "abc1234",
+  "parser": "python:1.0",
+  "nodes": [],
+  "edges": []
+}
 ```
-repo:       "GetEvinced/stark-showcase"
-generated:  "2026-04-07T13:00:00Z"
-parser:     "python:1.0"
-nodes:      [Node, ...]
-edges:      [Edge, ...]
-```
+
+`schema_version` is a semver major version. Consumers reject graphs with an unrecognized major version. Additive fields within a version are safe; breaking changes bump the version. Migration: re-run parser on the repo.
 
 ### Node ID Format
 
-`repo:relative_path:qualname` where qualname follows Python convention:
+`repo:relative_path` for modules, `repo:relative_path:qualname` for classes.
+
 - Module: `GetEvinced/stark-showcase:backend/showcase/services/version_service.py`
 - Class: `GetEvinced/stark-showcase:backend/showcase/services/version_service.py:VersionService`
-- Function: `GetEvinced/stark-showcase:backend/showcase/services/version_service.py:VersionService.activate_version`
+
+Module IDs use exactly two segments (repo:path). Class IDs use three (repo:path:classname). This is unambiguous and consistent.
+
+### Repo Identity
+
+Derived from `git remote get-url origin`, normalized to `org/repo` format (e.g., `GetEvinced/stark-showcase`). Override with `--repo-name` CLI flag for non-standard remotes or monorepo subpaths.
 
 ## Docstring Convention
 
-Structured metadata in docstrings that parsers extract and drift detection validates. Required for classes and modules. Functions inherit from their parent class.
+Structured metadata in docstrings that parsers extract and drift detection validates. Required for classes and modules.
 
 ### Class-level (required)
 
@@ -69,9 +91,9 @@ Structured metadata in docstrings that parsers extract and drift detection valid
 class VersionService:
     """Manage version lifecycle for projects.
 
-    Depends: ProjectRepository, GCSStorage, TypesenseIndex
+    Depends: showcase.services.gcs_storage.GCSStorage, showcase.repositories.project.ProjectRepository
     Publishes: version.created, version.activated
-    Called by: UploadPipeline, BackofficeAPI
+    Called by: showcase.services.upload_pipeline.UploadPipeline
     """
 ```
 
@@ -80,26 +102,38 @@ class VersionService:
 ```python
 """Upload pipeline orchestrator.
 
-Depends: version_service, gcs_storage, typesense_index
+Depends: showcase.services.version_service, showcase.services.gcs_storage
 Publishes: upload.started, upload.completed
 """
 ```
 
 ### Metadata Fields
 
-| Field | Meaning | Validation |
-|-------|---------|------------|
-| **Depends** | Services/modules this unit calls or instantiates | Cross-checked against `import` statements + constructor args |
-| **Publishes** | Events, signals, or side effects | Trust-only — not import-traceable. Flagged if removed from docstring. |
-| **Called by** | Reverse edges — who consumes this | Bidirectional: if A says `Called by: B`, B must say `Depends: A` |
+| Field | Meaning | Validation | MVP Strictness |
+|-------|---------|------------|----------------|
+| **Depends** | Services/modules this unit calls or instantiates | Cross-checked against `import` statements | **Strict** — CI-blocking |
+| **Publishes** | Events, signals, or side effects | Trust-only — not import-traceable. Flagged if removed. | **Trust-only** |
+| **Called by** | Reverse edges — who consumes this | Informational — helps reviewers but not strictly validated in MVP | **Informational** |
 
 ### Parsing Rules
 
 - Fields are case-insensitive: `depends:`, `Depends:`, `DEPENDS:` all match
 - Values are comma-separated: `Depends: A, B, C`
-- Values match by short name (class name or module stem), not full path
+- **Values use qualified names** (dotted module path or module.ClassName) — not short names. This avoids ambiguity when multiple classes share a name.
+- If a qualified name resolves to exactly one node, it matches. If it resolves to zero or multiple nodes, the validator reports an error with candidates.
 - Fields can appear anywhere in the docstring after the summary line
-- Missing docstring on a class/module = drift violation (MISSING)
+- Missing docstring on a class/module = drift violation (NO_DOCSTRING)
+
+### Suppression
+
+Individual nodes can be excluded from strict validation with `# stark-graph: ignore` on the class/module definition line:
+
+```python
+class GeneratedProto:  # stark-graph: ignore
+    """Auto-generated, no docstring required."""
+```
+
+Suppressed nodes are tracked in the validation report under a `suppressed` field.
 
 ## Parser Interface
 
@@ -114,126 +148,196 @@ class Parser(Protocol):
 
 ### Python Parser (MVP)
 
-Uses the `ast` module. Extracts:
+Uses the `ast` module. MVP scope is **module and class nodes only** (function-level deferred to Phase 2). Extracts:
 - **Module nodes:** one per `.py` file
 - **Class nodes:** `ast.ClassDef` — parent is the module
-- **Function nodes:** `ast.FunctionDef` / `ast.AsyncFunctionDef` — parent is the class or module
-- **Import edges:** `ast.Import`, `ast.ImportFrom` → `imports` edge type
-- **Inheritance edges:** `ast.ClassDef.bases` → `inherits` edge type
-- **Call edges:** `ast.Call` where the function is a known node → `calls` edge type
-- **Docstring edges:** regex extraction of `Depends:`, `Publishes:`, `Called by:` → `depends` edge type
+- **Import edges:** `ast.Import`, `ast.ImportFrom` → `imports` edge type, origin `ast`
+- **Inheritance edges:** `ast.ClassDef.bases` → `inherits` edge type, origin `ast`
+- **Docstring edges:** regex extraction of `Depends:` → `depends` edge type, origin `docstring`
+
+**Error handling:** Files that fail `ast.parse()` (syntax errors, encoding issues) are skipped with a WARNING log entry. Empty files and `__init__.py` with no classes produce module nodes only. Files above 500KB are skipped (likely generated). The parser emits a `skipped_files` list in its output for the validation report.
 
 ### TypeScript Parser (Phase 2)
 
-Node.js subprocess using `ts-morph` or the TypeScript compiler API. Same output contract — writes Graph JSON to stdout.
+Node.js subprocess using `ts-morph` or the TypeScript compiler API. Same output contract — writes Graph JSON to stdout. Must run sandboxed (no network, read-only fs) to prevent RCE from malicious tsconfig.json plugins.
+
+### Limitations
+
+AST parsing cannot detect: dependency injection (constructor params resolved at runtime), `getattr`-based dispatch, factory patterns, framework callbacks. These dependencies must be declared via the `Depends:` docstring field. Blast radius counts should be labeled as "confirmed minimum" rather than absolute totals.
 
 ## Pipeline Stages
 
-Seven stages, each a standalone script. Orchestrated by `stark_graph.py` which chains them in sequence.
+Six stages, each a standalone script. Orchestrated by `stark_graph.py` which chains them in sequence.
+
+### Inter-Stage Data Contract
+
+All stages communicate via JSON files in a working directory (default: `.stark-graph/`):
+
+```
+.stark-graph/
+├── parse-python.json        # Stage 1 output
+├── graph.json               # Stage 2 output (= parse output for single-language MVP)
+├── validation.json           # Stage 3 output
+├── diff.json                 # Stage 4 output
+└── render/                   # Stage 5 output (Phase 2)
+    └── graph.svg
+```
+
+Each stage reads from the previous stage's output file and writes its own. The orchestrator passes `--workdir .stark-graph/` to all stages. Stage scripts accept `--input` and `--output` flags for explicit override.
+
+### Error Contract (all stages)
+
+All stages follow this contract:
+- **Exit 0:** success, output written
+- **Exit 1:** domain failure (drift detected, validation failed) — CI-blocking
+- **Exit 2:** infrastructure error (parse crash, network failure, OOM) — triggers graceful degradation
+- **Stderr:** JSON error object: `{"stage": "parse", "error": "syntax_error", "file": "foo.py", "message": "..."}`
+- **Partial output:** stages that process multiple files may write partial output with a `partial: true` flag in the envelope
+
+The orchestrator behavior on errors:
+- Exit 1 from validation → block, post PR comment explaining drift, stop pipeline
+- Exit 2 from any stage → warn, post PR comment that graph context is unavailable, proceed with review agents without graph enrichment (graceful degradation)
 
 ### Stage 1: Parse (per language)
 
-- Input: list of source files, repo name
-- Output: `Graph` JSON (one per language)
-- Scripts: `python_parser.py`, `ts_parser.js` (Phase 2)
+- Input: list of source files (from `--repo` path), repo identity
+- Output: `.stark-graph/parse-python.json` (Graph JSON)
+- Scripts: `python_parser.py`
+- Per-file timeout: 5s. Files exceeding timeout are skipped with a warning.
 
-### Stage 2: Merge
+### Stage 2: Validate (strict)
 
-- Input: per-language Graph JSONs + optional cross-repo graphs
-- Output: unified `Graph` JSON
-- Script: `graph_merge.py`
-- Deduplicates nodes by ID, merges edge sets
+For MVP with a single language, the merge step is inlined into the orchestrator (passthrough). A standalone `graph_merge.py` is extracted in Phase 2 when the TS parser introduces real multi-language merge.
 
-### Stage 3: Drift Validation (strict)
+Validation runs directly on the parse output:
 
-- Input: merged Graph JSON
-- Output: validation report JSON, exit code 0 (pass) or 1 (fail)
+- Input: `.stark-graph/parse-python.json` (or merged `graph.json` in Phase 2)
+- Output: `.stark-graph/validation.json`, exit code 0 (pass) or 1 (fail)
 - Script: `drift_validator.py`
 
-Four validation checks:
+Three validation checks (MVP):
 
 | Check | Meaning | Action |
 |-------|---------|--------|
-| **STALE** | Docstring declares dep, AST doesn't confirm | CI fail |
-| **MISSING** | AST finds dep, docstring doesn't declare | CI fail |
-| **BROKEN_XREF** | A says `Called by: B` but B doesn't say `Depends: A` | CI fail |
-| **NO_DOCSTRING** | Class/module exists but has no structured docstring | CI fail |
+| **STALE** | Docstring declares `Depends: X`, AST finds no import of X | CI fail |
+| **MISSING** | AST finds `import X`, docstring doesn't declare `Depends: X` | CI fail |
+| **NO_DOCSTRING** | Class/module has no structured docstring and is not suppressed | CI fail |
+
+`Called by` cross-validation (`BROKEN_XREF`) is **informational in MVP** — reported but not CI-blocking. Promoted to strict in Phase 2 once the convention is established.
 
 Validation output:
 
 ```json
 {
+  "schema_version": "1",
   "status": "FAIL",
-  "stale": [{"node": "VersionService", "declared": "TypesenseIndex", "evidence": null}],
-  "missing": [{"node": "VersionService", "actual": "ReaperJob", "declared": null}],
+  "stale": [{"node": "GetEvinced/stark-showcase:backend/showcase/services/version_service.py:VersionService", "declared": "showcase.indexes.TypesenseIndex", "evidence": null}],
+  "missing": [{"node": "GetEvinced/stark-showcase:backend/showcase/services/version_service.py:VersionService", "actual": "showcase.jobs.ReaperJob", "declared": null}],
   "broken_xref": [],
-  "no_docstring": ["backend/showcase/utils/helpers.py"],
+  "no_docstring": ["GetEvinced/stark-showcase:backend/showcase/utils/helpers.py"],
+  "suppressed": ["GetEvinced/stark-showcase:backend/showcase/proto/generated_pb2.py"],
+  "skipped_files": ["backend/showcase/vendor/large_lib.py"],
   "coverage": {"modules": 12, "with_docstring": 10, "pct": 83.3}
 }
 ```
 
-### Stage 4: Diff
+All node references use full node IDs. Display names are for human readability only.
 
-- Input: main branch Graph JSON + PR branch Graph JSON
-- Output: diff JSON (added/removed/changed edges and nodes)
+### Stage 3: Diff
+
+- Input: base branch Graph JSON + PR branch Graph JSON
+- Output: `.stark-graph/diff.json`
 - Script: `graph_differ.py`
+
+**Base graph acquisition:** The orchestrator checks out the base branch in a temporary git worktree, runs the parser, and produces the base graph. The PR branch graph is from Stage 1. Both graphs are identified by commit SHA in their envelope.
 
 ```json
 {
-  "added_edges": [{"source": "VersionService", "target": "ReaperJob", "type": "depends"}],
-  "removed_edges": [{"source": "VersionService", "target": "LegacyIndex", "type": "imports"}],
-  "changed_edges": [{"source": "UploadPipeline", "target": "GCSStorage", "detail": "upload() → stream_upload()"}],
-  "added_nodes": ["ReaperJob"],
-  "removed_nodes": ["LegacyIndex"],
-  "blast_radius": {"direct": 3, "transitive": 7, "event_subscribers": 2}
+  "schema_version": "1",
+  "base_sha": "abc1234",
+  "head_sha": "def5678",
+  "added_edges": [{"source": "...:VersionService", "target": "...:ReaperJob", "type": "depends"}],
+  "removed_edges": [{"source": "...:VersionService", "target": "...:LegacyIndex", "type": "imports"}],
+  "added_nodes": ["GetEvinced/stark-showcase:backend/showcase/jobs/reaper.py:ReaperJob"],
+  "removed_nodes": ["GetEvinced/stark-showcase:backend/showcase/indexes/legacy.py:LegacyIndex"],
+  "blast_radius": {
+    "direct": 3,
+    "transitive": 7,
+    "transitive_depth_cap": 5,
+    "depth_cap_reached": false,
+    "event_subscribers": 2
+  }
 }
 ```
 
-### Stage 5: Render
+`changed_edges` is deferred to Phase 2 (requires call-site metadata not in the MVP edge model).
 
-- Input: Graph JSON (optionally with diff overlay)
-- Output: SVG and/or HTML file
-- Script: `graph_renderer.py`
-- Uses graphviz for SVG, with layer-based coloring (modules = blue, classes = green, functions = yellow)
-- Diff overlay: added edges in green, removed in red, changed in amber
+### Blast Radius Algorithm
 
-### Stage 6: PR Comment
+1. Collect all nodes that are sources or targets of added/removed edges → "changed nodes"
+2. **Direct:** BFS depth 1 from changed nodes — all immediate callers/importers
+3. **Transitive:** BFS up to `transitive_depth_cap` (default 5, configurable). Uses a visited set for cycle safety. If cap reached, `depth_cap_reached: true`
+4. **Event subscribers:** For each changed node that has a `publishes` field, find all nodes whose `depends` entries reference a module containing that node. This is an approximation — exact event matching is Phase 2.
 
-- Input: diff JSON, validation report
+### Stage 4: PR Comment
+
+- Input: `.stark-graph/diff.json`, `.stark-graph/validation.json`
 - Output: GitHub PR comment via stark-claude[bot]
 - Script: `pr_commenter.py`
+- Uses existing `github_app.py` auth (stark-claude[bot] GitHub App, per CLAUDE.md)
+- **Idempotent:** Finds existing bot comment by a hidden marker (`<!-- stark-graph-comment -->`) and updates in place. No duplicate comments on retry/rerun.
+- **Retry:** 3 attempts with exponential backoff (1s, 2s, 4s). Respects `Retry-After` on 429. Per-request timeout 10s. On exhausted retries, exit code 2 (infrastructure error).
 
 Comment format:
 
 ```markdown
+<!-- stark-graph-comment -->
 ## Dependency Changes
 
 + VersionService → ReaperJob (new dependency)
 - VersionService → LegacyIndex (removed)
-~ UploadPipeline → GCSStorage (calls changed: upload() → stream_upload())
 
-## Blast Radius
-Direct: 3 services | Transitive: 7 services | Event subscribers: 2
+## Blast Radius (confirmed minimum)
+Direct: 3 services | Transitive: 7 (depth ≤5) | Event subscribers: 2
+
+<details><summary>Full edge list</summary>
+
+| Source | Target | Type | Change |
+|--------|--------|------|--------|
+| ...VersionService | ...ReaperJob | depends | added |
+| ...VersionService | ...LegacyIndex | imports | removed |
+
+</details>
 ```
+
+### Stage 5: Render (Phase 2)
+
+Deferred. The PR comment provides sufficient dependency change visibility for MVP. Renderer added when there's a concrete consumer (UI dashboard, Confluence artifact).
 
 ## Review Integration
 
-Graph feeds into the existing review pipeline at two points:
+Graph feeds into the existing review pipeline at two points.
 
 ### Pre-Review Gate
 
-`drift_validator.py` runs before `multi_review.py`. If drift is detected, review is blocked and a PR comment explains what's out of sync. No tokens wasted on a review that will fail anyway.
-
-Integration point: `multi_review.py` calls `drift_validator.py` as a pre-check. If exit code is 1, it posts the validation report as a PR comment and exits without running review agents.
+`drift_validator.py` runs before `multi_review.py`. Behavior by exit code:
+- **Exit 0:** validation passed → proceed to review
+- **Exit 1:** drift detected → post validation report as PR comment, skip review (no tokens wasted)
+- **Exit 2:** infrastructure error → post warning comment, proceed with review without graph context
 
 ### Domain Enrichment
 
-Graph diff JSON is injected into the system prompts for three review domains:
-- **architecture** (01-architecture.md) — "These dependency edges were added/removed"
-- **correctness** (04-correctness.md) — "These callers may be affected"
-- **regression-prevention** (09-regression-prevention.md) — "Blast radius: N direct, M transitive"
+Graph diff JSON is injected into the system prompts for review domains configured in `graph_enriched_domains` (config.json). Default: `["architecture", "correctness", "regression-prevention"]`.
 
-The diff is appended as a `## Dependency Context` section in each domain prompt, generated fresh per PR.
+The diff is appended as a `## Dependency Context` section. **Size budget:** max 2000 tokens per prompt injection. If the diff exceeds the budget, include only added/removed edges (not transitive) and link to the full PR comment.
+
+## Prompt Injection Safety
+
+Repository content (docstrings, symbol names, file paths) flows into review agent prompts and PR comments. Mitigations:
+- Docstring metadata values are constrained to a strict grammar: `[a-zA-Z0-9_.]+` for qualified names, `[a-zA-Z0-9_.]+` for event names. Values not matching the grammar are rejected by the parser.
+- All values are JSON-encoded before prompt insertion
+- HTML/SVG/Markdown-escaped before rendering
+- PR comment content is sanitized via GitHub's own markdown renderer (no raw HTML)
 
 ## File Structure
 
@@ -241,28 +345,29 @@ The diff is appended as a `## Dependency Context` section in each domain prompt,
 scripts/
 ├── graph/                        # all graph pipeline scripts
 │   ├── __init__.py
-│   ├── model.py                  # Graph, Node, Edge Pydantic models
+│   ├── model.py                  # Graph, Node, Edge Pydantic models + validation
 │   ├── python_parser.py          # Python AST + docstring parser
-│   ├── ts_parser.js              # TypeScript parser (Phase 2)
-│   ├── graph_merge.py            # merge per-language + cross-repo
 │   ├── drift_validator.py        # AST vs docstring strict check
-│   ├── graph_differ.py           # main vs PR graph diff
-│   ├── graph_renderer.py         # SVG/HTML visualization
-│   └── pr_commenter.py           # post diff + blast radius to PR
+│   ├── graph_differ.py           # base vs PR graph diff + blast radius
+│   └── pr_commenter.py           # post diff + blast radius to PR (idempotent)
 ├── stark_graph.py                # pipeline orchestrator (CLI entry point)
 
 skill/
 └── stark-graph/
     └── SKILL.md                  # /stark-graph skill wrapper
-
-global/prompts/
-├── claude/
-│   └── 01-architecture.md        # enriched with graph context injection
-├── codex/
-│   └── 01-architecture.md
-└── gemini/
-    └── 01-architecture.md
 ```
+
+## /stark-graph Skill
+
+The skill wraps `stark_graph.py` for agent invocation:
+
+| Command | Behavior |
+|---------|----------|
+| `/stark-graph` | Full pipeline on current repo (parse → validate → diff → comment) |
+| `/stark-graph validate` | Parse + validate only (drift check, no diff/comment) |
+| `/stark-graph audit` | Parse + report missing docstrings (no CI blocking) |
+| `/stark-graph diff` | Parse + diff against main (no comment posting) |
+| `/stark-graph pr 123` | Full pipeline targeting PR #123 |
 
 ## CLI Interface
 
@@ -276,52 +381,102 @@ stark_graph.py --repo /path/to/repo --stage parse
 # Validate only (exits 1 on drift)
 stark_graph.py --repo /path/to/repo --stage validate
 
+# Audit mode — report missing docstrings, no CI blocking (exit 0 always)
+stark_graph.py --repo /path/to/repo --stage audit
+
 # Diff against main
 stark_graph.py --repo /path/to/repo --stage diff --base main
 
-# Render visualization
-stark_graph.py --repo /path/to/repo --stage render --output graph.svg
-
-# Full PR pipeline (validate + diff + render + comment)
+# Full PR pipeline (validate + diff + comment)
 stark_graph.py --repo /path/to/repo --pr 123
+
+# Override repo identity
+stark_graph.py --repo /path/to/repo --repo-name GetEvinced/stark-showcase
 ```
+
+## Testing Strategy
+
+### Unit Tests
+
+| Component | Tests |
+|-----------|-------|
+| `model.py` | Pydantic model validation: required fields, optional defaults, schema version rejection |
+| `python_parser.py` | Fixture files: valid module, class with docstring, class without docstring, syntax error file, empty file, `__init__.py`, file >500KB, encoding issues |
+| `drift_validator.py` | One fixture per check type: STALE, MISSING, NO_DOCSTRING, clean (zero findings), suppressed node. Assert exact JSON output per fixture. |
+| `graph_differ.py` | Fixture graph pairs: added edge, removed edge, added node, removed node, cycle (no infinite loop), depth cap reached |
+| `pr_commenter.py` | Mock GitHub API: idempotent update, retry on 429, timeout handling |
+
+### Integration Tests
+
+- Full pipeline on a fixture repo (committed to `tests/fixtures/graph/`): parse → validate → diff. Assert intermediate JSON files validate against Pydantic models.
+- Blast radius on a fixture graph with known cycle: verify no infinite loop, verify counts match expected.
+
+### Acceptance Criteria
+
+| Component | Criterion |
+|-----------|-----------|
+| Python parser | Extracts 100% of class and module nodes from stark-showcase backend (verified by manual spot-check of 5 files) |
+| Drift validator | False positive rate <5% on bootstrapped stark-showcase codebase (measured during --warn rollout phase) |
+| Full pipeline | Completes in <30s on stark-showcase backend (~50 Python files) on a standard CI runner |
+| PR comment | Correctly shows added/removed edges for a test PR with known dependency changes |
+
+## Capacity Baseline
+
+Expected for stark-showcase backend MVP:
+- **Files:** ~50 Python files
+- **Nodes:** ~50 modules + ~80 classes = ~130 nodes
+- **Edges:** ~200 import edges + ~50 docstring depends edges = ~250 edges
+- **Graph JSON size:** ~50-100KB
+- **Parse time:** <5s (sequential, single-threaded sufficient for MVP scale)
+- **Full pipeline:** <30s target including worktree checkout for base graph
+- **PR frequency:** ~5-10 PRs/day
+
+At this scale, sequential parsing, in-memory graph, and full re-parse per PR are acceptable. Incremental parsing (Phase 2) is needed when file count exceeds ~500.
 
 ## MVP Scope — stark-showcase backend
 
 Full vertical slice on one repo. Everything works end-to-end before generalizing.
 
 ### In Scope
-- Python parser (ast module)
-- Graph model (Pydantic)
-- Drift validator (strict)
-- Graph differ (main vs PR)
-- SVG/HTML renderer
-- PR comment posting
-- Review domain enrichment
+- Python parser (ast module, module + class level)
+- Graph model (Pydantic, schema_version)
+- Drift validator (strict for Depends, informational for Called by)
+- Graph differ (base vs PR with blast radius)
+- PR comment posting (idempotent, with retry)
+- Review domain enrichment (configurable domain list)
 - `/stark-graph` skill
 - Docstring convention docs
+- Fixture-based test suite
+- `--audit` mode for bootstrap
+- `--warn` mode for phased rollout
 
 ### Phase 2
-- TypeScript parser
-- Cross-repo graph merge
+- TypeScript parser (sandboxed)
+- Function-level nodes and `calls` edges
+- Cross-repo graph merge (`graph_merge.py` extracted)
+- `changed_edges` in diff output
+- `Called by` strict validation (BROKEN_XREF)
+- SVG/HTML renderer with accessible markup
 - Weekly LLM audit agent
-- Coverage metrics CI artifact
+- Incremental parsing (cache by commit SHA)
 - Interactive D3 explorer
+- Coverage metrics CI artifact
 
 ### Out of Scope
 - LSP integration
 - Runtime tracing
 - Go/Java/other language parsers
 - Graph database storage
-- Historical graph diffing (beyond main vs PR)
+- Historical graph diffing (beyond base vs PR)
 
 ## Bootstrap Strategy
 
 Existing code in stark-showcase has no structured docstrings. Bootstrap path:
 
-1. Run parser in `--audit` mode: generates a report of all classes/modules missing docstrings
-2. LLM agent reads each class, infers dependencies from AST, generates draft docstrings
-3. Human reviews and commits the docstrings
-4. Enable strict validation — from this point, all PRs must maintain docstring accuracy
+1. **Audit:** Run `stark_graph.py --repo ... --stage audit` — generates a report of all classes/modules missing docstrings. Output is plain text + JSON (accessible to all reviewers).
+2. **Generate drafts:** LLM agent reads each class, infers dependencies from AST, generates draft docstrings. Uses the same LLM already authorized for code review (no new data boundary).
+3. **Human review:** Developer reviews draft docstrings in a PR. Docstrings are pure metadata (class/module names, event names) — no proprietary logic exposed.
+4. **Warn mode:** Enable `stark_graph.py --warn` in CI for 1-2 sprints. Reports violations without failing CI. Measure false positive rate.
+5. **Strict mode:** When false positive rate <5%, enable strict validation. Start with a subset of directories if needed (`--include backend/showcase/services/`).
 
-This is a one-time cost per repo. After bootstrap, ongoing maintenance is incremental (update docstrings when you change dependencies).
+Recovery: if a bootstrapped docstring is incorrect, any developer can fix it. `# stark-graph: ignore` provides an escape hatch for nodes that are hard to document (generated code, metaprogramming).
