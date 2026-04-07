@@ -61,6 +61,15 @@ class ValidationReport(BaseModel):
     edge_count: int = 0
 
 
+class BlastRadius(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    direct: list[str] = []
+    transitive: list[str] = []
+    depth_cap_reached: bool = False
+    event_subscribers: list[str] = []
+
+
 class DiffReport(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -70,7 +79,7 @@ class DiffReport(BaseModel):
     removed_nodes: list[str] = []
     added_edges: list[str] = []
     removed_edges: list[str] = []
-    blast_radius: list[str] = []
+    blast_radius: BlastRadius = BlastRadius()
 
 
 @runtime_checkable

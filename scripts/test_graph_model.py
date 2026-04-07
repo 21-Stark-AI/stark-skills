@@ -172,7 +172,8 @@ class TestDiffReport:
         assert diff.removed_nodes == []
         assert diff.added_edges == []
         assert diff.removed_edges == []
-        assert diff.blast_radius == []
+        from graph.model import BlastRadius
+        assert diff.blast_radius == BlastRadius()
 
 
 # ── TestParserProtocol ───────────────────────────────────────────────────
