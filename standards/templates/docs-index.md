@@ -1,6 +1,6 @@
 # __REPO_NAME__
 
-> New here? Start with [Specs](specs/). Confused about a decision? Check [ADRs](adr/). Need to ship? See [the pipeline](#pipeline).
+> New here? Start with `docs/specs/`. Confused about a decision? Check `docs/adr/`. Need to ship? See [the pipeline](#pipeline).
 
 ---
 
@@ -54,13 +54,13 @@ touch docs/specs/your-feature.md
 
 ## Decisions
 
-Major technical choices are in [ADRs](adr/). If something feels arbitrary, there's probably a record. Search there first before re-litigating.
+Major technical choices are in `docs/adr/`. If something feels arbitrary, there's probably a record. Search there first before re-litigating.
 
 ---
 
 ## Specs
 
-[Browse all specs](specs/). Each spec is a single markdown file, named after the feature. Link to it from your PR.
+Browse all specs under `docs/specs/`. Each spec is a single markdown file, named after the feature. Link to it from your PR.
 
 A spec needs: **what** you're building, **why**, and **what you're explicitly not building**. Everything else is optional.
 
@@ -68,4 +68,4 @@ A spec needs: **what** you're building, **why**, and **what you're explicitly no
 
 ## Contributing
 
-Write docs in the same PR as the code. Docs written after the fact drift. The [staleness checker](../.github/workflows/doc-staleness.yml) will surface files that haven't been touched in 90 days.
+Write docs in the same PR as the code. Docs written after the fact drift. The staleness checker at `.github/workflows/doc-staleness.yml` will surface files that haven't been touched in 90 days.

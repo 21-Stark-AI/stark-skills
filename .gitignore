@@ -1,3 +1,6 @@
+.venv/
+.pytest_cache/
+.claude/settings.local.json
 scripts/.venv/
 __pycache__/
 *.pyc
