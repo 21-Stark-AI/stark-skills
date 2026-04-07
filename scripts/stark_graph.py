@@ -279,6 +279,66 @@ def _stage_parse(
     print(json.dumps(status, indent=2))
 
 
+def _stage_validate(
+    args: argparse.Namespace,
+    repo_root: str,
+    repo_name: str,
+    workdir: str,
+) -> None:
+    """Run validate stage: parse (or load) the graph then drift-validate it.
+
+    In strict mode (default) exits 1 when errors are found.
+    With --warn, findings are preserved but exit code is forced to 0.
+    The output JSON is annotated with ``"mode": "warn"`` when --warn is active.
+    A warn banner is emitted to stderr for downstream comment renderers.
+    """
+    from graph.drift_validator import validate
+    from graph.model import Graph
+    from graph.python_parser import PythonParser
+
+    config = _load_config()
+
+    # Load or parse the graph
+    if args.input:
+        graph = Graph.model_validate_json(Path(args.input).read_text())
+    else:
+        max_workers = config.get("graph_max_parse_workers", 1)
+        parser = PythonParser(max_workers=max_workers)
+        if args.include:
+            paths: list[Path] = []
+            for pattern in args.include:
+                paths.extend(Path(repo_root).glob(pattern))
+        else:
+            paths = [Path(repo_root)]
+        graph = parser.parse(paths, repo_name)
+
+    report = validate(graph, config)
+
+    # Serialise; inject mode annotation when --warn
+    report_dict = report.model_dump()
+    if args.warn:
+        report_dict["mode"] = "warn"
+        print(
+            "# WARN MODE: validation findings shown; exit code forced to 0",
+            file=sys.stderr,
+        )
+
+    report_json = json.dumps(report_dict, indent=2)
+
+    os.makedirs(workdir, exist_ok=True)
+    report_path = os.path.join(workdir, "validation_report.json")
+    Path(report_path).write_text(report_json)
+
+    if args.output:
+        Path(args.output).write_text(report_json)
+
+    print(report_json)
+
+    # Exit code: strict → 1 on errors; warn → always 0
+    if report.errors and not args.warn:
+        sys.exit(1)
+
+
 def _stage_audit(
     args: argparse.Namespace,
     repo_root: str,
@@ -378,8 +438,10 @@ def main() -> None:
         _stage_parse(args, repo_root, repo_name, workdir)
     elif args.stage == "audit":
         _stage_audit(args, repo_root, repo_name, workdir)
+    elif args.stage == "validate":
+        _stage_validate(args, repo_root, repo_name, workdir)
     else:
-        # validate / diff — not yet implemented; emit status stub
+        # diff — not yet implemented; emit status stub
         result = {
             "stage": args.stage,
             "repo": repo_name,

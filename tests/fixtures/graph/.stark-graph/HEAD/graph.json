@@ -10,7 +10,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "class_without_docstring.py",
-      "line": 1
+      "line": 1,
+      "has_docstring": true
     },
     {
       "id": "graph:class_without_docstring.py:NoDoc",
@@ -20,7 +21,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "class_without_docstring.py",
-      "line": 4
+      "line": 4,
+      "has_docstring": false
     },
     {
       "id": "graph:invalid_metadata.py",
@@ -30,7 +32,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "invalid_metadata.py",
-      "line": 1
+      "line": 1,
+      "has_docstring": true
     },
     {
       "id": "graph:invalid_metadata.py:HasInvalidMetadata",
@@ -44,7 +47,32 @@
       ],
       "called_by": [],
       "file_path": "invalid_metadata.py",
-      "line": 4
+      "line": 4,
+      "has_docstring": true
+    },
+    {
+      "id": "graph:no_docstring_module.py",
+      "layer": "module",
+      "parent": null,
+      "depends": [],
+      "publishes": [],
+      "called_by": [],
+      "file_path": "no_docstring_module.py",
+      "line": 1,
+      "has_docstring": false
+    },
+    {
+      "id": "graph:stale_ref.py",
+      "layer": "module",
+      "parent": null,
+      "depends": [
+        "valid_module"
+      ],
+      "publishes": [],
+      "called_by": [],
+      "file_path": "stale_ref.py",
+      "line": 1,
+      "has_docstring": true
     },
     {
       "id": "graph:empty.py",
@@ -54,7 +82,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "empty.py",
-      "line": 1
+      "line": 1,
+      "has_docstring": false
     },
     {
       "id": "graph:__init__.py",
@@ -64,7 +93,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "__init__.py",
-      "line": 1
+      "line": 1,
+      "has_docstring": true
     },
     {
       "id": "graph:class_with_docstring.py",
@@ -74,7 +104,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "class_with_docstring.py",
-      "line": 1
+      "line": 1,
+      "has_docstring": true
     },
     {
       "id": "graph:class_with_docstring.py:MyService",
@@ -91,7 +122,8 @@
         "some.caller"
       ],
       "file_path": "class_with_docstring.py",
-      "line": 7
+      "line": 7,
+      "has_docstring": true
     },
     {
       "id": "graph:class_with_docstring.py:NestedOuter",
@@ -101,7 +133,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "class_with_docstring.py",
-      "line": 18
+      "line": 18,
+      "has_docstring": true
     },
     {
       "id": "graph:class_with_docstring.py:NestedOuter.NestedInner",
@@ -113,7 +146,8 @@
       "publishes": [],
       "called_by": [],
       "file_path": "class_with_docstring.py",
-      "line": 21
+      "line": 21,
+      "has_docstring": true
     },
     {
       "id": "graph:valid_module.py",
@@ -128,13 +162,26 @@
       ],
       "called_by": [],
       "file_path": "valid_module.py",
-      "line": 1
+      "line": 1,
+      "has_docstring": true
     }
   ],
   "edges": [
     {
       "source": "graph:invalid_metadata.py:HasInvalidMetadata",
       "target": "valid.dep",
+      "type": "depends",
+      "origin": "docstring"
+    },
+    {
+      "source": "graph:no_docstring_module.py",
+      "target": "os",
+      "type": "imports",
+      "origin": "ast"
+    },
+    {
+      "source": "graph:stale_ref.py",
+      "target": "valid_module",
       "type": "depends",
       "origin": "docstring"
     },

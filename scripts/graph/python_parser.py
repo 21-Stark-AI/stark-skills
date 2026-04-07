@@ -94,10 +94,9 @@ def _process_result(
         return
 
     for raw_node in result.get("nodes", []):
-        has_doc = raw_node.pop("has_docstring", False)
         node = Node(**raw_node)
         nodes.append(node)
-        audit_data[node.id] = has_doc
+        audit_data[node.id] = node.has_docstring
 
     for raw_edge in result.get("edges", []):
         edges.append(Edge(**raw_edge))
