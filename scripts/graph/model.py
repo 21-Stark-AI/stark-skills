@@ -19,6 +19,7 @@ class Node(BaseModel):
     called_by: list[str] = []
     file_path: str
     line: int
+    has_docstring: bool = False
 
 
 class Edge(BaseModel):

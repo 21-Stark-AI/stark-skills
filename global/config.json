@@ -83,6 +83,7 @@
   "graph_enriched_domains": ["architecture", "correctness", "regression-prevention"],
   "graph_gate_mode": "disabled",
   "graph_max_parse_workers": 1,
+  "graph_coverage_threshold": 80,
   "cost": {
     "weekly_budget_usd": 50.0,
     "daily_alert_usd": 15.0,
