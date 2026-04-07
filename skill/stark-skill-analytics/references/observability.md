@@ -2,7 +2,7 @@
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md).
+Follow the [Skill Observability Protocol](../../../standards/observability.md).
 
 **Timestamped log lines:** `[HH:MM:SS]` for each phase start/end and key events.
 

@@ -57,7 +57,7 @@ After presenting the report, check for meta-observations:
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the [Skill Observability Protocol](../../standards/observability.md) for all timing, checkpoints, and metrics reporting.
 
 Additional skill-specific metrics:
 
@@ -75,5 +75,4 @@ Additional skill-specific metrics:
 | No matching records     | "No records match filters. Try broader criteria."            |
 | Corrupt JSON in history | Script warns on stderr, skips file, continues                |
 | Script not found        | "Run install.sh to set up stark-skills"                      |
-
 

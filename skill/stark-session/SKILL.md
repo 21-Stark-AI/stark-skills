@@ -500,7 +500,7 @@ The structured summary shows: session banner with name/duration/end time, receip
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the [Skill Observability Protocol](../../standards/observability.md) for all timing, checkpoints, and metrics reporting.
 
 Additional skill-specific metrics:
 - **Start mode**: context load time, git state time, per-health-check duration (pass/fail), total briefing time

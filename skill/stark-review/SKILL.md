@@ -172,7 +172,7 @@ git worktree remove "$WORKTREE" --force
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md).
+Follow the [Skill Observability Protocol](../../standards/observability.md).
 
 ```
 [HH:MM:SS] === stark-review started ===

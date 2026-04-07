@@ -1,6 +1,6 @@
 # Observability Protocol — stark-phase-execute
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md).
+Follow the [Skill Observability Protocol](../../../standards/observability.md).
 
 ## Task-based progress
 

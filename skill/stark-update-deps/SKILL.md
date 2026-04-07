@@ -255,7 +255,7 @@ Verification: All N updated versions confirmed on official registries.
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the [Skill Observability Protocol](../../standards/observability.md) for all timing, checkpoints, and metrics reporting.
 
 Additional skill-specific metrics:
 - Dependencies: total scanned, updated (safe/review/blocked/skip)

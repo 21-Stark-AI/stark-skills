@@ -65,7 +65,7 @@ After presenting, check for patterns:
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md).
+Follow the [Skill Observability Protocol](../../standards/observability.md).
 
 Skill-specific metrics:
 - PRs analyzed: count
