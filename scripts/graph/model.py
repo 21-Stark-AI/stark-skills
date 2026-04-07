@@ -59,6 +59,7 @@ class ValidationReport(BaseModel):
     dismissed: list[str] = []
     node_count: int = 0
     edge_count: int = 0
+    mode: Optional[str] = None
 
 
 class BlastRadius(BaseModel):
