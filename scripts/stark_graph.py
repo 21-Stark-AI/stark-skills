@@ -408,6 +408,159 @@ def _stage_audit(
     sys.exit(0)
 
 
+def _stage_diff(
+    args: argparse.Namespace,
+    repo_root: str,
+    repo_name: str,
+    workdir: str,
+    base_sha: str | None,
+) -> None:
+    """Run diff stage: compare base and head graphs; emit DiffReport JSON.
+
+    Steps:
+    1. Validate shallow-repo guard (exit 2 if shallow).
+    2. Resolve base ref to a commit SHA if not already resolved.
+    3. Create a temp detached worktree for the base ref.
+    4. Parse the base graph in the worktree.
+    5. Parse the head graph in the current repo.
+    6. Diff head vs base and emit DiffReport.
+    7. Always remove the worktree in a finally block.
+    """
+    from graph.graph_differ import GraphDiffer
+    from graph.model import Graph
+    from graph.python_parser import PythonParser
+
+    config = _load_config()
+
+    # ── Resolve base ref ─────────────────────────────────────────────────
+    base_ref = args.base
+    if not base_ref:
+        print(
+            json.dumps({"error": "--base is required for diff stage"}),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # If we have a PR but no SHA yet, attempt resolution now
+    if base_sha is None:
+        pr = args.pr or "local"
+        base_sha = _resolve_base_sha(pr, base_ref, repo_root)
+
+    if base_sha is None:
+        print(
+            json.dumps({"error": "Could not resolve base ref to a SHA", "base": base_ref}),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # ── Shallow-repo guard ───────────────────────────────────────────────
+    shallow_check = subprocess.run(
+        ["git", "-C", repo_root, "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        text=True,
+    )
+    if shallow_check.stdout.strip() == "true":
+        print(
+            json.dumps({"error": "Shallow repository detected; diff stage requires full history"}),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    base_sha_short = base_sha[:12]
+    worktree_path = os.path.join(workdir, "worktrees", base_sha_short)
+
+    # ── Worktree creation (with orphan guard) ─────────────────────────────
+    if os.path.exists(worktree_path):
+        # SIGKILL orphan: force-remove and prune before recreating
+        subprocess.run(
+            ["git", "-C", repo_root, "worktree", "remove", "--force", worktree_path],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo_root, "worktree", "prune"],
+            capture_output=True,
+        )
+        shutil.rmtree(worktree_path, ignore_errors=True)
+
+    os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
+
+    try:
+        add_result = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "--detach", worktree_path, base_sha],
+            capture_output=True,
+            text=True,
+        )
+        if add_result.returncode != 0:
+            print(
+                json.dumps({
+                    "error": "Failed to create worktree",
+                    "base_sha": base_sha,
+                    "stderr": add_result.stderr.strip(),
+                }),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        # ── Parse base graph in worktree ──────────────────────────────────
+        max_workers = config.get("graph_max_parse_workers", 1)
+        base_parser = PythonParser(max_workers=max_workers)
+
+        if args.include:
+            base_paths = []
+            for pattern in args.include:
+                base_paths.extend(Path(worktree_path).glob(pattern))
+        else:
+            base_paths = [Path(worktree_path)]
+
+        base_graph = base_parser.parse(base_paths, repo_name)
+
+        # ── Parse head graph in current repo ─────────────────────────────
+        head_parser = PythonParser(max_workers=max_workers)
+
+        if args.input:
+            head_graph = Graph.model_validate_json(Path(args.input).read_text())
+        else:
+            if args.include:
+                head_paths = []
+                for pattern in args.include:
+                    head_paths.extend(Path(repo_root).glob(pattern))
+            else:
+                head_paths = [Path(repo_root)]
+            head_graph = head_parser.parse(head_paths, repo_name)
+
+        # ── Diff ─────────────────────────────────────────────────────────
+        differ = GraphDiffer()
+        report = differ.diff(
+            base_graph,
+            head_graph,
+            base_ref=base_sha_short,
+            head_ref="HEAD",
+        )
+
+        report_dict = report.model_dump()
+        report_json = json.dumps(report_dict, indent=2)
+
+        os.makedirs(workdir, exist_ok=True)
+        report_path = os.path.join(workdir, "diff_report.json")
+        Path(report_path).write_text(report_json)
+
+        if args.output:
+            Path(args.output).write_text(report_json)
+
+        print(report_json)
+
+    finally:
+        # Always clean up the worktree
+        subprocess.run(
+            ["git", "-C", repo_root, "worktree", "remove", "--force", worktree_path],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", repo_root, "worktree", "prune"],
+            capture_output=True,
+        )
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 
@@ -440,19 +593,8 @@ def main() -> None:
         _stage_audit(args, repo_root, repo_name, workdir)
     elif args.stage == "validate":
         _stage_validate(args, repo_root, repo_name, workdir)
-    else:
-        # diff — not yet implemented; emit status stub
-        result = {
-            "stage": args.stage,
-            "repo": repo_name,
-            "workdir": workdir,
-            "base_sha": base_sha,
-        }
-        if args.output:
-            with open(args.output, "w") as f:
-                json.dump(result, f, indent=2)
-        else:
-            print(json.dumps(result, indent=2))
+    elif args.stage == "diff":
+        _stage_diff(args, repo_root, repo_name, workdir, base_sha)
 
 
 if __name__ == "__main__":
