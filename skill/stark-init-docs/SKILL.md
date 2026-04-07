@@ -241,7 +241,7 @@ Preserve original filenames. If a naming conflict exists, prefix with the source
 
 After all moves, scan all Markdown files in the repo for broken internal links:
 
-- Find links matching `[text](old/path.md)` where `old/path.md` was moved
+- Find links matching a moved Markdown path, for example `text -> docs/old-path.md`
 - Update to the new path relative to the linking file
 - Also update any relative image references
 
@@ -309,7 +309,7 @@ If nothing was removed, skip the commit.
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the [Skill Observability Protocol](../../standards/observability.md) for all timing, checkpoints, and metrics reporting.
 
 Additional skill-specific metrics:
 - Mode(s) executed: template / backfill / upgrade / clean

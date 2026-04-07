@@ -242,7 +242,7 @@ Do NOT push unless the user explicitly asks.
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the [Skill Observability Protocol](../../standards/observability.md) for all timing, checkpoints, and metrics reporting.
 
 Additional skill-specific metrics:
 
@@ -258,4 +258,3 @@ Additional skill-specific metrics:
 - **One concern per edit.** Don't bundle unrelated improvements in a single file change.
 - **Show diffs before committing.** The user reviews the changes.
 - **agent.md is the scoping file.** For PR reviews: diff scope instructions go there. For design/plan reviews: document-level scoping (e.g., "calibrate to stated scope") goes there. Domain prompts handle domain-specific review criteria in both cases.
-

@@ -1,6 +1,6 @@
 # stark-skills
 
-AI-powered development workflow system for Claude Code. 26 skills covering the full development lifecycle — from planning through code review, shipping, and maintenance. Built on 3 competing AI agents (Claude, Codex, Gemini) that cross-validate each other's work.
+AI-powered development workflow system for Claude Code. 28 skills covering the full development lifecycle — from planning through code review, shipping, and maintenance. Built on 3 competing AI agents (Claude, Codex, Gemini) that cross-validate each other's work.
 
 ## Quick Start
 
@@ -29,7 +29,7 @@ All skills are available as `/slash-commands` in Claude Code after installing.
 
 ## The Development Lifecycle
 
-[![Development Lifecycle](docs/skills/lifecycle.png)](docs/skills/lifecycle.html)
+[![Development Lifecycle](docs/skills/lifecycle.png)](docs/skills/index.md)
 
 The human provides the idea and writes the spec. Everything after `/stark-plan-to-tasks` runs autonomously — branching, implementation, PRs, multi-agent review with up to 3 fix rounds, merge, and release. The system closes GitHub issues as PRs merge and updates project boards automatically.
 
@@ -45,10 +45,10 @@ Review artifacts before they ship. Each review skill dispatches 3 LLMs in parall
 |-------|----------------|-------------|
 | `/stark-review` | PR code changes | Quick review. 1 LLM × 9 domains — fast, cheap, default agent configurable per domain. |
 | [`/stark-team-review`](docs/skills/stark-team-review/usage.md) | PR code changes | Thorough review. 3 LLMs × 9 domains, autonomous fix loop. |
-| [`/stark-review-design`](docs/skills/stark-review-design/usage.md) | Architecture and design docs | Before committing to a design. Reviews across 12 domains (completeness, security, scalability, etc.). |
+| [`/stark-review-design`](skill/stark-review-design/SKILL.md) | Architecture and design docs | Before committing to a design. Reviews across 12 domains (completeness, security, scalability, etc.). |
 | [`/stark-review-plan`](docs/skills/stark-review-plan/usage.md) | Execution plans and deployment plans | Before executing. Adversarial SRE review across 10 failure vectors — assumes the plan will break. |
 | [`/stark-review-improvement`](docs/skills/stark-review-improvement/usage.md) | Review prompt effectiveness | After reviews produce too many false positives. Tunes agent prompts based on assessment data. |
-| [`/stark-review-design-improvement`](docs/skills/stark-review-design-improvement/usage.md) | Design review prompt effectiveness | After design reviews produce too many false positives. Wraps `/stark-review-improvement` with design-review prompts. |
+| [`/stark-review-design-improvement`](skill/stark-review-design-improvement/SKILL.md) | Design review prompt effectiveness | After design reviews produce too many false positives. Wraps `/stark-review-improvement` with design-review prompts. |
 
 **Best practice:** Run `/stark-review-plan` on specs *before* implementation starts. It's cheaper to fix a plan than to fix code. Use `/stark-team-review` on every PR — the autonomous fix loop handles most findings without human intervention.
 
@@ -87,7 +87,7 @@ Start and end your work sessions with consistent context loading and cleanup.
 | [`/stark-session start`](docs/skills/stark-session/usage.md) | Load context, git state, health checks, briefing | Beginning of every work session. Catches stale branches, failing tests, open PRs. |
 | [`/stark-session end`](docs/skills/stark-session/usage.md) | Tests, merge PRs, commit docs, push | End of every work session. Ensures nothing is left dangling. |
 | [`/stark-session-insights`](docs/skills/stark-session-insights/usage.md) | Analyze session history for patterns | Periodically. Shows which skills you use most, common corrections, preference patterns. |
-| [`/stark-persona`](docs/skills/stark-persona/index.html) | Session character voices | Adds personality to sessions. Weighted selection, date-aware combos, catchphrases, feedback loop. |
+| [`/stark-persona`](skill/stark-persona/SKILL.md) | Session character voices | Adds personality to sessions. Weighted selection, date-aware combos, catchphrases, feedback loop. |
 
 **Best practice:** Make `/stark-session start` and `/stark-session end` habitual — like opening and closing a shift. The start briefing catches context you'd otherwise miss (someone pushed to your branch, CI is red, a PR needs your review).
 
@@ -113,6 +113,7 @@ Bootstrap, rename, and maintain projects.
 | [`/stark-onboard-project`](docs/skills/stark-onboard-project/usage.md) | Bootstrap a new project: git, GitHub repo, apps, CLAUDE.md | When creating a new repo. Sets up everything in one shot. |
 | [`/stark-rename-project`](docs/skills/stark-rename-project/usage.md) | Rename project locally + GitHub + sibling repo references | When a project needs renaming. Updates all cross-repo references. |
 | [`/stark-update-deps`](docs/skills/stark-update-deps/usage.md) | Audit and update dependency versions | Monthly, or when you notice stale deps. Checks PyPI, npm, Docker Hub, etc. |
+| [`/stark-housekeeping`](skill/stark-housekeeping/SKILL.md) | Audit stale issues, merged branches, and worktree remnants | When the repo or project board needs a cleanup pass. Supports dry-run and aggressive modes. |
 
 ### Analytics
 
@@ -194,7 +195,7 @@ Each agent posts a consolidated review via its own GitHub App bot:
 stark-skills/
 ├── install.sh                    ← symlinks everything to install locations
 ├── skill/                        ← → ~/.claude/skills/
-│   ├── stark-team-review/SKILL.md  ← one dir per skill (26 total)
+│   ├── stark-team-review/SKILL.md  ← one dir per skill (28 total)
 │   ├── stark-persona/SKILL.md
 │   └── ...
 ├── scripts/                      ← → ~/.claude/code-review/scripts/
@@ -213,7 +214,7 @@ stark-skills/
 ├── .github/workflows/            ← GitHub Actions (project sync, gate checks, heartbeat)
 ├── org/evinced/                  ← → ~/git/Evinced/.code-review/
 ├── docs/
-│   ├── skills/                   ← generated skill docs (HTML viz + Mermaid + PNGs)
+│   ├── skills/                   ← generated skill docs (Markdown, Mermaid, JSON, and PNG artifacts)
 │   ├── adr/                      ← architectural decision records
 │   └── specs/                    ← design specs
 └── standards/                    ← → ~/.claude/code-review/standards/

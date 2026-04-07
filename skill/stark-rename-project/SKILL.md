@@ -197,7 +197,7 @@ Print results: files changed per repo, verification pass/fail, residual referenc
 
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the [Skill Observability Protocol](../../standards/observability.md) for all timing, checkpoints, and metrics reporting.
 
 Additional skill-specific metrics:
 - GitHub rename: API call duration, success/failure

@@ -182,7 +182,7 @@ Each skill includes a one-line reference in its body:
 ```markdown
 ## Observability
 
-Follow the [Skill Observability Protocol](~/.claude/code-review/standards/observability.md) for all timing, checkpoints, and metrics reporting.
+Follow the Skill Observability Protocol in `standards/observability.md` for all timing, checkpoints, and metrics reporting.
 ```
 
 If a skill needs additional metrics beyond the standard (e.g., per-sub-agent timing breakdown), it adds them in its own section alongside the reference.
