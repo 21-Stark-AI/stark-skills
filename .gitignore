@@ -11,3 +11,4 @@ skill/*-workspace/
 .analysis-parsed/
 .analysis-raw-data/
 scripts/node_modules/
+.remember/

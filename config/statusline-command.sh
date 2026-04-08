@@ -11,6 +11,10 @@ used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 vim_mode=$(echo "$input" | jq -r '.vim.mode // empty')
 session_name=$(echo "$input" | jq -r '.session_name // empty')
 session_id=$(echo "$input" | jq -r '.session_id // empty')
+week_pct=$(echo "$input"  | jq -r '.rate_limits.seven_day.used_percentage // empty')
+week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+five_pct=$(echo "$input"  | jq -r '.rate_limits.five_hour.used_percentage // empty')
+five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 
 # ── Catppuccin Mocha ANSI (256-color) ─────────────────────────────────────
 # peach=#fab387 ≈ 216, yellow=#f9e2af ≈ 229, green=#a6e3a1 ≈ 150
@@ -187,6 +191,8 @@ out=""
 
 SEP=" ${C_DIM}|${RESET} "
 
+# ── Line 1: repo, model, operational ─────────────────────────────────────
+
 # repo + git
 out="${C_YELLOW}${dir_display}${RESET}"
 if [ -n "$git_branch_str" ]; then
@@ -201,30 +207,6 @@ if [ -n "$model" ]; then
     -e 's/ \(([0-9]+[KMG]) context\)/[\1]/' \
   )
   out="${out}${SEP}${C_SAPPHIRE}${short_model}${RESET}"
-fi
-
-# context % + velocity trend
-if [ -n "$ctx_pct" ]; then
-  if [ "$ctx_alert" -eq 1 ]; then
-    out="${out}${SEP}${C_RED}${ctx_pct}%${ctx_trend}${RESET}"
-  else
-    ctx_str="${C_LAVENDER}${ctx_pct}%${RESET}"
-    [ -n "$ctx_trend" ] && ctx_str="${ctx_str}${C_YELLOW}${ctx_trend}${RESET}"
-    out="${out}${SEP}${ctx_str}"
-  fi
-fi
-
-# token counts — ⬆ sent (green) / ⬇ received (red)
-if [ -n "$tokens_in" ] || [ -n "$tokens_out" ]; then
-  tok_str=""
-  [ -n "$tokens_in" ]  && tok_str="\u2b06 ${C_GREEN}${tokens_in}${RESET}"
-  [ -n "$tokens_out" ] && tok_str="${tok_str} \u2b07 ${C_RED}${tokens_out}${RESET}"
-  out="${out}${SEP}${tok_str}"
-fi
-
-# cost estimate — 💰
-if [ -n "$session_cost" ]; then
-  out="${out}${SEP}${C_PEACH}\U0001f4b0 ${session_cost}${RESET}"
 fi
 
 # inflight count — ⚡️
@@ -273,5 +255,91 @@ if [ -n "$lt_ts" ] && [ "$lt_ts" -gt 0 ] 2>/dev/null; then
   time_str="${time_str}\U0001f174 ${C_GREEN}${end_time}${RESET}"
 fi
 [ -n "$time_str" ] && out="${out}${SEP}${time_str}"
+
+# ── Line 2: gauges + tokens + cost ──────────────────────────────────────
+out="${out}\n"
+
+# context usage — 🎬 (dim <50%, yellow 50-79%, red 80%+)
+if [ -n "$ctx_pct" ]; then
+  if [ "$ctx_pct" -ge 80 ]; then
+    out="${out}${C_RED}\U0001f3ac ${ctx_pct}%${ctx_trend}${RESET}"
+  elif [ "$ctx_pct" -ge 50 ]; then
+    ctx_str="${C_YELLOW}\U0001f3ac ${ctx_pct}%${RESET}"
+    [ -n "$ctx_trend" ] && ctx_str="${ctx_str}${C_YELLOW}${ctx_trend}${RESET}"
+    out="${out}${ctx_str}"
+  else
+    ctx_str="${C_DIM}\U0001f3ac ${ctx_pct}%${RESET}"
+    [ -n "$ctx_trend" ] && ctx_str="${ctx_str}${C_YELLOW}${ctx_trend}${RESET}"
+    out="${out}${ctx_str}"
+  fi
+fi
+
+# 5-hour session limit — 🛝 pct ⏳ time-remaining
+if [ -n "$five_pct" ]; then
+  five_int=$(printf "%.0f" "$five_pct")
+  five_remain=""
+  if [ -n "$five_reset" ] && [ "$five_reset" -gt 0 ] 2>/dev/null; then
+    now=$(date +%s)
+    diff=$(( five_reset - now ))
+    if [ "$diff" -gt 0 ]; then
+      diff_h=$(( diff / 3600 ))
+      diff_m=$(( (diff % 3600) / 60 ))
+      if [ "$diff_h" -gt 0 ]; then
+        five_remain=" \u23f3 ${diff_h}h${diff_m}m"
+      else
+        five_remain=" \u23f3 ${diff_m}m"
+      fi
+    fi
+  fi
+  if [ "$five_int" -ge 80 ]; then
+    out="${out}${SEP}${C_RED}\U0001f6dd ${five_int}%${five_remain}${RESET}"
+  elif [ "$five_int" -ge 50 ]; then
+    out="${out}${SEP}${C_YELLOW}\U0001f6dd ${five_int}%${five_remain}${RESET}"
+  else
+    out="${out}${SEP}${C_DIM}\U0001f6dd ${five_int}%${five_remain}${RESET}"
+  fi
+fi
+
+# weekly (7-day) limit — 📅 pct 🕰️ time-remaining
+if [ -n "$week_pct" ]; then
+  week_int=$(printf "%.0f" "$week_pct")
+  week_remain=""
+  if [ -n "$week_reset" ] && [ "$week_reset" -gt 0 ] 2>/dev/null; then
+    now=$(date +%s)
+    diff=$(( week_reset - now ))
+    if [ "$diff" -gt 0 ]; then
+      diff_d=$(( diff / 86400 ))
+      diff_h=$(( (diff % 86400) / 3600 ))
+      diff_m=$(( (diff % 3600) / 60 ))
+      if [ "$diff_d" -gt 0 ]; then
+        week_remain=" \U0001f570\ufe0f ${diff_d}d${diff_h}h"
+      elif [ "$diff_h" -gt 0 ]; then
+        week_remain=" \U0001f570\ufe0f ${diff_h}h${diff_m}m"
+      else
+        week_remain=" \U0001f570\ufe0f ${diff_m}m"
+      fi
+    fi
+  fi
+  if [ "$week_int" -ge 80 ]; then
+    out="${out}${SEP}${C_RED}\U0001f4c5 ${week_int}%${week_remain}${RESET}"
+  elif [ "$week_int" -ge 50 ]; then
+    out="${out}${SEP}${C_YELLOW}\U0001f4c5 ${week_int}%${week_remain}${RESET}"
+  else
+    out="${out}${SEP}${C_DIM}\U0001f4c5 ${week_int}%${week_remain}${RESET}"
+  fi
+fi
+
+# token counts — ⬆ sent (green) / ⬇ received (red)
+if [ -n "$tokens_in" ] || [ -n "$tokens_out" ]; then
+  tok_str=""
+  [ -n "$tokens_in" ]  && tok_str="\u2b06 ${C_GREEN}${tokens_in}${RESET}"
+  [ -n "$tokens_out" ] && tok_str="${tok_str} \u2b07 ${C_RED}${tokens_out}${RESET}"
+  out="${out}${SEP}${tok_str}"
+fi
+
+# cost estimate — 💰
+if [ -n "$session_cost" ]; then
+  out="${out}${SEP}${C_PEACH}\U0001f4b0 ${session_cost}${RESET}"
+fi
 
 printf "%b\n" "$out"
