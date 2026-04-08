@@ -87,7 +87,16 @@
     "playwright@claude-plugins-official": true,
     "vtsls@claude-code-lsps": true,
     "pyright@claude-code-lsps": true,
-    "ralph-loop@claude-plugins-official": true
+    "ralph-loop@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "playground@claude-plugins-official": true,
+    "gopls-lsp@claude-plugins-official": true,
+    "remember@claude-plugins-official": true,
+    "followrabbit@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "claude-code-lsps": {
