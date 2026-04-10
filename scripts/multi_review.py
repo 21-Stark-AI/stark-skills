@@ -198,7 +198,10 @@ def discover_config(cwd: str | None = None, global_dir: str | None = None) -> di
 
 
 def _discover_domains() -> dict[str, dict[str, Any]]:
-    """Discover domains from prompt files in any agent directory."""
+    """Discover domains from prompt files in any agent directory.
+
+    Falls back to scanning domains/ if no agent directory has domain files.
+    """
     domains: dict[str, dict[str, Any]] = {}
     for agent in AGENTS:
         agent_dir = GLOBAL_PROMPTS_DIR / agent
@@ -214,6 +217,17 @@ def _discover_domains() -> dict[str, dict[str, Any]]:
                 }
         if domains:
             break
+    # Fall back to shared domains/ directory if no per-agent domain files found
+    if not domains:
+        shared_dir = GLOBAL_PROMPTS_DIR / "domains"
+        for f in sorted(shared_dir.glob("[0-9]*.md")):
+            key = f.stem.split("-", 1)[1] if "-" in f.stem else f.stem
+            if key not in domains:
+                domains[key] = {
+                    "order": f.stem.split("-")[0] if "-" in f.stem else "99",
+                    "label": key.replace("-", " ").title(),
+                    "filename": f.name,
+                }
     return domains
 
 
@@ -521,6 +535,10 @@ def _load_domain_prompt(agent: str, domain_key: str, cwd: str | None = None) -> 
     content = resolve_prompt(agent, domain["filename"], cwd=cwd)
     if content:
         return content
+    # Check shared domains/ directory before falling back to other agents
+    domains_path = GLOBAL_PROMPTS_DIR / "domains" / domain["filename"]
+    if domains_path.exists():
+        return domains_path.read_text().strip()
     for fallback_agent in AGENTS:
         if fallback_agent == agent:
             continue

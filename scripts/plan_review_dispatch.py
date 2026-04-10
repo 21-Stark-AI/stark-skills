@@ -96,11 +96,12 @@ def resolve_plan_prompt(
     repo_dir: str | None = None,
     global_prompts_dir: str | None = None,
 ) -> str:
-    """Resolve a plan review prompt file: repo → global.
+    """Resolve a plan review prompt file: repo → global agent → global domains.
 
     Resolution order:
         1. {repo_dir}/.code-review/plan-prompts/{agent}/{filename}
         2. {global_prompts_dir}/{agent}/{filename}
+        3. {global_prompts_dir}/domains/{filename}   (shared, agent-agnostic)
     """
     # Check repo-level override
     if repo_dir:
@@ -108,12 +109,17 @@ def resolve_plan_prompt(
         if repo_path.exists():
             return repo_path.read_text().strip()
 
-    # Fall back to global
+    # Fall back to global agent-specific path
     if global_prompts_dir is None:
         global_prompts_dir = str(GLOBAL_PROMPTS_DIR)
     global_path = Path(global_prompts_dir) / agent / filename
     if global_path.exists():
         return global_path.read_text().strip()
+
+    # Fall back to shared domains/ directory
+    domains_path = Path(global_prompts_dir) / "domains" / filename
+    if domains_path.exists():
+        return domains_path.read_text().strip()
 
     return ""
 
@@ -127,6 +133,7 @@ def _discover_plan_domains(
     """Discover plan review domains from prompt files.
 
     Scans the first agent directory found for [0-9]*.md files.
+    Falls back to scanning domains/ if no agent directory has domain files.
     Returns dict keyed by domain slug (e.g. "completeness").
     """
     if global_prompts_dir is None:
@@ -149,6 +156,18 @@ def _discover_plan_domains(
                 }
         if domains:
             break
+
+    # Fall back to shared domains/ directory if no per-agent domain files found
+    if not domains:
+        shared_dir = prompts_path / "domains"
+        for f in sorted(shared_dir.glob("[0-9]*.md")):
+            key = f.stem.split("-", 1)[1] if "-" in f.stem else f.stem
+            if key not in domains:
+                domains[key] = {
+                    "order": f.stem.split("-")[0] if "-" in f.stem else "99",
+                    "label": key.replace("-", " ").title(),
+                    "filename": f.name,
+                }
 
     return domains
 

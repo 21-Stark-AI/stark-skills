@@ -118,7 +118,7 @@ def _load_prompt(
     repo_dir: str | None = None,
     prompts_dir: str | None = None,
 ) -> str:
-    """Load a prompt file: repo → global."""
+    """Load a prompt file: repo → global agent → global domains."""
     prompts_dir_name = prompts_dir or DEFAULT_PROMPTS_DIR
     if repo_dir:
         repo_path = Path(repo_dir) / ".code-review" / f"{prompts_dir_name}-prompts" / agent / filename
@@ -127,6 +127,10 @@ def _load_prompt(
     global_path = _get_prompts_dir(prompts_dir) / agent / filename
     if global_path.exists():
         return global_path.read_text().strip()
+    # Fall back to shared domains/ directory
+    domains_path = _get_prompts_dir(prompts_dir) / "domains" / filename
+    if domains_path.exists():
+        return domains_path.read_text().strip()
     return ""
 
 
