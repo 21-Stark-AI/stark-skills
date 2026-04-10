@@ -125,7 +125,7 @@ sys.path.insert(0, os.path.expanduser("~/git/Evinced/scripts"))
 # Must use the scripts venv for dependencies
 # Run via: ~/git/Evinced/scripts/.venv/bin/python3
 
-from stark_claude import pr_review
+from github_app import pr_review
 
 review_body = """## Self-Review
 
@@ -267,7 +267,7 @@ Branch $BRANCH deleted (local + remote)
 | Push diverged | Rebase on main, resolve, push |
 | `gh` auth fails for PR ops | Verify `gh auth status` — user's PAT must be active. Run `gh auth login` if needed |
 | Bot review post fails | Re-run `BOT_TOKEN=$(github_app.py token)` — bot auth is only for review comments |
-| `stark_claude.py` fails | Check Python venv deps (PyJWT, requests, cryptography). Use `~/git/Evinced/scripts/.venv/bin/python3` |
+| `github_app.py` fails | Check Python venv deps (PyJWT, requests, cryptography). Use `~/git/Evinced/scripts/.venv/bin/python3` |
 | Merge conflict | Rebase on main, resolve, re-push, retry merge |
 | PR checks failing | Show check status to user, ask whether to force-merge with `--admin` or fix first |
 | User rejects PR | Leave PR open for revision or close it per user instruction |
@@ -299,7 +299,7 @@ Where `$ACTION` is the final action performed (e.g., `merge`, `create`, `review`
 - **Don't `git add -A`.** Always add specific files.
 - **Don't set GH_TOKEN for PR/merge operations.** Use the user's native `gh` auth for creating and merging PRs. Only set `GH_TOKEN=$BOT_TOKEN` for review comment posting.
 - **Don't merge without user approval.** Always present summary and wait.
-- **Don't post reviews via `gh api`.** Always use `stark_claude.py` so reviews appear as `stark-claude[bot]`.
+- **Don't post reviews via `gh api`.** Always use `github_app.py` so reviews appear as `stark-claude[bot]`.
 - **Don't hardcode repo names.** Auto-detect from `gh repo view`.
 - **Don't skip the self-review.** Every PR gets a stark-claude review before merge.
 - **Always use `--admin` on merge.** Squash-and-merge workflow with admin bypass.

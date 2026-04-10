@@ -7,6 +7,17 @@ disable-model-invocation: true
 model: opus
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-design --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue with available agents.
+- If `overall` is "ready": continue silently.
+
 # stark-design
 
 Generate a design document from requirements or a prompt. The enabled agents each independently produce
@@ -62,6 +73,12 @@ Store for Phase 5 if present.
 
 ```bash
 export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)
+```
+
+### 1.4 Approach Contract
+Before dispatching agents, confirm the approach:
+```bash
+python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file "$requirements_file" --force-confirm
 ```
 
 ## Phase 2: Generate Designs
