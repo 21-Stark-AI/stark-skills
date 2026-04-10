@@ -104,7 +104,30 @@ def validate(event: dict) -> list[str]:
 # SQLite queue
 # ---------------------------------------------------------------------------
 
-_db_initialized: set[str] = set()
+_db_initialized: dict[str, float] = {}
+
+
+def _needs_init(db_path: str, cache: dict[str, float]) -> bool:
+    """Check if the DB at *db_path* needs DDL initialization.
+
+    Tracks the inode of the file when DDL was last run.  If the file was
+    deleted and recreated (different inode or missing), we re-run DDL.
+    """
+    if db_path not in cache:
+        return True
+    try:
+        current_ino = os.stat(db_path).st_ino
+    except OSError:
+        return True
+    return current_ino != cache[db_path]
+
+
+def _mark_initialized(db_path: str, cache: dict[str, float]) -> None:
+    """Record the inode of *db_path* so we can detect recreation."""
+    try:
+        cache[db_path] = os.stat(db_path).st_ino
+    except OSError:
+        cache.pop(db_path, None)
 
 
 def _get_db() -> sqlite3.Connection:
@@ -114,7 +137,7 @@ def _get_db() -> sqlite3.Connection:
     db = sqlite3.connect(db_path, timeout=10)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=5000")
-    if db_path not in _db_initialized:
+    if _needs_init(db_path, _db_initialized):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS pending (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,7 +167,7 @@ def _get_db() -> sqlite3.Connection:
                 value TEXT NOT NULL
             );
         """)
-        _db_initialized.add(db_path)
+        _mark_initialized(db_path, _db_initialized)
     return db
 
 
@@ -216,7 +239,7 @@ def drain(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
 BUFFER_PATH = Path(os.environ.get("BUFFER_PATH", Path.home() / ".stark-insights" / "buffer.db"))
 
 
-_buffer_db_initialized: set[str] = set()
+_buffer_db_initialized: dict[str, float] = {}
 
 
 def _get_buffer_db() -> sqlite3.Connection:
@@ -226,7 +249,7 @@ def _get_buffer_db() -> sqlite3.Connection:
     db = sqlite3.connect(buffer_path, timeout=10)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=5000")
-    if buffer_path not in _buffer_db_initialized:
+    if _needs_init(buffer_path, _buffer_db_initialized):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY,
@@ -246,7 +269,7 @@ def _get_buffer_db() -> sqlite3.Connection:
             CREATE INDEX IF NOT EXISTS idx_events_unsynced_timestamp
                 ON events (synced_at, timestamp);
         """)
-        _buffer_db_initialized.add(buffer_path)
+        _mark_initialized(buffer_path, _buffer_db_initialized)
     return db
 
 
@@ -255,8 +278,6 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
 
     Returns {sent, failed}.
     """
-    import uuid as _uuid
-
     queue_db = _get_db()
     buffer_db = _get_buffer_db()
     stats = {"sent": 0, "failed": 0}

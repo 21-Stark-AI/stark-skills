@@ -126,7 +126,11 @@ python3 -c "
 import json, collections, pathlib
 log = pathlib.Path.home() / '.claude/code-review/healer.jsonl'
 if not log.exists(): exit(0)
-cats = collections.Counter(json.loads(l).get('category') for l in log.read_text().splitlines() if l)
+cats = collections.Counter()
+for l in log.read_text().splitlines():
+    if not l: continue
+    try: cats[json.loads(l).get('category', 'unknown')] += 1
+    except (json.JSONDecodeError, TypeError): pass
 if cats:
     print('Failure categories:')
     for cat, n in cats.most_common(5): print(f'  {cat}: {n}')

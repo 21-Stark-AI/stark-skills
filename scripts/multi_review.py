@@ -66,6 +66,7 @@ from dispatcher_base import (
     resolve_model as _resolve_model,
     is_agent_enabled,
     discover_domains as _base_discover_domains,
+    resolve_prompt as _base_resolve_prompt,
 )
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -355,26 +356,42 @@ class ReviewRound:
 # ── Prompt loading ─────────────────────────────────────────────────────
 
 
-def resolve_prompt(
-    agent: str, filename: str, cwd: str | None = None, global_prompts_dir: str | None = None
-) -> str:
-    """Resolve a prompt file: repo → org → global."""
+def _find_repo_root(cwd: str | None = None) -> str | None:
+    """Walk from *cwd* up to $HOME looking for .code-review/prompts/.
+
+    Returns the first directory that contains a `.code-review/prompts/`
+    subdirectory, or ``None`` if none is found.  This preserves the legacy
+    walk that picks up org-level prompt overrides (e.g.
+    ``~/git/Evinced/.code-review/prompts/``).
+    """
     if cwd is None:
         cwd = os.getcwd()
-    if global_prompts_dir is None:
-        global_prompts_dir = str(GLOBAL_PROMPTS_DIR)
-
     home = Path.home()
     current = Path(cwd).resolve()
     while current != home and current != current.parent:
-        candidate = current / ".code-review" / "prompts" / agent / filename
-        if candidate.exists():
-            return candidate.read_text().strip()
+        if (current / ".code-review" / "prompts").is_dir():
+            return str(current)
         current = current.parent
-    global_path = Path(global_prompts_dir) / agent / filename
-    if global_path.exists():
-        return global_path.read_text().strip()
-    return ""
+    return None
+
+
+def resolve_prompt(
+    agent: str, filename: str, cwd: str | None = None, global_prompts_dir: str | None = None
+) -> str:
+    """Resolve a prompt file: repo/org → global agent → global domains/.
+
+    Delegates to dispatcher_base.resolve_prompt for the three-tier resolution
+    (repo override, global agent dir, shared domains/ fallback), but first
+    discovers the repo root by walking from *cwd* up to $HOME.
+    """
+    if global_prompts_dir is None:
+        global_prompts_dir = str(GLOBAL_PROMPTS_DIR)
+    repo_root = _find_repo_root(cwd)
+    return _base_resolve_prompt(
+        agent, filename,
+        prompts_dir=global_prompts_dir,
+        repo_dir=repo_root,
+    )
 
 
 def _load_agent_preamble(agent: str, cwd: str | None = None) -> str:
@@ -383,17 +400,22 @@ def _load_agent_preamble(agent: str, cwd: str | None = None) -> str:
 
 
 def _load_domain_prompt(agent: str, domain_key: str, cwd: str | None = None) -> str:
-    """Load the domain-specific review prompt for a given agent."""
+    """Load the domain-specific review prompt for a given agent.
+
+    Resolution order (via dispatcher_base.resolve_prompt):
+        1. Repo/org override: {repo_root}/.code-review/prompts/{agent}/{filename}
+        2. Global agent dir:  ~/.claude/code-review/prompts/{agent}/{filename}
+        3. Shared domains/:   ~/.claude/code-review/prompts/domains/{filename}
+        4. Cross-agent fallback (legacy): try other agents' prompts
+        5. Generic fallback string
+    """
     domain = DOMAINS.get(domain_key)
     if not domain:
         return f"Review this code for {domain_key} issues. {FINDINGS_FORMAT}"
     content = resolve_prompt(agent, domain["filename"], cwd=cwd)
     if content:
         return content
-    # Check shared domains/ directory before falling back to other agents
-    domains_path = GLOBAL_PROMPTS_DIR / "domains" / domain["filename"]
-    if domains_path.exists():
-        return domains_path.read_text().strip()
+    # Cross-agent fallback (legacy behavior)
     for fallback_agent in AGENTS:
         if fallback_agent == agent:
             continue
