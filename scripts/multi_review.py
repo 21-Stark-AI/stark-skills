@@ -636,12 +636,13 @@ def _run_subagent(
     spec_context: str | None = None,
     graph_context: str | None = None,
     override_timeout_s: int | None = None,
+    prompt_cache: dict[tuple[str, str], str] | None = None,
 ) -> SubAgentResult:
     """Run a single sub-agent: one CLI tool × one domain."""
     if agent == "gemini":
         _gemini_semaphore.acquire()
     try:
-        return _run_subagent_inner(agent, domain_key, base, cwd, spec_context, graph_context, override_timeout_s)
+        return _run_subagent_inner(agent, domain_key, base, cwd, spec_context, graph_context, override_timeout_s, prompt_cache)
     finally:
         if agent == "gemini":
             _gemini_semaphore.release()
@@ -655,6 +656,7 @@ def _run_subagent_inner(
     spec_context: str | None = None,
     graph_context: str | None = None,
     override_timeout_s: int | None = None,
+    prompt_cache: dict[tuple[str, str], str] | None = None,
 ) -> SubAgentResult:
     """Inner implementation — called with gemini semaphore held if needed."""
     t0 = time.time()
@@ -666,8 +668,12 @@ def _run_subagent_inner(
             error="agent_disabled",
             duration_s=0.0,
         )
-    preamble = _load_agent_preamble(agent, cwd=cwd)
-    domain_prompt = _load_domain_prompt(agent, domain_key, cwd=cwd)
+    if prompt_cache:
+        preamble = prompt_cache.get((agent, "__preamble__"), "")
+        domain_prompt = prompt_cache.get((agent, domain_key), "")
+    else:
+        preamble = _load_agent_preamble(agent, cwd=cwd)
+        domain_prompt = _load_domain_prompt(agent, domain_key, cwd=cwd)
     parts = []
     if preamble:
         parts.append(preamble)
@@ -912,6 +918,13 @@ def run_review_round(
         print("  No enabled agents available for this round.", file=out)
         return rnd
 
+    # Pre-load all prompts (avoids per-worker file I/O)
+    prompt_cache: dict[tuple[str, str], str] = {}
+    for agent in agents:
+        prompt_cache[(agent, "__preamble__")] = _load_agent_preamble(agent, cwd=cwd)
+        for domain_key in domains:
+            prompt_cache[(agent, domain_key)] = _load_domain_prompt(agent, domain_key, cwd=cwd)
+
     with ThreadPoolExecutor(max_workers=min(total, _max_worker_budget())) as pool:
         futures = {}
         for agent in agents:
@@ -923,7 +936,7 @@ def run_review_round(
             for domain_key in domains:
                 domain_cfg = DOMAINS[domain_key]
                 domain_graph_context = graph_context if domain_key in enriched_set else None
-                future = pool.submit(_run_subagent, agent, domain_key, base, cwd, spec_context, domain_graph_context, agent_timeout)
+                future = pool.submit(_run_subagent, agent, domain_key, base, cwd, spec_context, domain_graph_context, agent_timeout, prompt_cache)
                 futures[future] = (agent, domain_key)
                 print(
                     f"  [{agent_cfg['emoji']}] {agent} × {domain_cfg['label']}...",
