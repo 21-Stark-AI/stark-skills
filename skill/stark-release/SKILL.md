@@ -110,15 +110,32 @@ Calculate `$NEXT_VERSION` accordingly. Do NOT ask for confirmation — proceed a
 
 ---
 
-## Step 5: Bump `__version__`
+## Step 5: Bump Version in Source
 
-Update `src/infra_pulse/__init__.py` to the new version:
+Auto-detect the project's version file and update it. Check in this order (stop at first match):
 
-```python
-__version__ = "${NEXT_VERSION}"
+| Ecosystem | File Pattern | Version Pattern |
+|-----------|-------------|-----------------|
+| Python | `src/*/__init__.py` or `*/__init__.py` with `__version__` | `__version__ = "X.Y.Z"` |
+| Python | `pyproject.toml` with `version = "X.Y.Z"` (only if `[tool.setuptools-scm]` is NOT present) | `version = "X.Y.Z"` |
+| Node | `package.json` with `"version"` | `"version": "X.Y.Z"` |
+| Rust | `Cargo.toml` with `version =` | `version = "X.Y.Z"` |
+| Go | No version file bump needed — Go uses git tags exclusively | skip |
+
+```bash
+# Python: search for __version__
+grep -rl '__version__' src/ *.py 2>/dev/null | head -1
+
+# Node: check package.json
+[ -f package.json ] && grep -q '"version"' package.json && echo "package.json"
+
+# Rust: check Cargo.toml
+[ -f Cargo.toml ] && grep -q '^version' Cargo.toml && echo "Cargo.toml"
 ```
 
-This is the runtime version source of truth (displayed in UI, API, logs).
+Update the detected file to `${NEXT_VERSION}`. If no version file is found, warn: "No version file detected — only the git tag will carry the version." and skip this step.
+
+If multiple version files exist (e.g., both `__init__.py` and `package.json` in a monorepo), update ALL of them for consistency.
 
 ---
 
@@ -147,9 +164,9 @@ After:
 - Bug B (#43)
 ```
 
-Commit both files together:
+Commit the changelog and any updated version files together:
 ```bash
-git add CHANGELOG.md src/infra_pulse/__init__.py
+git add CHANGELOG.md ${VERSION_FILES}
 git commit -m "release: v${NEXT_VERSION}
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
@@ -241,8 +258,8 @@ Substitute actual values from the run. If stark-insights is not running, this fa
 
 ## Mistakes to Avoid
 
-- **Don't bump pyproject.toml.** Tags are the version source.
-- **Always bump `src/infra_pulse/__init__.py`.** This is the runtime `__version__` — if you skip it, the deployed app still shows the old version.
+- **Don't skip the version file bump.** Tags are the primary version source, but runtime version files (`__init__.py`, `package.json`, `Cargo.toml`) must match — if you skip them, the deployed app still shows the old version.
+- **Don't bump `pyproject.toml` if it uses `setuptools-scm`.** Dynamic versioning reads from git tags automatically.
 - **Don't set GH_TOKEN.** Releases use the user's PAT via native `gh` auth. Releases should show as created by the user, not a bot.
 - **Don't release with empty [Unreleased].** Always verify content exists.
 - **Don't leave [Unreleased] content behind.** Move ALL entries to the versioned section.

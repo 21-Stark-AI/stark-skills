@@ -95,8 +95,8 @@ Wait for response. Use defaults if user just hits enter.
 ### 2c. Create the repo
 
 ```bash
-# Auth as stark-codex for repo creation
-export GH_TOKEN=$($PYTHON $GITHUB_APP --app stark-codex token)
+# Use user's PAT for repo creation (repos should show as created by the user, not a bot)
+unset GH_TOKEN
 
 gh repo create {ORG}/{NAME} \
   --{VISIBILITY} \

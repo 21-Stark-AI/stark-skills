@@ -7,6 +7,17 @@ disable-model-invocation: true
 model: opus[1m]
 ---
 
+## Preflight
+
+Run environment validation before proceeding:
+```bash
+python3 ~/.claude/code-review/scripts/preflight.py --workflow stark-review --json
+```
+Parse the JSON result:
+- If `overall` is "blocked": print the failing checks and stop. Do not proceed.
+- If `overall` is "degraded": print a warning with the failing checks, then continue.
+- If `overall` is "ready": continue silently.
+
 # stark-review
 
 Single-agent PR review: 1 LLM × 9 domains dispatched in parallel. Each domain uses its configured default agent (from `domain_agents` in config.json), or an inline override.
