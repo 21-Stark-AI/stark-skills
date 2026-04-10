@@ -5,7 +5,7 @@ description: >-
 argument-hint: "[PR_NUMBER] [--rounds N] [--dry-run] [--repo ORG/REPO]"
 disable-model-invocation: true
 context: fork
-model: opus
+model: opus[1m]
 ---
 
 ## Preflight
