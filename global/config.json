@@ -109,6 +109,42 @@
       "mode": "conservative"
     }
   },
+  "forge": {
+    "domain_routing": {
+      "general": "claude",
+      "completeness": "claude",
+      "security": "codex",
+      "scope": "claude",
+      "api-design": "codex",
+      "data-modeling": "codex",
+      "consistency": "claude",
+      "scalability": "codex",
+      "extensibility": "claude",
+      "resilience": "codex",
+      "accessibility": "codex",
+      "implementation-feasibility": "codex"
+    },
+    "plan_review_routing": {
+      "general": "claude",
+      "completeness": "claude",
+      "security": "codex",
+      "feasibility": "codex",
+      "operability": "codex",
+      "sequencing": "claude",
+      "rollback": "codex",
+      "risk": "claude",
+      "gates": "claude",
+      "timeline": "codex"
+    },
+    "agent_fallback_order": ["claude", "codex", "gemini"],
+    "consensus_domains": ["security"],
+    "consensus_threshold": 2,
+    "max_rounds": 3,
+    "workers": 3,
+    "fix_threshold": "medium",
+    "noise_improvement_threshold": 0.33,
+    "heuristic_consolidation_threshold": 50
+  },
   "automation": {
     "model": "claude-opus-4-6",
     "repos": [

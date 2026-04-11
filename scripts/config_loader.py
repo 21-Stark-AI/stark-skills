@@ -66,6 +66,42 @@ DEFAULT_COST = {
     "hard_stop_usd": 100.0,
     "track_rolling_7d": True,
 }
+DEFAULT_FORGE = {
+    "domain_routing": {
+        "general": "claude",
+        "completeness": "claude",
+        "security": "codex",
+        "scope": "claude",
+        "api-design": "codex",
+        "data-modeling": "codex",
+        "consistency": "claude",
+        "scalability": "codex",
+        "extensibility": "claude",
+        "resilience": "codex",
+        "accessibility": "codex",
+        "implementation-feasibility": "codex",
+    },
+    "plan_review_routing": {
+        "general": "claude",
+        "completeness": "claude",
+        "security": "codex",
+        "feasibility": "codex",
+        "operability": "codex",
+        "sequencing": "claude",
+        "rollback": "codex",
+        "risk": "claude",
+        "gates": "claude",
+        "timeline": "codex",
+    },
+    "agent_fallback_order": ["claude", "codex", "gemini"],
+    "consensus_domains": ["security"],
+    "consensus_threshold": 2,
+    "max_rounds": 3,
+    "workers": 3,
+    "fix_threshold": "medium",
+    "noise_improvement_threshold": 0.33,
+    "heuristic_consolidation_threshold": 50,
+}
 
 
 def _warn(message: str) -> None:
@@ -120,6 +156,7 @@ _SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
     "skill_activation": DEFAULT_SKILL_ACTIVATION,
     "context_compaction": DEFAULT_CONTEXT_COMPACTION,
     "cost": DEFAULT_COST,
+    "forge": DEFAULT_FORGE,
 }
 
 
@@ -134,6 +171,7 @@ def get_validation_gate_config() -> dict[str, Any]:  return _get_section("valida
 def get_skill_activation_config() -> dict[str, Any]: return _get_section("skill_activation")
 def get_context_compaction_config() -> dict[str, Any]: return _get_section("context_compaction")
 def get_cost_config() -> dict[str, Any]:             return _get_section("cost")
+def get_forge_config() -> dict[str, Any]:            return _get_section("forge")
 
 
 def is_agent_enabled(agent: str) -> bool:
