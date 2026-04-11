@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.6.1] - 2026-04-11
+
+### Added
+- **stark-forge** — end-to-end design-to-tasks pipeline: 9 Python modules (`forge_orchestrator`, `forge_classifier`, `forge_review`, `forge_plan`, `forge_tdd`, `forge_tasks`, `forge_audit`, `forge_improve`, `config_loader` extension), isolated prompt trees (`forge-design-review/` with 13 domains, `forge-plan-review/` with 10 domains), seed heuristics, and SKILL.md with `--auto-detect`, `--dry-run`, `--resume`, `--workers` flags
+- 3-tier domain classifier: heuristic pattern matching (Tier 1), LLM-based classification with poisoning guard (Tier 2), interactive terminal confirmation (Tier 3)
+- Iron Rule review loop: severity-based finding classification, cross-reference high-confidence detection, recurrence tracking (3rd occurrence blocks), targeted re-dispatch for changed sections, consensus judging for security domains
+- Crash-safe orchestrator: atomic state writes (`tmp` + `os.replace`), backup mirroring, PID-based lock file with liveness check, spec hash change detection on resume
+- Self-improvement module: SNR-threshold prompt improvement queuing, metadata-only firewall, heuristic consolidation trigger
+- Forge config section in `global/config.json` with domain routing, plan review routing, consensus settings, and threshold configuration
+- `/stark-design` archived in favor of `superpowers:brainstorm` + `/stark-forge`
+
+### Changed
+- Skill count updated from 29 to 30
+- CLAUDE.md updated with `/stark-forge` in pipeline and skills table
+
 ## [v0.6.0] - 2026-04-10
 
 ### Added
