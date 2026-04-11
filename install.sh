@@ -60,10 +60,19 @@ provision_infrastructure() {
         "$HOME/.stark-insights" \
         "$CODE_REVIEW_DIR/history/autopilot" \
         "$CODE_REVIEW_DIR/history/design-reviews" \
+        "$CODE_REVIEW_DIR/history/forge" \
         "$CODE_REVIEW_DIR/sessions" \
         "$CODE_REVIEW_DIR/staged" \
         "$CODE_REVIEW_DIR/dashboard" \
         "$REPO_DIR/tests/fixtures"
+
+    # Copy forge heuristics (seed only — don't overwrite user edits)
+    if [ -f "$REPO_DIR/global/forge_heuristics.json" ] && [ ! -f "$CODE_REVIEW_DIR/forge_heuristics.json" ]; then
+        cp "$REPO_DIR/global/forge_heuristics.json" "$CODE_REVIEW_DIR/forge_heuristics.json"
+        info "Forge heuristics: seeded"
+    elif [ -f "$CODE_REVIEW_DIR/forge_heuristics.json" ]; then
+        info "Forge heuristics: already exists (not overwritten)"
+    fi
 
     info "Created local directories"
 
