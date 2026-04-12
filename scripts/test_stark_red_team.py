@@ -373,3 +373,187 @@ def test_overlap_returns_false_when_one_is_empty():
     ])
     b = _mk_result([])
     assert rt._overlap(a, b, jaccard_min=0.4) is False
+
+
+import subprocess as _subprocess
+
+
+def test_dispatch_codex_builds_command_with_model_override(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout='{"synthesis":"S","findings":[]}', stderr="",
+        )
+
+    monkeypatch.setattr("stark_red_team.subprocess.run", fake_run)
+
+    result = rt.dispatch_codex(
+        prompt="hello committee",
+        model="o3",
+        cwd="/tmp",
+        timeout_s=60,
+    )
+    assert "codex" in captured["cmd"][0]
+    assert "-m" in captured["cmd"]
+    assert "o3" in captured["cmd"]
+    assert result.error is None
+    assert result.input_tokens >= 0
+    assert result.output_tokens >= 0
+
+
+def test_dispatch_codex_handles_subprocess_error(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return _subprocess.CompletedProcess(
+            args=cmd, returncode=1,
+            stdout="", stderr="codex: boom",
+        )
+
+    monkeypatch.setattr("stark_red_team.subprocess.run", fake_run)
+
+    result = rt.dispatch_codex(
+        prompt="hello",
+        model="o3",
+        cwd="/tmp",
+        timeout_s=60,
+    )
+    assert result.error is not None
+    assert "codex" in result.error.lower()
+
+
+def test_dispatch_codex_handles_timeout(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise _subprocess.TimeoutExpired(cmd=cmd, timeout=60)
+
+    monkeypatch.setattr("stark_red_team.subprocess.run", fake_run)
+
+    result = rt.dispatch_codex(
+        prompt="hello",
+        model="o3",
+        cwd="/tmp",
+        timeout_s=60,
+    )
+    assert result.error is not None
+    assert "timeout" in result.error.lower()
+
+
+def test_run_red_team_happy_path(tmp_path, monkeypatch):
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output='{"synthesis": "tension", "findings": [{"id": "rt1", "persona": "data", "severity": "high", "concern": "x", "consequence": "y", "counter_proposal": "z", "trade_off": "t"}]}',
+            duration_s=2.0,
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART",
+        source_spec="SRC",
+        pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="o3",
+        model_rates={"o3": {"input_per_1m_usd": 15.0, "output_per_1m_usd": 60.0}},
+        cwd=None,
+        timeout_s=60,
+        min_severity_to_block="high",
+        max_input_chars=200_000,
+    )
+    assert result.error is None
+    assert result.synthesis == "tension"
+    assert len(result.findings) == 1
+    assert result.blocking_count == 1
+    assert abs(result.cost_usd - 0.045) < 1e-6  # (1000*15 + 500*60)/1m
+
+
+def test_run_red_team_dispatch_error_returns_error_result(tmp_path, monkeypatch):
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output="",
+            duration_s=0.5,
+            input_tokens=0,
+            output_tokens=0,
+            error="boom",
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART",
+        source_spec="SRC",
+        pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="o3",
+        model_rates={"o3": {"input_per_1m_usd": 15.0, "output_per_1m_usd": 60.0}},
+        cwd=None,
+        timeout_s=60,
+        min_severity_to_block="high",
+        max_input_chars=200_000,
+    )
+    assert result.error == "boom"
+    assert result.findings == []
+    assert result.blocking_count == 0
+
+
+def test_run_red_team_uses_fallback_rates_for_unknown_model(tmp_path, monkeypatch):
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output='{"synthesis":"s","findings":[]}',
+            duration_s=1.0,
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART",
+        source_spec="SRC",
+        pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="unknown-model",
+        model_rates={
+            "o3": {"input_per_1m_usd": 15.0, "output_per_1m_usd": 60.0},
+            "_fallback": {"input_per_1m_usd": 100.0, "output_per_1m_usd": 300.0},
+        },
+        cwd=None,
+        timeout_s=60,
+        min_severity_to_block="high",
+        max_input_chars=200_000,
+    )
+    # fallback: (1000*100 + 500*300)/1m = 0.1 + 0.15 = 0.25
+    assert abs(result.cost_usd - 0.25) < 1e-6

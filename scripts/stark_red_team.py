@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -321,3 +323,223 @@ def _overlap(
             if _jaccard(tok_a, tok_b) >= jaccard_min:
                 return True
     return False
+
+
+@dataclass
+class CodexCallResult:
+    """Result of a single Codex subprocess dispatch."""
+
+    raw_output: str
+    duration_s: float
+    input_tokens: int
+    output_tokens: int
+    error: str | None = None
+
+
+def _parse_codex_jsonl_tokens(raw: str) -> tuple[int, int]:
+    """Extract token usage from codex --json JSONL output.
+
+    Best-effort — returns (0, 0) if no usage data is found.
+    """
+    in_tokens = 0
+    out_tokens = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        usage = ev.get("usage") or ev.get("item", {}).get("usage")
+        if isinstance(usage, dict):
+            in_tokens += int(usage.get("input_tokens") or 0)
+            out_tokens += int(usage.get("output_tokens") or 0)
+    return in_tokens, out_tokens
+
+
+def _extract_codex_assistant_text(raw: str) -> str:
+    """Pull plain assistant text from a codex --json JSONL stream.
+
+    Returns the original raw string if no assistant text events found.
+    """
+    parts: list[str] = []
+    for line in raw.splitlines():
+        if not line.strip().startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if ev.get("type") == "item.completed":
+            item = ev.get("item", {})
+            itype = item.get("type", "")
+            if itype == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    parts.append(text)
+            elif itype == "message":
+                for c in item.get("content", []):
+                    if c.get("type") == "output_text":
+                        parts.append(c.get("text", ""))
+    return "\n".join(parts) if parts else raw
+
+
+def dispatch_codex(
+    prompt: str,
+    model: str,
+    cwd: str | None,
+    timeout_s: int,
+    env: dict[str, str] | None = None,
+) -> CodexCallResult:
+    """Run codex with the given model override. Returns CodexCallResult."""
+    t0 = time.time()
+    cmd = [
+        "codex",
+        "exec",
+        "-m",
+        model,
+        "-c",
+        'model_reasoning_effort="high"',
+        "--ephemeral",
+        "--json",
+        "-s",
+        "read-only",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=cwd,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return CodexCallResult(
+            raw_output="",
+            duration_s=time.time() - t0,
+            input_tokens=0,
+            output_tokens=0,
+            error=f"codex timeout after {timeout_s}s",
+        )
+    except (OSError, FileNotFoundError) as exc:
+        return CodexCallResult(
+            raw_output="",
+            duration_s=time.time() - t0,
+            input_tokens=0,
+            output_tokens=0,
+            error=f"codex dispatch error: {exc}",
+        )
+
+    duration = time.time() - t0
+    if proc.returncode != 0:
+        return CodexCallResult(
+            raw_output=proc.stdout or "",
+            duration_s=duration,
+            input_tokens=0,
+            output_tokens=0,
+            error=f"codex exit {proc.returncode}: {(proc.stderr or '').strip()[:400]}",
+        )
+
+    in_tokens, out_tokens = _parse_codex_jsonl_tokens(proc.stdout or "")
+    raw_text = _extract_codex_assistant_text(proc.stdout or "")
+    return CodexCallResult(
+        raw_output=raw_text,
+        duration_s=duration,
+        input_tokens=in_tokens,
+        output_tokens=out_tokens,
+        error=None,
+    )
+
+
+def _resolve_rates(model: str, model_rates: dict[str, Any]) -> dict[str, float]:
+    """Look up rates for a model, falling back to _fallback."""
+    if model in model_rates:
+        return model_rates[model]
+    return model_rates.get("_fallback", {"input_per_1m_usd": 0.0, "output_per_1m_usd": 0.0})
+
+
+def _cost_for(input_tokens: int, output_tokens: int, rates: dict[str, float]) -> float:
+    return (
+        input_tokens * rates.get("input_per_1m_usd", 0.0)
+        + output_tokens * rates.get("output_per_1m_usd", 0.0)
+    ) / 1_000_000
+
+
+def run_red_team(
+    stage: str,
+    artifact: str,
+    source_spec: str,
+    pr_diff: str | None,
+    personas: list[str],
+    model: str,
+    model_rates: dict[str, Any],
+    cwd: str | None,
+    timeout_s: int,
+    min_severity_to_block: str,
+    max_input_chars: int,
+    round_num: int = 1,
+    env: dict[str, str] | None = None,
+) -> RedTeamResult:
+    """Run one red-team call. Returns a RedTeamResult.
+
+    Does not retry — the orchestrator handles retry policy.
+    """
+    prompt = assemble_prompt(
+        stage=stage,
+        personas=personas,
+        artifact=artifact,
+        source_spec=source_spec,
+        pr_diff=pr_diff,
+        max_input_chars=max_input_chars,
+    )
+
+    call = dispatch_codex(
+        prompt=prompt,
+        model=model,
+        cwd=cwd,
+        timeout_s=timeout_s,
+        env=env,
+    )
+
+    rates = _resolve_rates(model, model_rates)
+    cost_usd = _cost_for(call.input_tokens, call.output_tokens, rates)
+
+    if call.error is not None:
+        return RedTeamResult(
+            stage=stage,
+            round_num=round_num,
+            synthesis="",
+            findings=[],
+            blocking_count=0,
+            human_review_count=0,
+            raw_output=call.raw_output,
+            duration_s=call.duration_s,
+            cost_usd=cost_usd,
+            error=call.error,
+            input_tokens=call.input_tokens,
+            output_tokens=call.output_tokens,
+        )
+
+    parsed = parse_output(call.raw_output)
+    synthesis = parsed.get("synthesis", "")
+    raw_findings = parsed.get("findings", []) or []
+    findings = validate_findings(raw_findings) if isinstance(raw_findings, list) else []
+
+    return RedTeamResult(
+        stage=stage,
+        round_num=round_num,
+        synthesis=synthesis if isinstance(synthesis, str) else "",
+        findings=findings,
+        blocking_count=count_blocking(findings, min_severity_to_block),
+        human_review_count=count_human_review(findings),
+        raw_output=call.raw_output,
+        duration_s=call.duration_s,
+        cost_usd=cost_usd,
+        error=None,
+        input_tokens=call.input_tokens,
+        output_tokens=call.output_tokens,
+    )
