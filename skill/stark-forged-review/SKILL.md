@@ -40,57 +40,32 @@ PYTHON  = $SCRIPTS/.venv/bin/python3
 
 ## Run
 
-Invoke the Python orchestrator with the user's arguments. It prints a single JSON object to stdout.
+Invoke the Python orchestrator. It prints a single JSON object to stdout and progress to stderr.
 
 ```bash
 $PYTHON $SCRIPTS/forged_review.py $ARGUMENTS
 ```
 
-Capture the exit code and JSON.
+Capture the exit code and stdout JSON.
 
 ## Merge confirmation
 
-Parse the orchestrator's stdout JSON. Expected shape:
+Parse the stdout JSON. Shape: `{status, pr_number, repo, needs_merge_confirmation, message, summary}` where `status` is one of `clean | dry_run_complete | awaiting_fixes | failed`.
 
-```json
-{
-  "status": "clean | dry_run_complete | awaiting_fixes | failed",
-  "pr_number": 123,
-  "repo": "GetEvinced/foo",
-  "needs_merge_confirmation": true,
-  "message": "",
-  "summary": "..."
-}
-```
+Behavior by status:
 
-If `status == "clean"` AND `needs_merge_confirmation == true`:
+- **`clean` + `needs_merge_confirmation: true`**: print the summary, then ask `Clean. Merge PR #<pr_number>? [Y/n]`. On yes/empty, run `unset GH_TOKEN && gh pr merge <pr_number> --squash --delete-branch --repo <repo>`. On no, print `PR left open at user request` and exit 0.
+- **`awaiting_fixes`**: print the message and findings summary. Do NOT merge. Exit with the orchestrator's exit code.
+- **`dry_run_complete`**: print the summary. Exit 0.
+- anything else: print the summary and exit with the orchestrator's exit code.
 
-1. Print the summary.
-2. Ask the user: `Clean. Merge PR #<pr_number>? [Y/n]` (default yes).
-3. On yes (or empty input):
-   ```bash
-   unset GH_TOKEN
-   gh pr merge <pr_number> --squash --delete-branch --repo <repo>
-   ```
-4. On no: print `PR left open at user request` and exit 0.
+## Exit codes & observability
 
-If `status == "awaiting_fixes"`: print the message and the findings summary. Do NOT merge. Exit with the orchestrator's exit code.
+| Code | Meaning |
+|------|---------|
+| 0 | Clean / dry-run complete |
+| 1 | Halted / awaiting fixes |
+| 2 | Dispatch failure |
+| 3 | Invalid input |
 
-If `status == "dry_run_complete"`: print the summary. Exit 0.
-
-Otherwise: print the summary and exit with the orchestrator's exit code.
-
-## Failure reporting
-
-Map orchestrator exit codes to messages:
-
-| Code | Meaning | Action |
-|------|---------|--------|
-| 0 | Clean / dry-run complete | merge confirmation or summary |
-| 1 | Halted / awaiting fixes | print findings, exit 1 |
-| 2 | Dispatch failure | print error, suggest re-run |
-| 3 | Invalid input | print usage hint |
-
-## Observability
-
-The orchestrator emits `forged_review.*` events via `emit_queue.py` and records per-run metrics to `~/.claude/code-review/history/forged-review/forged_review_metrics.db`. See README for the metrics schema.
+The orchestrator emits `forged_review.*` events via `emit_queue.py`, records per-run metrics to `~/.claude/code-review/history/forged-review/forged_review_metrics.db`, and prints `[forged-review] …` progress lines to stderr. See README for details.
