@@ -536,6 +536,9 @@ def _print_result_json(
     # Record the resolved outcome on the context so callers (e.g. the
     # finally block in `run()`) can distinguish terminal success from a
     # halt that still has a state file the user will want to --resume.
+    # Contract: this function is called at most once per run — every
+    # caller `return`s its result directly — so the mutation is
+    # write-once in practice even though the field is not frozen.
     ctx.status = status
     needs_merge = (
         status == "clean"
