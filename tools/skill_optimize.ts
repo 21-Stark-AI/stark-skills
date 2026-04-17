@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  collectSharedRefs,
   countWords,
   discoverSkillBundles,
   findRepoRoot,
@@ -14,28 +15,14 @@ import {
   resolveSkillTarget,
   type SkillBundle,
 } from "./skill_lib.ts";
+import {
+  validateProposal,
+  type RewriteAction,
+  type RewriteProposal,
+} from "./skill_validate.ts";
 
 type Mode = "api" | "plan";
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-type RewriteAction = "update" | "delete" | "keep";
-
-type RewriteChange = {
-  path: string;
-  action: RewriteAction;
-  summary: string;
-  content?: string;
-};
-
-type RewriteProposal = {
-  bundle_summary: string;
-  global_notes: string[];
-  changes: RewriteChange[];
-  refs_kept: string[];
-  refs_removed: string[];
-  contradictions_resolved: string[];
-  terminology_normalizations: string[];
-  warnings: string[];
-};
 
 type CliOptions = {
   apply: boolean;
@@ -74,6 +61,11 @@ const repoRoot = findRepoRoot(process.cwd());
 const options = parseArgs(process.argv.slice(2));
 const bundles = discoverSkillBundles(repoRoot);
 const selectedBundles = selectBundles(bundles, options.skillTargets);
+const selectedSkillPaths = new Set(selectedBundles.map((bundle) => bundle.skillPath));
+const sharedRefOwners = new Map<string, string[]>();
+for (const { ref, skills } of collectSharedRefs(bundles)) {
+  sharedRefOwners.set(ref, skills);
+}
 const runSummaries: BundleRunSummary[] = [];
 
 for (const bundle of selectedBundles) {
@@ -137,8 +129,11 @@ async function processBundle(
   const proposalPath = path.join(artifactDir, "proposal.json");
   const proposal = options.reuseProposal
     ? loadExistingProposal(proposalPath)
-    : await requestAndPersistProposal(bundle, bundleFiles, options, artifactDir);
-  validateProposal(bundle, proposal);
+    : await requestProposal(bundle, bundleFiles, options);
+  validateProposal(bundle, proposal, bundleFiles, sharedRefOwners, selectedSkillPaths);
+  if (!options.reuseProposal) {
+    persistProposal(artifactDir, bundle, proposal);
+  }
   const diffPath = path.join(artifactDir, "proposal.diff");
   const diffText = generateProposalDiff(bundleFiles, proposal);
   writeUtf8(diffPath, diffText);
@@ -432,20 +427,17 @@ function generateProposalDiff(
   return chunks.join("\n");
 }
 
-async function requestAndPersistProposal(
-  bundle: SkillBundle,
-  bundleFiles: Array<{ path: string; content: string }>,
-  options: CliOptions,
+function persistProposal(
   artifactDir: string,
-): Promise<RewriteProposal> {
-  const proposal = await requestProposal(bundle, bundleFiles, options);
+  bundle: SkillBundle,
+  proposal: RewriteProposal,
+): void {
   writeUtf8(
     path.join(artifactDir, "proposal.json"),
     JSON.stringify(proposal, null, 2),
   );
   writeUtf8(path.join(artifactDir, "proposal-summary.md"), renderProposalSummary(bundle, proposal));
   writeProposalFiles(artifactDir, proposal);
-  return proposal;
 }
 
 function buildProposalSchema(allowedPaths: string[], refPaths: string[]): Record<string, unknown> {
@@ -637,34 +629,6 @@ function isTerminalStatus(status: string | undefined): boolean {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function validateProposal(bundle: SkillBundle, proposal: RewriteProposal): void {
-  const allowedPaths = new Set([bundle.skillPath, ...bundle.refs]);
-  const seen = new Set<string>();
-  for (const change of proposal.changes) {
-    if (!allowedPaths.has(change.path)) {
-      throw new Error(`Proposal touched unexpected path: ${change.path}`);
-    }
-    if (change.path === bundle.skillPath && change.action === "delete") {
-      throw new Error("Proposal cannot delete the main SKILL.md");
-    }
-    if (seen.has(change.path)) {
-      throw new Error(`Proposal touched the same path twice: ${change.path}`);
-    }
-    seen.add(change.path);
-    if (typeof change.content !== "string") {
-      throw new Error(`Change is missing string content: ${change.path}`);
-    }
-    if (change.action === "update" && change.content.length === 0) {
-      throw new Error(`Updated file is missing content: ${change.path}`);
-    }
-  }
-  for (const ref of proposal.refs_removed) {
-    if (!bundle.refs.includes(ref)) {
-      throw new Error(`refs_removed contains a non-reference path: ${ref}`);
-    }
-  }
 }
 
 function writeProposalFiles(artifactDir: string, proposal: RewriteProposal): void {

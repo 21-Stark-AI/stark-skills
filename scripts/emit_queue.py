@@ -388,6 +388,31 @@ def _log_drain_failure(exc, context):
         pass
 
 
+_V2_EVENTS_COLUMNS = {"project_id", "payload_extra"}
+
+
+def _quarantine_legacy_buffer(buffer_path: Path) -> Path | None:
+    """Rename a legacy (v1) buffer.db aside so a fresh v2 db can take its place.
+
+    Returns the new path on success, None if no events table existed yet.
+    Why: CREATE TABLE IF NOT EXISTS won't alter a pre-v2 table, so inserts
+    against v1 columns would fail forever. Quarantining preserves the raw
+    rows for manual recovery instead of dropping them.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    legacy_path = buffer_path.with_name(f"{buffer_path.stem}.v1-{timestamp}.db")
+    buffer_path.rename(legacy_path)
+    for sidecar in ("-wal", "-shm"):
+        sidecar_path = buffer_path.with_name(buffer_path.name + sidecar)
+        if sidecar_path.exists():
+            sidecar_path.rename(legacy_path.with_name(legacy_path.name + sidecar))
+    _log_drain_failure(
+        RuntimeError("legacy v1 buffer quarantined"),
+        f"moved {buffer_path} -> {legacy_path}",
+    )
+    return legacy_path
+
+
 def _get_buffer_db() -> sqlite3.Connection:
     """Open the buffer database (creating v2 schema if needed).
 
@@ -396,12 +421,22 @@ def _get_buffer_db() -> sqlite3.Connection:
     BUFFER_PATH.parent.mkdir(parents=True, exist_ok=True)
     buffer_path = str(BUFFER_PATH)
 
-    # Buffers that aren't fully v2-compatible (legacy v1 or any partial
-    # schema) cannot accept v2 inserts. Detect via the full probe and
-    # quarantine before opening.
-    if BUFFER_PATH.exists() and not _buffer_is_v2_compatible(buffer_path):
-        _quarantine_legacy_buffer(BUFFER_PATH)
-        _buffer_db_initialized.pop(buffer_path, None)
+    # Legacy v1 buffers (events(payload, project, ...)) cannot accept v2
+    # inserts; detect and quarantine before opening.
+    if BUFFER_PATH.exists():
+        probe = sqlite3.connect(buffer_path, timeout=10)
+        try:
+            cols = {
+                row[1]
+                for row in probe.execute("PRAGMA table_info(events)").fetchall()
+            }
+        except sqlite3.DatabaseError:
+            cols = set()
+        finally:
+            probe.close()
+        if cols and not _V2_EVENTS_COLUMNS.issubset(cols):
+            _quarantine_legacy_buffer(BUFFER_PATH)
+            _buffer_db_initialized.pop(buffer_path, None)
 
     db = sqlite3.connect(buffer_path, timeout=10)
     db.execute("PRAGMA journal_mode=WAL")
@@ -479,8 +514,10 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
     """Flush pending events from queue.db directly into buffer.db (v2 schema).
 
     Resolves user_id/project to deterministic UUIDs and writes via lifted
-    columns + payload_extra. Returns {sent, failed}. Per-row failures are
-    appended to drain-errors.log next to buffer.db.
+    columns + payload_extra. Returns {sent, failed, dead_lettered}.
+    Per-row failures are appended to drain-errors.log next to buffer.db
+    and counted as retries; rows that fail MAX_RETRIES times are moved
+    to dead_letter so poison rows cannot starve the pending window.
     """
     if not isinstance(payload, dict):
         lifted = {field: None for field in _V2_LIFTED_FIELDS}
@@ -601,11 +638,7 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
     # propagating — otherwise the WAL handle leaks and locks later
     # enqueue/drain attempts during recovery.
     queue_db = _get_db()
-    try:
-        buffer_db = _get_buffer_db()
-    except BaseException:
-        queue_db.close()
-        raise
+    buffer_db = _get_buffer_db()
     stats = {"sent": 0, "failed": 0, "dead_lettered": 0}
     deletes: list[int] = []
 
@@ -649,11 +682,26 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
                         event.get("source"),
                     ),
                 )
-                queue_db.execute("DELETE FROM pending WHERE id = ?", (row_id,))
+                deletes.append(row_id)
                 stats["sent"] += 1
             except Exception as exc:
-                stats["failed"] += 1
+                error_text = f"{type(exc).__name__}: {exc}"[:500]
                 _log_drain_failure(exc, f"row_id={row_id} dedupe={dedupe_key}")
+                if retries + 1 >= MAX_RETRIES:
+                    queue_db.execute(
+                        "INSERT INTO dead_letter "
+                        "(dedupe_key, event_json, created_at, retries, last_error) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (dedupe_key, event_json, created_at, retries + 1, error_text),
+                    )
+                    queue_db.execute("DELETE FROM pending WHERE id = ?", (row_id,))
+                    stats["dead_lettered"] += 1
+                else:
+                    queue_db.execute(
+                        "UPDATE pending SET retries = ?, last_error = ? WHERE id = ?",
+                        (retries + 1, error_text, row_id),
+                    )
+                    stats["failed"] += 1
 
         # Commit buffer FIRST — if this fails, the pending rows remain in
         # queue.db and will be retried (INSERT OR IGNORE handles duplicates
