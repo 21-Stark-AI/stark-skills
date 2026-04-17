@@ -574,7 +574,25 @@ def _replay_legacy_rows_into_queue(legacy_path: Path) -> int:
     try:
         for raw in rows:
             row = dict(raw)
+            # Synthesize a stable dedupe_key for legacy rows that didn't have
+            # one so already-delivered history isn't re-delivered with a fresh
+            # `drained:…` key. Prefer the legacy row.id (primary key); fall
+            # back to a content hash over the envelope fields.
             dedupe_key = row.get("dedupe_key")
+            if not dedupe_key:
+                legacy_id = row.get("id")
+                if legacy_id:
+                    dedupe_key = f"legacy:{legacy_id}"
+                else:
+                    import hashlib
+                    envelope = "|".join([
+                        str(row.get("type") or ""),
+                        str(row.get("timestamp") or ""),
+                        str(row.get("user_id") or ""),
+                        str(row.get("project") or row.get("project_id") or ""),
+                    ])
+                    digest = hashlib.sha256(envelope.encode("utf-8")).hexdigest()[:16]
+                    dedupe_key = f"legacy:sha256:{digest}"
             try:
                 # Reconstruct a full payload: merge payload_extra (v2) or
                 # payload (v1) with any lifted-column values present.
