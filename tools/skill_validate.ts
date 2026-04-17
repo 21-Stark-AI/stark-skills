@@ -1,4 +1,30 @@
+import fs from "node:fs";
+
 import type { SkillBundle } from "./skill_lib.ts";
+
+export type ProposalStalenessResult =
+  | { stale: false }
+  | { stale: true; path: string };
+
+/**
+ * Returns stale=true when any bundle file has been modified more recently
+ * than the proposal file. Used to reject --reuse-proposal when source files
+ * have been edited since the proposal was written, which would otherwise
+ * silently clobber newer edits.
+ */
+export function findStaleBundleFile(
+  proposalMtimeMs: number,
+  bundleFilePaths: string[],
+  resolve: (relPath: string) => string,
+): ProposalStalenessResult {
+  for (const relPath of bundleFilePaths) {
+    const abs = resolve(relPath);
+    if (fs.existsSync(abs) && fs.statSync(abs).mtimeMs > proposalMtimeMs) {
+      return { stale: true, path: relPath };
+    }
+  }
+  return { stale: false };
+}
 
 export function extractOutputText(payload: unknown): string {
   if (typeof payload !== "object" || payload === null) {
