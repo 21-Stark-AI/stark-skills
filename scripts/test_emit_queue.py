@@ -627,6 +627,7 @@ class TestDrainToBufferV2:
             emit_queue.enqueue(_make_event(
                 user_id="aryeh",
                 project="/Users/test/git/Evinced/stark-skills",
+                payload={"skill": "stark-team-review", "duration_s": 120, "custom": "x"},
             ))
             stats = emit_queue.drain_to_buffer()
             assert stats["sent"] == 1, f"expected sent=1, got {stats}"
@@ -639,8 +640,86 @@ class TestDrainToBufferV2:
             ).fetchone()
             db.close()
             assert row is not None
-            assert row["payload_extra"] is not None
             assert row["source"] == "skill"
+            # payload_extra must carry the NON-lifted fields (custom stays,
+            # skill/duration_s aren't lifted keys so they stay too).
+            extra = json.loads(row["payload_extra"])
+            assert extra.get("custom") == "x"
+            assert extra.get("skill") == "stark-team-review"
+
+    def test_drain_lifts_v2_analytics_columns_from_payload(self, isolated_queue):
+        """Lifted v2 columns (skill_name, duration_ms, pr_number, severity,
+        agent_name, domain, passed, success, ...) must come out of the payload
+        into their dedicated columns instead of staying NULL."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        payload = {
+            "tool_name": "Read",
+            "skill_name": "stark-team-review",
+            "duration_ms": 4200,
+            "success": True,
+            "pr_number": 314,
+            "repo": "stark-skills",
+            "severity": "high",
+            "agent_name": "codex",
+            "domain": "correctness",
+            "action": "fix",
+            "passed": False,
+            "won": True,
+            "score_value": 0.82,
+            "extra_stuff": "preserved",
+        }
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(_make_event(user_id="aryeh", payload=payload))
+            emit_queue.drain_to_buffer()
+            db = sqlite3.connect(str(buffer_path))
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT tool_name, skill_name, duration_ms, success, "
+                "pr_number, repo, severity, agent_name, domain, action, "
+                "passed, score_value, won, payload_extra FROM events"
+            ).fetchone()
+            db.close()
+        assert row is not None
+        assert row["tool_name"] == "Read"
+        assert row["skill_name"] == "stark-team-review"
+        assert row["duration_ms"] == 4200
+        assert row["success"] == 1
+        assert row["pr_number"] == 314
+        assert row["repo"] == "stark-skills"
+        assert row["severity"] == "high"
+        assert row["agent_name"] == "codex"
+        assert row["domain"] == "correctness"
+        assert row["action"] == "fix"
+        assert row["passed"] == 0
+        assert row["score_value"] == 0.82
+        assert row["won"] == 1
+        # Lifted keys should not also be in payload_extra; unrelated keys must survive.
+        extra = json.loads(row["payload_extra"])
+        assert "skill_name" not in extra
+        assert extra.get("extra_stuff") == "preserved"
+
+    def test_drain_keeps_user_and_project_null_when_missing(self, isolated_queue):
+        """Missing user_id/project must stay NULL on the event — don't coerce
+        into a synthetic "(unknown)" dimension row."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        event = _make_event()
+        event.pop("user_id", None)
+        event.pop("project", None)
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(event)
+            emit_queue.drain_to_buffer()
+            db = sqlite3.connect(str(buffer_path))
+            db.row_factory = sqlite3.Row
+            ev = db.execute("SELECT user_id, project_id FROM events").fetchone()
+            user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            project_count = db.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+            db.close()
+        assert ev["user_id"] is None
+        assert ev["project_id"] is None
+        assert user_count == 0, "no synthetic user row should be created"
+        assert project_count == 0, "no synthetic project row should be created"
 
     def test_drain_resolves_user_id_to_deterministic_uuid(self, isolated_queue):
         """RED #2: same login must map to the same canonical UUID across drains
@@ -891,6 +970,7 @@ class TestDrainToBufferV2:
         _init_v2_buffer(buffer_path)
         with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
             qdb = emit_queue._get_db()
+            # Poison row ordered BEFORE a valid follow-up row.
             qdb.execute(
                 "INSERT INTO pending (dedupe_key, event_json, created_at) "
                 "VALUES (?, ?, ?)",
@@ -898,6 +978,10 @@ class TestDrainToBufferV2:
             )
             qdb.commit()
             qdb.close()
+            emit_queue.enqueue(_make_event(
+                dedupe_key="follow-up", user_id="aryeh",
+                timestamp="2026-04-01T00:00:01Z",
+            ))
 
             for _ in range(emit_queue.MAX_RETRIES):
                 emit_queue.drain_to_buffer()
@@ -908,8 +992,16 @@ class TestDrainToBufferV2:
                 "SELECT COUNT(*) FROM dead_letter WHERE dedupe_key = 'poison'"
             ).fetchone()[0]
             qdb.close()
+            # The valid row behind the poison row must have reached buffer.db,
+            # proving the poison row did not permanently starve the window.
+            bdb = sqlite3.connect(str(buffer_path))
+            delivered = bdb.execute(
+                "SELECT COUNT(*) FROM events WHERE dedupe_key = 'follow-up'"
+            ).fetchone()[0]
+            bdb.close()
         assert pending == 0, "poison row should be removed from pending"
         assert dead == 1, "poison row should be in dead_letter"
+        assert delivered == 1, "follow-up row must progress once poison is dead-lettered"
 
     def test_drain_does_not_lose_events_when_buffer_commit_fails(self, isolated_queue):
         """If buffer_db.commit() raises, queue rows must stay in pending

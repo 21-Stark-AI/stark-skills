@@ -1,10 +1,14 @@
 import { strict as assert } from "node:assert";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import type { SkillBundle } from "./skill_lib.ts";
 import {
   decodeRewriteProposal,
   extractOutputText,
+  findStaleBundleFile,
   validateProposal,
   type RewriteChange,
   type RewriteProposal,
@@ -272,6 +276,56 @@ test("extractOutputText throws when no text is present", () => {
 
 test("extractOutputText throws on non-object input", () => {
   assert.throws(() => extractOutputText(null), /not an object/);
+});
+
+test("findStaleBundleFile flags a file modified after the proposal", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skill-validate-"));
+  try {
+    const proposalMtimeMs = Date.now() - 60_000;
+    const relFile = "skill/alpha/SKILL.md";
+    const abs = path.join(tmp, relFile);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, "# alpha\n");
+    fs.utimesSync(abs, new Date(), new Date());
+    const result = findStaleBundleFile(proposalMtimeMs, [relFile], (rel) => path.join(tmp, rel));
+    assert.equal(result.stale, true);
+    assert.equal((result as { stale: true; path: string }).path, relFile);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("findStaleBundleFile returns not-stale when files are older than proposal", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skill-validate-"));
+  try {
+    const relFile = "skill/alpha/SKILL.md";
+    const abs = path.join(tmp, relFile);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, "# alpha\n");
+    const oldTime = new Date(Date.now() - 120_000);
+    fs.utimesSync(abs, oldTime, oldTime);
+    const proposalMtimeMs = Date.now();
+    const result = findStaleBundleFile(proposalMtimeMs, [relFile], (rel) => path.join(tmp, rel));
+    assert.equal(result.stale, false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("findStaleBundleFile tolerates missing files", () => {
+  const result = findStaleBundleFile(Date.now(), ["does-not-exist.md"], (rel) => `/nope/${rel}`);
+  assert.equal(result.stale, false);
+});
+
+test("extractOutputText ignores malformed output entries", () => {
+  const payload = {
+    output: [
+      null,
+      { content: null },
+      { content: [null, { type: "output_text", text: "ok" }] },
+    ],
+  };
+  assert.equal(extractOutputText(payload), "ok");
 });
 
 test("rejects refs_removed entries that are not in the bundle refs", () => {

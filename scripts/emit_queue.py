@@ -278,11 +278,13 @@ def _normalize_path_to_repo(path):
             if len(segs) >= 2:
                 return segs[1]
             return None
-        # Fallback: exactly `/<base>/<org>/<repo>` (3 segments). Anything
-        # deeper is ambiguous — don't guess.
+        # Fallback: treat `/<base>/<org>/<repo>[/…]` as the checkout layout.
+        # Base is a single "root" segment (home, workspace, runner, etc.)
+        # so paths like `/workspace/acme/payments/subdir` still attribute
+        # correctly. `/single` or `/a/b` are rejected to avoid guessing.
         segs = [s for s in base.split("/") if s]
-        if len(segs) == 3:
-            return segs[-1]
+        if len(segs) >= 3:
+            return segs[2]
         return None
     m = _ORG_REPO_RE.match(path)
     return m.group(1) if m else None
@@ -318,16 +320,19 @@ def _deterministic_project_id(path):
 def _resolve_user(conn, github_login):
     """Upsert the user row and return the deterministic user_id (UUID str).
 
-    Mirrors stark_insights.dimensions.resolve_user but sync.
+    Mirrors stark_insights.dimensions.resolve_user but sync. Returns None
+    when the producer didn't supply a login so the events.user_id column
+    stays NULL rather than joining everyone under a synthetic user row.
     """
-    login = github_login or "(unknown)"
-    uid = str(_deterministic_user_id(login))
+    if not github_login:
+        return None
+    uid = str(_deterministic_user_id(github_login))
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT INTO users (id, github_login, display_name, aliases, created_at)
            VALUES (?, ?, NULL, ?, ?)
            ON CONFLICT(id) DO NOTHING""",
-        (uid, login, json.dumps([]), now),
+        (uid, github_login, json.dumps([]), now),
     )
     return uid
 
@@ -335,10 +340,12 @@ def _resolve_user(conn, github_login):
 def _resolve_project(conn, path):
     """Upsert the project row(s) and return the deterministic project_id.
 
-    Mirrors stark_insights.dimensions.resolve_project but sync.
+    Mirrors stark_insights.dimensions.resolve_project but sync. Returns
+    None when the producer didn't supply a path so the events.project_id
+    column stays NULL rather than grouping under a synthetic project row.
     """
     if not path:
-        path = "(unknown)"
+        return None
     pid = str(_deterministic_project_id(path))
     repo = _normalize_path_to_repo(path)
     wtype = _derive_workspace_type(path)
@@ -547,6 +554,48 @@ def _get_buffer_db() -> sqlite3.Connection:
     return db
 
 
+_V2_LIFTED_FIELDS = (
+    "tool_name", "skill_name", "duration_ms", "success", "error_text",
+    "pr_number", "repo", "severity", "agent_name", "domain", "action",
+    "passed", "score_value", "won", "prompt_text", "prompt_length",
+    "is_correction",
+)
+
+_V2_BOOL_FIELDS = {"success", "passed", "won", "is_correction"}
+
+
+def _coerce_bool(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int):
+        return 1 if value else 0
+    return None
+
+
+def _lift_v2_columns(payload) -> tuple[dict, dict]:
+    """Extract lifted v2 analytics columns from the event payload.
+
+    Returns (lifted, extra) where `lifted` contains exactly the keys
+    declared in _V2_LIFTED_FIELDS (None when missing) and `extra` is
+    the remaining payload (preserved for forensic inspection in
+    payload_extra). Without this, the v2 events table would carry
+    NULL for every lifted column even when the producer set them.
+    """
+    if not isinstance(payload, dict):
+        lifted = {field: None for field in _V2_LIFTED_FIELDS}
+        return lifted, {}
+    lifted = {}
+    for field in _V2_LIFTED_FIELDS:
+        value = payload.get(field)
+        if field in _V2_BOOL_FIELDS:
+            value = _coerce_bool(value)
+        lifted[field] = value
+    extra = {k: v for k, v in payload.items() if k not in _V2_LIFTED_FIELDS}
+    return lifted, extra
+
+
 def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
     """Flush pending events from queue.db directly into buffer.db (v2 schema).
 
@@ -581,12 +630,22 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
                 )
                 user_uuid = _resolve_user(buffer_db, event.get("user_id"))
                 project_id = _resolve_project(buffer_db, event.get("project"))
+                payload = event.get("payload") or {}
+                lifted, extra = _lift_v2_columns(payload)
                 buffer_db.execute(
                     """INSERT OR IGNORE INTO events
                        (id, dedupe_key, session_id,
                         type, timestamp, cli, user_id, project_id,
+                        tool_name, skill_name, duration_ms, success, error_text,
+                        pr_number, repo, severity, agent_name, domain, action,
+                        passed, score_value, won, prompt_text, prompt_length,
+                        is_correction,
                         payload_extra, schema_version, source, synced_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                               ?, ?, ?, ?, ?,
+                               ?, ?, ?, ?, ?, ?,
+                               ?, ?, ?, ?, ?, ?,
+                               ?, ?, ?, NULL)""",
                     (
                         str(_uuid.uuid4()),
                         resolved_dedupe,
@@ -596,7 +655,14 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
                         event.get("cli"),
                         user_uuid,
                         project_id,
-                        json.dumps(event.get("payload", {})),
+                        lifted["tool_name"], lifted["skill_name"],
+                        lifted["duration_ms"], lifted["success"], lifted["error_text"],
+                        lifted["pr_number"], lifted["repo"], lifted["severity"],
+                        lifted["agent_name"], lifted["domain"], lifted["action"],
+                        lifted["passed"], lifted["score_value"], lifted["won"],
+                        lifted["prompt_text"], lifted["prompt_length"],
+                        lifted["is_correction"],
+                        json.dumps(extra),
                         event.get("schema_version", 2),
                         event.get("source"),
                     ),
