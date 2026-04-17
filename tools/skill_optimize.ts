@@ -18,6 +18,7 @@ import {
 import {
   decodeRewriteProposal,
   extractOutputText,
+  findStaleBundleFile,
   validateProposal,
   type RewriteAction,
   type RewriteProposal,
@@ -194,7 +195,9 @@ function parseArgs(argv: string[]): CliOptions {
     apply: false,
     apiTimeoutMs: 180000,
     diff: false,
-    mode: process.env.OPENAI_API_KEY ? "api" : "plan",
+    // Default to plan mode so a bare `skill_optimize` invocation never
+    // uploads bundle contents off-box. API mode is explicit: `--mode api`.
+    mode: "plan",
     model: "gpt-5.4-pro",
     outDir: "artifacts/skill-optimizer",
     pollIntervalMs: 5000,
@@ -251,7 +254,19 @@ function parseArgs(argv: string[]): CliOptions {
       continue;
     }
     if (arg === "--out-dir") {
-      options.outDir = readValue(argv, ++index, "--out-dir");
+      const raw = readValue(argv, ++index, "--out-dir");
+      const resolved = path.resolve(repoRoot, raw);
+      const repoRootReal = fs.realpathSync(repoRoot);
+      const resolvedReal = fs.existsSync(resolved)
+        ? fs.realpathSync(resolved)
+        : resolved;
+      if (
+        !resolvedReal.startsWith(repoRootReal + path.sep) &&
+        resolvedReal !== repoRootReal
+      ) {
+        throw new Error(`--out-dir must stay inside the repo root: ${raw}`);
+      }
+      options.outDir = path.relative(repoRoot, resolvedReal) || ".";
       continue;
     }
     if (arg === "--poll-interval-ms") {
@@ -564,17 +579,17 @@ function loadExistingProposal(
   if (!fs.existsSync(proposalPath)) {
     throw new Error(`No existing proposal found at ${rel(repoRoot, proposalPath)}`);
   }
-  // Reject stale proposals where any source file has been edited since the
-  // proposal was written — applying them would silently clobber newer work.
   const proposalMtime = fs.statSync(proposalPath).mtimeMs;
-  for (const file of bundleFiles) {
-    const abs = path.join(repoRoot, file.path);
-    if (fs.existsSync(abs) && fs.statSync(abs).mtimeMs > proposalMtime) {
-      throw new Error(
-        `Refusing to reuse proposal: ${file.path} was modified after the proposal was generated. ` +
-          "Rerun without --reuse-proposal or regenerate the proposal.",
-      );
-    }
+  const stale = findStaleBundleFile(
+    proposalMtime,
+    bundleFiles.map((f) => f.path),
+    (rel) => path.join(repoRoot, rel),
+  );
+  if (stale.stale) {
+    throw new Error(
+      `Refusing to reuse proposal: ${stale.path} was modified after the proposal was generated. ` +
+        "Rerun without --reuse-proposal or regenerate the proposal.",
+    );
   }
   return decodeRewriteProposal(JSON.parse(fs.readFileSync(proposalPath, "utf8")));
 }
@@ -622,7 +637,19 @@ function openAiHeaders(): Record<string, string> {
   };
 }
 
-async function openaiFetch(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
+type ResponsesPayload = {
+  id: string;
+  status?: string;
+  error?: unknown;
+  output_text?: string;
+  output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+};
+
+async function openaiFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 30000,
+): Promise<ResponsesPayload> {
   const response = await fetch(url, {
     ...init,
     signal: AbortSignal.timeout(timeoutMs),
@@ -630,7 +657,11 @@ async function openaiFetch(url: string, init: RequestInit, timeoutMs = 30000): P
   if (!response.ok) {
     throw new Error(`OpenAI API request failed: ${response.status} ${await response.text()}`);
   }
-  return response.json();
+  const json = (await response.json()) as unknown;
+  if (typeof json !== "object" || json === null || typeof (json as Record<string, unknown>).id !== "string") {
+    throw new Error("Responses API did not return an object with an id");
+  }
+  return json as ResponsesPayload;
 }
 
 function isTerminalStatus(status: string | undefined): boolean {
