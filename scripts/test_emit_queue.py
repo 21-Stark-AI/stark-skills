@@ -530,7 +530,7 @@ class TestDrainToBuffer:
         buffer_path = isolated_queue / "buffer.db"
         with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
             stats = emit_queue.drain_to_buffer()
-            assert stats == {"sent": 0, "failed": 0}
+            assert stats == {"sent": 0, "failed": 0, "dead_lettered": 0}
 
     def test_dedupe_on_second_drain(self, isolated_queue):
         buffer_path = isolated_queue / "buffer.db"
@@ -643,49 +643,197 @@ class TestDrainToBufferV2:
             assert row["source"] == "skill"
 
     def test_drain_resolves_user_id_to_deterministic_uuid(self, isolated_queue):
-        """RED #2: raw github_login must be resolved to UUID before INSERT
-        (Cloud SQL events.user_id is uuid-typed; raw strings poison flush)."""
+        """RED #2: same login must map to the same canonical UUID across drains
+        (Cloud SQL events.user_id is uuid-typed; joins break if the function
+        is swapped for uuid4())."""
         buffer_path = isolated_queue / "buffer.db"
         _init_v2_buffer(buffer_path)
+        expected = str(emit_queue._deterministic_user_id("aryeh"))
         with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
-            emit_queue.enqueue(_make_event(user_id="aryeh"))
-            stats = emit_queue.drain_to_buffer()
-            assert stats["sent"] == 1, f"got {stats}"
+            emit_queue.enqueue(_make_event(user_id="aryeh", dedupe_key="u1"))
+            emit_queue.drain_to_buffer()
+            emit_queue.enqueue(_make_event(user_id="aryeh", dedupe_key="u2"))
+            emit_queue.drain_to_buffer()
 
             db = sqlite3.connect(str(buffer_path))
-            row = db.execute("SELECT user_id FROM events").fetchone()
+            rows = db.execute("SELECT user_id FROM events ORDER BY dedupe_key").fetchall()
             db.close()
-            uid = row[0]
-            assert uid is not None
-            # UUID shape: 36 chars including hyphens (8-4-4-4-12)
-            assert len(uid) == 36 and uid.count("-") == 4, (
-                f"user_id should be UUID, got {uid!r}"
-            )
+            assert len(rows) == 2, rows
+            assert rows[0][0] == expected, rows[0][0]
+            assert rows[1][0] == expected, rows[1][0]
 
     def test_drain_resolves_project_to_deterministic_uuid(self, isolated_queue):
-        """RED #3: raw project path must resolve to project_id UUID +
-        upsert into projects table."""
+        """RED #3: same project path must map to the same project_id across
+        drains and must upsert into the projects dimension table."""
         buffer_path = isolated_queue / "buffer.db"
         _init_v2_buffer(buffer_path)
         path = "/Users/test/git/Evinced/some-repo"
+        expected = str(emit_queue._deterministic_project_id(path))
         with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
-            emit_queue.enqueue(_make_event(project=path))
-            stats = emit_queue.drain_to_buffer()
-            assert stats["sent"] == 1, f"got {stats}"
+            emit_queue.enqueue(_make_event(project=path, dedupe_key="p1"))
+            emit_queue.drain_to_buffer()
+            emit_queue.enqueue(_make_event(project=path, dedupe_key="p2"))
+            emit_queue.drain_to_buffer()
 
             db = sqlite3.connect(str(buffer_path))
             db.row_factory = sqlite3.Row
-            ev_row = db.execute("SELECT project_id FROM events").fetchone()
-            proj_row = db.execute(
-                "SELECT id, path, repo, workspace_type FROM projects WHERE id = ?",
-                (ev_row["project_id"],),
+            ev_rows = db.execute(
+                "SELECT project_id FROM events ORDER BY dedupe_key"
+            ).fetchall()
+            proj_rows = db.execute(
+                "SELECT id, path, repo, workspace_type FROM projects"
+            ).fetchall()
+            db.close()
+            assert [r["project_id"] for r in ev_rows] == [expected, expected]
+            assert len(proj_rows) == 1, proj_rows
+            assert proj_rows[0]["path"] == path
+            assert proj_rows[0]["repo"] == "some-repo"
+            assert proj_rows[0]["workspace_type"] == "main"
+
+    def test_drain_resolves_worktree_project_with_parent(self, isolated_queue):
+        """Worktree paths must be classified as workspace_type='worktree' and
+        populate parent_project_id pointing at the main repo row."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        parent = "/Users/test/git/Evinced/some-repo"
+        worktree = f"{parent}/.worktrees/feat-xyz"
+        expected_parent = str(emit_queue._deterministic_project_id(parent))
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(_make_event(project=worktree))
+            emit_queue.drain_to_buffer()
+
+            db = sqlite3.connect(str(buffer_path))
+            db.row_factory = sqlite3.Row
+            wt_row = db.execute(
+                "SELECT id, path, repo, workspace_type, parent_project_id "
+                "FROM projects WHERE path = ?",
+                (worktree,),
+            ).fetchone()
+            parent_row = db.execute(
+                "SELECT id, path FROM projects WHERE path = ?",
+                (parent,),
             ).fetchone()
             db.close()
-            assert ev_row["project_id"] is not None
-            assert len(ev_row["project_id"]) == 36
-            assert proj_row is not None
-            assert proj_row["path"] == path
-            assert proj_row["repo"] == "some-repo"
+            assert wt_row is not None, "worktree project was not upserted"
+            assert wt_row["workspace_type"] == "worktree"
+            assert wt_row["repo"] == "some-repo"
+            assert wt_row["parent_project_id"] == expected_parent
+            assert parent_row is not None and parent_row["id"] == expected_parent
+
+    def test_drain_quarantines_legacy_v1_buffer(self, isolated_queue):
+        """RED: an existing v1 buffer.db must be moved aside so v2 writes
+        don't fail forever on the legacy events(payload, project, ...) table."""
+        buffer_path = isolated_queue / "buffer.db"
+        # Create legacy v1 schema — mirrors what main branch shipped.
+        legacy = sqlite3.connect(str(buffer_path))
+        legacy.executescript(
+            """
+            CREATE TABLE events (
+                id TEXT PRIMARY KEY,
+                dedupe_key TEXT UNIQUE,
+                session_id TEXT,
+                normalized_session_id TEXT,
+                type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                cli TEXT,
+                user_id TEXT,
+                project TEXT,
+                payload TEXT NOT NULL,
+                schema_version INTEGER DEFAULT 1,
+                source TEXT,
+                synced_at TEXT
+            );
+            """
+        )
+        legacy.execute(
+            "INSERT INTO events (id, dedupe_key, type, timestamp, payload) "
+            "VALUES ('legacy-1', 'legacy-1', 'skill_invocation', '2026-01-01T00:00:00Z', '{}')"
+        )
+        legacy.commit()
+        legacy.close()
+
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            # Reset the initialization cache so the test sees a fresh open.
+            emit_queue._buffer_db_initialized.pop(str(buffer_path), None)
+            emit_queue.enqueue(_make_event(user_id="aryeh"))
+            stats = emit_queue.drain_to_buffer()
+
+        assert stats["sent"] == 1, f"drain should succeed post-quarantine, got {stats}"
+        # Legacy file preserved under a v1-* sibling; new buffer.db has v2 cols.
+        siblings = list(buffer_path.parent.glob("buffer.v1-*.db"))
+        assert siblings, "legacy buffer was not quarantined"
+        new_db = sqlite3.connect(str(buffer_path))
+        cols = {row[1] for row in new_db.execute("PRAGMA table_info(events)")}
+        new_db.close()
+        assert {"project_id", "payload_extra"}.issubset(cols), (
+            f"new buffer.db is missing v2 columns: {cols}"
+        )
+
+    def test_drain_dead_letters_poison_rows(self, isolated_queue):
+        """Poison rows (malformed JSON) must move to dead_letter after MAX_RETRIES
+        so they don't starve newer events in the ORDER BY created_at window."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            qdb = emit_queue._get_db()
+            qdb.execute(
+                "INSERT INTO pending (dedupe_key, event_json, created_at) "
+                "VALUES (?, ?, ?)",
+                ("poison", "{not-json", "2026-04-01T00:00:00Z"),
+            )
+            qdb.commit()
+            qdb.close()
+
+            for _ in range(emit_queue.MAX_RETRIES):
+                emit_queue.drain_to_buffer()
+
+            qdb = emit_queue._get_db()
+            pending = qdb.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+            dead = qdb.execute(
+                "SELECT COUNT(*) FROM dead_letter WHERE dedupe_key = 'poison'"
+            ).fetchone()[0]
+            qdb.close()
+        assert pending == 0, "poison row should be removed from pending"
+        assert dead == 1, "poison row should be in dead_letter"
+
+    def test_drain_does_not_lose_events_when_buffer_commit_fails(self, isolated_queue):
+        """If buffer_db.commit() raises, queue rows must stay in pending
+        (fixed by committing buffer before queue)."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+
+        class _PoisonedBufferConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def commit(self):
+                raise sqlite3.OperationalError("disk full (simulated)")
+
+            def close(self):
+                return self._inner.close()
+
+            def __getattr__(self, item):
+                return getattr(self._inner, item)
+
+        real_get_buffer_db = emit_queue._get_buffer_db
+
+        def poisoned_get_buffer_db():
+            return _PoisonedBufferConn(real_get_buffer_db())
+
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(_make_event(dedupe_key="survive-me"))
+            with patch.object(emit_queue, "_get_buffer_db", poisoned_get_buffer_db):
+                try:
+                    emit_queue.drain_to_buffer()
+                except sqlite3.OperationalError:
+                    pass
+
+            qdb = emit_queue._get_db()
+            pending = qdb.execute(
+                "SELECT COUNT(*) FROM pending WHERE dedupe_key = 'survive-me'"
+            ).fetchone()[0]
+            qdb.close()
+        assert pending == 1, "event must remain pending when buffer commit fails"
 
     def test_drain_logs_failures_instead_of_silently_swallowing(self, isolated_queue):
         """RED #4: when a row fails to insert, the error must be logged
