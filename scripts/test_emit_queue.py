@@ -72,6 +72,20 @@ class TestValidation:
         errors = emit_queue.validate(_make_event(payload="not a dict"))
         assert any("payload" in e for e in errors)
 
+    def test_event_id_when_present_must_be_non_empty_string(self):
+        for bad in (42, "", None, []):
+            event = _make_event(event_id=bad)
+            errors = emit_queue.validate(event)
+            assert any("event_id" in e for e in errors), (bad, errors)
+
+    def test_event_id_absent_is_accepted(self):
+        """event_id is optional — legacy producers that never set it stay
+        valid. make_event() generates one, but validate() must not punish
+        rows queued by older producers that pre-date the uuid4 contract."""
+        event = _make_event()
+        event.pop("event_id", None)
+        assert emit_queue.validate(event) == []
+
 
 # ---------------------------------------------------------------------------
 # Enqueue
@@ -1542,6 +1556,31 @@ class TestDrainToBufferV2:
         )
         assert {"new-1", "legacy-1"}.issubset(dedupe_keys), (
             f"expected both legacy and new rows in v2 buffer, got {dedupe_keys}"
+        )
+
+    def test_quarantine_keeps_buffer_in_place_when_replay_raises(
+        self, isolated_queue
+    ):
+        """If _replay_legacy_rows_into_queue fails, _quarantine_legacy_buffer
+        must propagate the error WITHOUT renaming the original file away —
+        otherwise the operator loses the only copy of their unsynced rows."""
+        buffer_path = isolated_queue / "buffer.db"
+        buffer_path.write_bytes(b"not a sqlite file")
+        legacy_pattern = f"{buffer_path.stem}.v1-"
+
+        def failing_replay(path):
+            raise sqlite3.DatabaseError("file is not a database")
+
+        with patch.object(emit_queue, "_replay_legacy_rows_into_queue", failing_replay):
+            with pytest.raises(sqlite3.DatabaseError):
+                emit_queue._quarantine_legacy_buffer(buffer_path)
+
+        assert buffer_path.exists(), (
+            "original buffer.db must survive a failed replay"
+        )
+        siblings = sorted(isolated_queue.glob(f"{legacy_pattern}*"))
+        assert siblings == [], (
+            f"no .v1-<timestamp>.db should have been created; found {siblings}"
         )
 
     def test_legacy_replay_skips_already_synced_rows(self, isolated_queue):

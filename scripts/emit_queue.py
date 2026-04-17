@@ -97,6 +97,15 @@ def validate(event: dict) -> list[str]:
         errors.append(f"schema_version must be int >= 1, got: {event.get('schema_version')}")
     if not isinstance(event.get("payload"), dict):
         errors.append(f"payload must be a dict, got: {type(event.get('payload')).__name__}")
+    # event_id is optional for back-compat with legacy producers, but when it
+    # IS present it must be a non-empty string. make_event always generates a
+    # uuid4 here, so anything weaker points at a malformed producer path.
+    if "event_id" in event:
+        event_id = event["event_id"]
+        if not isinstance(event_id, str) or not event_id:
+            errors.append(
+                f"event_id must be a non-empty string, got: {event_id!r}"
+            )
     return errors
 
 
