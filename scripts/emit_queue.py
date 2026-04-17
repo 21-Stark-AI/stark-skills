@@ -242,8 +242,116 @@ BUFFER_PATH = Path(os.environ.get("BUFFER_PATH", Path.home() / ".stark-insights"
 _buffer_db_initialized: dict[str, float] = {}
 
 
+# MUST match stark_insights.dimensions.NAMESPACE_INSIGHTS — verified by
+# the canonical schema being asserted in tests/test_emit_queue.py.
+NAMESPACE_INSIGHTS = _uuid.UUID("7a3f1b8e-1b7a-4f9e-8e47-5a3f1b8e7a3f")
+_EVINCED_PATH_RE = re.compile(r"^/Users/[^/]+/git/Evinced/([^/]+)(?:/.*)?$")
+_WORKTREE_MARKERS = ("/.worktrees/", "/.claude/worktrees/")
+
+
+def _normalize_path_to_repo(path):
+    if not path:
+        return None
+    m = _EVINCED_PATH_RE.match(path)
+    return m.group(1) if m else None
+
+
+def _derive_workspace_type(path):
+    if not path:
+        return "external"
+    if any(marker in path for marker in _WORKTREE_MARKERS):
+        return "worktree"
+    if path.startswith("/tmp/") or path.startswith("/private/tmp/"):
+        return "tmp"
+    if _EVINCED_PATH_RE.match(path):
+        return "main"
+    return "external"
+
+
+def _worktree_parent_path(path):
+    for marker in _WORKTREE_MARKERS:
+        if marker in path:
+            return path.split(marker)[0]
+    return None
+
+
+def _deterministic_user_id(login):
+    return _uuid.uuid5(NAMESPACE_INSIGHTS, f"user:{login}")
+
+
+def _deterministic_project_id(path):
+    return _uuid.uuid5(NAMESPACE_INSIGHTS, f"project:{path}")
+
+
+def _resolve_user(conn, github_login):
+    """Upsert the user row and return the deterministic user_id (UUID str).
+
+    Mirrors stark_insights.dimensions.resolve_user but sync.
+    """
+    login = github_login or "(unknown)"
+    uid = str(_deterministic_user_id(login))
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO users (id, github_login, display_name, aliases, created_at)
+           VALUES (?, ?, NULL, ?, ?)
+           ON CONFLICT(id) DO NOTHING""",
+        (uid, login, json.dumps([]), now),
+    )
+    return uid
+
+
+def _resolve_project(conn, path):
+    """Upsert the project row(s) and return the deterministic project_id.
+
+    Mirrors stark_insights.dimensions.resolve_project but sync.
+    """
+    if not path:
+        path = "(unknown)"
+    pid = str(_deterministic_project_id(path))
+    repo = _normalize_path_to_repo(path)
+    wtype = _derive_workspace_type(path)
+
+    parent_id = None
+    if wtype == "worktree":
+        parent_path = _worktree_parent_path(path)
+        if parent_path:
+            parent_id = _resolve_project(conn, parent_path)
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO projects
+               (id, path, repo, workspace_type, parent_project_id,
+                first_seen_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at""",
+        (pid, path, repo, wtype, parent_id, now, now),
+    )
+    return pid
+
+
+def _log_drain_failure(exc, context):
+    """Append a failure record to drain-errors.log next to buffer.db.
+
+    Silent on its own failure — drain must never raise into the caller.
+    """
+    import traceback
+    try:
+        log_path = BUFFER_PATH.parent / "drain-errors.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a") as f:
+            f.write(f"--- {datetime.now(timezone.utc).isoformat()} ---\n")
+            f.write(f"context: {context}\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
+            f.write("\n")
+    except Exception:
+        pass
+
+
 def _get_buffer_db() -> sqlite3.Connection:
-    """Open the buffer database (creating schema if needed)."""
+    """Open the buffer database (creating v2 schema if needed).
+
+    Schema mirrors stark_insights/db/buffer.py — keep in sync.
+    """
     BUFFER_PATH.parent.mkdir(parents=True, exist_ok=True)
     buffer_path = str(BUFFER_PATH)
     db = sqlite3.connect(buffer_path, timeout=10)
@@ -251,19 +359,51 @@ def _get_buffer_db() -> sqlite3.Connection:
     db.execute("PRAGMA busy_timeout=5000")
     if _needs_init(buffer_path, _buffer_db_initialized):
         db.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                github_login TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                aliases TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                repo TEXT,
+                workspace_type TEXT NOT NULL,
+                parent_project_id TEXT REFERENCES projects(id),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY,
-                dedupe_key TEXT UNIQUE,
-                session_id TEXT,
-                normalized_session_id TEXT,
-                type TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL,
                 cli TEXT,
-                user_id TEXT,
-                project TEXT,
-                payload TEXT NOT NULL,
-                schema_version INTEGER DEFAULT 1,
                 source TEXT,
+                schema_version INTEGER NOT NULL DEFAULT 2,
+                session_id TEXT,
+                user_id TEXT REFERENCES users(id),
+                project_id TEXT REFERENCES projects(id),
+                tool_name TEXT,
+                prompt_text TEXT,
+                prompt_length INTEGER,
+                is_correction INTEGER,
+                skill_name TEXT,
+                duration_ms INTEGER,
+                success INTEGER,
+                error_text TEXT,
+                pr_number INTEGER,
+                repo TEXT,
+                severity TEXT,
+                agent_name TEXT,
+                domain TEXT,
+                action TEXT,
+                passed INTEGER,
+                score_value REAL,
+                won INTEGER,
+                payload_extra TEXT NOT NULL DEFAULT '{}',
                 synced_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_events_unsynced_timestamp
@@ -274,9 +414,11 @@ def _get_buffer_db() -> sqlite3.Connection:
 
 
 def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
-    """Flush pending events from queue.db directly into buffer.db (no HTTP).
+    """Flush pending events from queue.db directly into buffer.db (v2 schema).
 
-    Returns {sent, failed}.
+    Resolves user_id/project to deterministic UUIDs and writes via lifted
+    columns + payload_extra. Returns {sent, failed}. Per-row failures are
+    appended to drain-errors.log next to buffer.db.
     """
     queue_db = _get_db()
     buffer_db = _get_buffer_db()
@@ -292,31 +434,41 @@ def drain_to_buffer(batch_size: int = DRAIN_BATCH_SIZE) -> dict:
         for row_id, dedupe_key, event_json, created_at in rows:
             try:
                 event = json.loads(event_json)
+                # v2 events.dedupe_key is NOT NULL — synthesize from event_id
+                # or queue row_id if the producer didn't set one.
+                resolved_dedupe = (
+                    dedupe_key
+                    or event.get("dedupe_key")
+                    or event.get("event_id")
+                    or f"drained:{row_id}:{event.get('type','')}"
+                )
+                user_uuid = _resolve_user(buffer_db, event.get("user_id"))
+                project_id = _resolve_project(buffer_db, event.get("project"))
                 buffer_db.execute(
                     """INSERT OR IGNORE INTO events
-                       (id, dedupe_key, session_id, normalized_session_id,
-                        type, timestamp, cli, user_id, project,
-                        payload, schema_version, source, synced_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                       (id, dedupe_key, session_id,
+                        type, timestamp, cli, user_id, project_id,
+                        payload_extra, schema_version, source, synced_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
                     (
                         str(_uuid.uuid4()),
-                        dedupe_key,
+                        resolved_dedupe,
                         event.get("session_id"),
-                        event.get("normalized_session_id"),
                         event.get("type", ""),
                         event.get("timestamp", ""),
                         event.get("cli"),
-                        event.get("user_id"),
-                        event.get("project"),
+                        user_uuid,
+                        project_id,
                         json.dumps(event.get("payload", {})),
-                        event.get("schema_version", 1),
+                        event.get("schema_version", 2),
                         event.get("source"),
                     ),
                 )
                 queue_db.execute("DELETE FROM pending WHERE id = ?", (row_id,))
                 stats["sent"] += 1
-            except Exception:
+            except Exception as exc:
                 stats["failed"] += 1
+                _log_drain_failure(exc, f"row_id={row_id} dedupe={dedupe_key}")
 
         queue_db.commit()
         buffer_db.commit()

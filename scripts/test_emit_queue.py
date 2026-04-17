@@ -521,7 +521,7 @@ class TestDrainToBuffer:
 
             # Verify events in buffer.db
             db = sqlite3.connect(str(buffer_path))
-            rows = db.execute("SELECT type, payload FROM events WHERE synced_at IS NULL").fetchall()
+            rows = db.execute("SELECT type, payload_extra FROM events WHERE synced_at IS NULL").fetchall()
             db.close()
             assert len(rows) == 2
             assert all(r[0] == "skill_invocation" for r in rows)
@@ -546,6 +546,176 @@ class TestDrainToBuffer:
             count = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
             db.close()
             assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# v2 schema correctness — drain_to_buffer must write to the canonical
+# stark-insights v2 events schema (lifted columns, dimension FKs).
+# These tests catch the silent breakage class triggered by alembic 007.
+# ---------------------------------------------------------------------------
+
+
+# Minimal v2 events + dimension tables matching stark_insights/db/buffer.py.
+# Drift detector test below asserts critical columns present.
+V2_BUFFER_SCHEMA = """
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    github_login TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    repo TEXT,
+    workspace_type TEXT NOT NULL,
+    parent_project_id TEXT REFERENCES projects(id),
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+CREATE TABLE events (
+    id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
+    cli TEXT,
+    source TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 2,
+    session_id TEXT,
+    user_id TEXT REFERENCES users(id),
+    project_id TEXT REFERENCES projects(id),
+    tool_name TEXT,
+    prompt_text TEXT,
+    prompt_length INTEGER,
+    is_correction INTEGER,
+    skill_name TEXT,
+    duration_ms INTEGER,
+    success INTEGER,
+    error_text TEXT,
+    pr_number INTEGER,
+    repo TEXT,
+    severity TEXT,
+    agent_name TEXT,
+    domain TEXT,
+    action TEXT,
+    passed INTEGER,
+    score_value REAL,
+    won INTEGER,
+    payload_extra TEXT NOT NULL DEFAULT '{}',
+    synced_at TEXT
+);
+"""
+
+
+def _init_v2_buffer(buffer_path: Path) -> None:
+    """Create a buffer.db with the canonical v2 stark-insights schema."""
+    db = sqlite3.connect(str(buffer_path))
+    db.executescript(V2_BUFFER_SCHEMA)
+    db.commit()
+    db.close()
+
+
+class TestDrainToBufferV2:
+    """drain_to_buffer must work against the canonical v2 schema."""
+
+    def test_drain_succeeds_against_v2_schema(self, isolated_queue):
+        """RED #1: drain INSERT must use v2 columns (payload_extra, project_id)."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(_make_event(
+                user_id="aryeh",
+                project="/Users/test/git/Evinced/stark-skills",
+            ))
+            stats = emit_queue.drain_to_buffer()
+            assert stats["sent"] == 1, f"expected sent=1, got {stats}"
+            assert stats["failed"] == 0, f"expected failed=0, got {stats}"
+
+            db = sqlite3.connect(str(buffer_path))
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT user_id, project_id, payload_extra, source FROM events"
+            ).fetchone()
+            db.close()
+            assert row is not None
+            assert row["payload_extra"] is not None
+            assert row["source"] == "skill"
+
+    def test_drain_resolves_user_id_to_deterministic_uuid(self, isolated_queue):
+        """RED #2: raw github_login must be resolved to UUID before INSERT
+        (Cloud SQL events.user_id is uuid-typed; raw strings poison flush)."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(_make_event(user_id="aryeh"))
+            stats = emit_queue.drain_to_buffer()
+            assert stats["sent"] == 1, f"got {stats}"
+
+            db = sqlite3.connect(str(buffer_path))
+            row = db.execute("SELECT user_id FROM events").fetchone()
+            db.close()
+            uid = row[0]
+            assert uid is not None
+            # UUID shape: 36 chars including hyphens (8-4-4-4-12)
+            assert len(uid) == 36 and uid.count("-") == 4, (
+                f"user_id should be UUID, got {uid!r}"
+            )
+
+    def test_drain_resolves_project_to_deterministic_uuid(self, isolated_queue):
+        """RED #3: raw project path must resolve to project_id UUID +
+        upsert into projects table."""
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        path = "/Users/test/git/Evinced/some-repo"
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            emit_queue.enqueue(_make_event(project=path))
+            stats = emit_queue.drain_to_buffer()
+            assert stats["sent"] == 1, f"got {stats}"
+
+            db = sqlite3.connect(str(buffer_path))
+            db.row_factory = sqlite3.Row
+            ev_row = db.execute("SELECT project_id FROM events").fetchone()
+            proj_row = db.execute(
+                "SELECT id, path, repo, workspace_type FROM projects WHERE id = ?",
+                (ev_row["project_id"],),
+            ).fetchone()
+            db.close()
+            assert ev_row["project_id"] is not None
+            assert len(ev_row["project_id"]) == 36
+            assert proj_row is not None
+            assert proj_row["path"] == path
+            assert proj_row["repo"] == "some-repo"
+
+    def test_drain_logs_failures_instead_of_silently_swallowing(self, isolated_queue):
+        """RED #4: when a row fails to insert, the error must be logged
+        somewhere observable — not silently incrementing 'failed' counter.
+
+        Forces a json.loads failure by writing malformed JSON directly into
+        queue.db.pending — bypasses enqueue's validation.
+        """
+        buffer_path = isolated_queue / "buffer.db"
+        _init_v2_buffer(buffer_path)
+        log_path = isolated_queue / "drain-errors.log"
+
+        with patch.object(emit_queue, "BUFFER_PATH", buffer_path):
+            # Write malformed JSON directly into pending
+            qdb = emit_queue._get_db()
+            qdb.execute(
+                "INSERT INTO pending (dedupe_key, event_json, created_at) "
+                "VALUES (?, ?, ?)",
+                ("bad-row", "{not valid json", "2026-04-17T00:00:00Z"),
+            )
+            qdb.commit()
+            qdb.close()
+
+            stats = emit_queue.drain_to_buffer()
+            assert stats["failed"] >= 1, f"expected failed>=1, got {stats}"
+            # The failure MUST be logged. Without this, schema drift goes
+            # undetected for weeks (as happened with alembic 007).
+            assert log_path.exists(), (
+                f"drain-errors.log not created at {log_path} — silent swallow regressed"
+            )
 
 
 import sys
