@@ -16,11 +16,6 @@ except ImportError:  # pragma: no cover - backward compat for older installs
     def is_agent_enabled(agent: str) -> bool:
         return True
 
-try:
-    from runtime_env import build_agent_env
-except ImportError:  # pragma: no cover - backward compat for older installs
-    build_agent_env = None
-
 # Default model — pinned to avoid drift when the CLI default changes.
 CLAUDE_MODEL = "claude-opus-4-7"
 
@@ -58,10 +53,13 @@ def make_clean_env() -> dict[str, str]:
 
     Strips any host ANTHROPIC_* vars (to avoid stale keys), then injects
     ANTHROPIC_API_KEY from the value of ANTHROPIC_AGENTS.
-    """
-    if build_agent_env is not None:
-        return build_agent_env("claude", "review")
 
+    This helper does NOT request a GitHub App token — callers that need
+    repo write access (PR review bot identity) must use
+    ``runtime_env.build_agent_env("claude", "review")`` directly. Local
+    Claude callers (forge_fix_loop, optimize_skill_description) use this
+    helper precisely because they don't touch GitHub.
+    """
     env = {
         k: v for k, v in os.environ.items()
         if k not in _STRIPPED_ENV_VARS

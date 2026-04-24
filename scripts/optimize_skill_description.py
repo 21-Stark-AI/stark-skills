@@ -44,6 +44,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).parent))
+from claude_utils import make_clean_env  # noqa: E402
+
 # The skill-creator plugin's run_eval module — we import it by path so
 # we don't have to depend on the plugin being on PYTHONPATH.
 _SKILL_CREATOR_PLUGIN_PATH = (
@@ -130,6 +133,7 @@ def _run_eval(
         capture_output=True,
         text=True,
         timeout=max(timeout * 2, 300),
+        env=make_clean_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -170,6 +174,7 @@ def _propose_improvement(
     cmd = ["claude", "-p", prompt, "--model", model]
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
+        env=make_clean_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(

@@ -115,14 +115,38 @@ def try_gemini_api_key_fallback(
 ) -> bool:
     """Attempt Gemini API key fallback after a Vertex AI auth error.
 
-    Mutates *run_kwargs* in place to inject GEMINI_API_KEY.
+    Mutates *run_kwargs* in place to inject GEMINI_API_KEY and switch the
+    isolated home + env off Vertex auth. Without disabling Vertex the retry
+    would re-use the same broken auth path and fail identically.
+
     Returns True if fallback was applied (caller should retry), False otherwise.
     """
     api_key = get_gemini_api_key()
     if not api_key or "env" not in run_kwargs:
         return False
     log_api_key_fallback("gemini", context_label, stderr_snippet[:120])
-    run_kwargs["env"]["GEMINI_API_KEY"] = api_key
+    env = run_kwargs["env"]
+    env["GEMINI_API_KEY"] = api_key
+    env["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
+    for vertex_var in ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+                       "GOOGLE_APPLICATION_CREDENTIALS"):
+        env.pop(vertex_var, None)
+    home = env.get("GEMINI_CLI_HOME")
+    if home:
+        settings_path = os.path.join(home, ".gemini", "settings.json")
+        try:
+            existing: dict = {}
+            if os.path.exists(settings_path):
+                with open(settings_path) as f:
+                    existing = json.load(f)
+            auth = existing.setdefault("security", {}).setdefault("auth", {})
+            auth["selectedType"] = "gemini-api-key"
+            auth.pop("vertexAi", None)
+            existing["selectedAuthType"] = "gemini-api-key"
+            with open(settings_path, "w") as f:
+                json.dump(existing, f)
+        except (OSError, json.JSONDecodeError):
+            pass
     return True
 
 
