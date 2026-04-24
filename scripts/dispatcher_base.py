@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - available at runtime
 try:
     from gemini_utils import GEMINI_MODEL
 except ImportError:  # pragma: no cover - available at runtime
-    GEMINI_MODEL = "gemini-2.5-pro"
+    GEMINI_MODEL = "gemini-3.1-pro-preview"
 
 try:
     from config_loader import get_model_id as _config_get_model_id, is_agent_enabled

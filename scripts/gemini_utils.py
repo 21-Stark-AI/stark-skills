@@ -100,7 +100,20 @@ def log_api_key_fallback(agent: str, task: str, reason: str) -> None:
 
 
 # Error patterns that indicate Vertex AI auth failure (retryable with API key).
-GEMINI_AUTH_ERROR_PATTERNS = ("ModelNotFound", "403", "PERMISSION_DENIED")
+# Includes ADC failure modes ("DefaultCredentialsError", "RefreshError",
+# "UNAUTHENTICATED", "401") that surface when ADC is missing/expired —
+# the original "403/PERMISSION_DENIED/ModelNotFound" set only caught
+# project-permission errors and missed auth-bootstrap failures.
+GEMINI_AUTH_ERROR_PATTERNS = (
+    "ModelNotFound",
+    "403",
+    "PERMISSION_DENIED",
+    "401",
+    "UNAUTHENTICATED",
+    "DefaultCredentialsError",
+    "RefreshError",
+    "Could not automatically determine credentials",
+)
 
 
 def should_fallback_to_api_key(stderr: str) -> bool:

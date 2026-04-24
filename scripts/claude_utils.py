@@ -49,24 +49,28 @@ def _get_api_key() -> str:
 
 
 def make_clean_env() -> dict[str, str]:
-    """Return a copy of os.environ with Anthropic API key for headless dispatch.
+    """Return an allowlisted env with Anthropic API key for headless dispatch.
 
-    Strips any host ANTHROPIC_* vars (to avoid stale keys), then injects
-    ANTHROPIC_API_KEY from the value of ANTHROPIC_AGENTS.
+    Delegates to ``runtime_env.build_agent_env("claude", "local")`` so the
+    subprocess sees only the allowlisted vars (no leaked host secrets) and
+    ANTHROPIC_API_KEY sourced from ANTHROPIC_AGENTS. The "local" operation
+    is in ``_USER_AUTH_OPS`` so no GitHub App token is fetched — used by
+    callers that don't touch GitHub (forge_fix_loop, optimize_skill_description).
 
-    This helper does NOT request a GitHub App token — callers that need
-    repo write access (PR review bot identity) must use
-    ``runtime_env.build_agent_env("claude", "review")`` directly. Local
-    Claude callers (forge_fix_loop, optimize_skill_description) use this
-    helper precisely because they don't touch GitHub.
+    The hand-rolled fallback below preserves behavior when ``runtime_env``
+    is unavailable (older installs that haven't been fully updated).
     """
-    env = {
-        k: v for k, v in os.environ.items()
-        if k not in _STRIPPED_ENV_VARS
-        and not (k.startswith(_ANTHROPIC_PREFIX) and k not in _ANTHROPIC_ALLOWED)
-    }
-    env["ANTHROPIC_API_KEY"] = _get_api_key()
-    return env
+    try:
+        from runtime_env import build_agent_env  # noqa: PLC0415
+    except ImportError:
+        env = {
+            k: v for k, v in os.environ.items()
+            if k not in _STRIPPED_ENV_VARS
+            and not (k.startswith(_ANTHROPIC_PREFIX) and k not in _ANTHROPIC_ALLOWED)
+        }
+        env["ANTHROPIC_API_KEY"] = _get_api_key()
+        return env
+    return build_agent_env("claude", "local")
 
 
 def build_claude_cmd(
