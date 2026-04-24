@@ -22,33 +22,42 @@ except ImportError:  # pragma: no cover - backward compat for older installs
     build_agent_env = None
 
 # Default model — pinned to avoid drift when the CLI default changes.
-CLAUDE_MODEL = "claude-opus-4-6"
+CLAUDE_MODEL = "claude-opus-4-7"
 
 
 class AgentDisabledError(RuntimeError):
     pass
 
-# Vertex AI config for headless sub-agent dispatch.
-# Bypasses OAuth login — uses ADC (gcloud auth application-default login).
-# Global region required for latest model versions (opus-4-6, sonnet-4-6).
-_VERTEX_ENV = {
-    "CLAUDE_CODE_USE_VERTEX": "1",
-    "ANTHROPIC_VERTEX_PROJECT_ID": "infra-ai-platform",
-    "CLOUD_ML_REGION": "global",
-}
+# Source env var holding the Anthropic API key for headless dispatch.
+# The value is injected into subprocesses as ANTHROPIC_API_KEY.
+_API_KEY_SOURCE_VAR = "ANTHROPIC_AGENTS"
 
-# Env vars that must NOT leak into CLI subprocesses.
-_STRIPPED_ENV_VARS = {"ANTHROPIC_API_KEY"}
+# Env vars from the host that must NOT leak into CLI subprocesses.
+# ANTHROPIC_API_KEY: a stale user key would override the injected one.
+# ANTHROPIC_AGENTS: internal only; subprocess sees it as ANTHROPIC_API_KEY.
+_STRIPPED_ENV_VARS = {"ANTHROPIC_API_KEY", _API_KEY_SOURCE_VAR}
 _ANTHROPIC_PREFIX = "ANTHROPIC_"
-_ANTHROPIC_ALLOWED = {"ANTHROPIC_CODE_CLI", "ANTHROPIC_VERTEX_PROJECT_ID"}
+_ANTHROPIC_ALLOWED = {"ANTHROPIC_CODE_CLI"}
+
+
+def _get_api_key() -> str:
+    """Read the Anthropic API key from the configured source env var."""
+    key = os.environ.get(_API_KEY_SOURCE_VAR)
+    if not key:
+        raise AgentDisabledError(
+            f"{_API_KEY_SOURCE_VAR} not set in environment. "
+            "Source your Anthropic key file (e.g. "
+            "`source \"$HOME/git/Private/API Keys/.anthropic.key\"`) "
+            "before running Claude sub-agents."
+        )
+    return key
 
 
 def make_clean_env() -> dict[str, str]:
-    """Return a copy of os.environ with Vertex AI config for headless dispatch.
+    """Return a copy of os.environ with Anthropic API key for headless dispatch.
 
-    Strips ANTHROPIC_API_KEY and project-specific Anthropic vars, then
-    injects Vertex AI env vars so sub-agents authenticate via ADC
-    instead of requiring interactive OAuth login.
+    Strips any host ANTHROPIC_* vars (to avoid stale keys), then injects
+    ANTHROPIC_API_KEY from the value of ANTHROPIC_AGENTS.
     """
     if build_agent_env is not None:
         return build_agent_env("claude", "review")
@@ -58,7 +67,7 @@ def make_clean_env() -> dict[str, str]:
         if k not in _STRIPPED_ENV_VARS
         and not (k.startswith(_ANTHROPIC_PREFIX) and k not in _ANTHROPIC_ALLOWED)
     }
-    env.update(_VERTEX_ENV)
+    env["ANTHROPIC_API_KEY"] = _get_api_key()
     return env
 
 

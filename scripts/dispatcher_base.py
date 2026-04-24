@@ -25,7 +25,7 @@ from typing import Any
 try:
     from claude_utils import CLAUDE_MODEL
 except ImportError:  # pragma: no cover - available at runtime
-    CLAUDE_MODEL = "claude-opus-4-6"
+    CLAUDE_MODEL = "claude-opus-4-7"
 
 try:
     from codex_utils import CODEX_MODEL
