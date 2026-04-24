@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.6.2] - 2026-04-24
+
+### Added
+- **stark-red-team v1** — architect committee layer for forge pipelines (#310)
+- **stark-forged-review** — multi-agent leader + second-opinion PR review skill (#309)
+- forged-review: telemetry for auto-vs-explicit invocation source
+- forged-review: truncate oversized diffs with head+tail window
+- forged-review: cache triage decisions by diff hash
+- scripts: Vertex-compatible skill description optimizer + skill optimizer tooling
+
+### Fixed
+- forged-review: preserve worktree on `awaiting_fixes` so `--resume` works (#311)
+- forged-review: stderr heartbeat keeps parent stream alive during long rounds
+- forge: real pipeline dispatch, working fix-loops, classifier word boundaries
+- drain_to_buffer v2 schema + surface silent failures (#314)
+- honor global red-team locked config
+- clean installer and release skill drift
+- reasoning-effort validation, reuse-proposal key gate, schema/runtime alignment, delete delta
+- mode validation, fence escaping, timeout budget, status docs
+- drain_to_buffer/red-team/skill-optimizer review rounds 2–33: envelope types, replay fault tolerance, auth redaction, race guards, recovery preservation, retry fixes, loopback and symlink guards, IPv6 loopback, dead-letter split, dim preservation on replay, permanent/transient split, UUID pass-through, CI-root allowlist, atomic staging, strict v2 probe, and related hardening
+
+### Changed
+- chore: un-deprecate `/stark-review`; fix stark-codex installation id (#316)
+- Switch Claude to Anthropic API, Gemini to ADC+Vertex; bump to opus-4-7 (#315)
+- docs: align stark-review skill with runtime
+- docs: skill-optimizer — API mode requires explicit `--skill` target
+- docs(stark-forged-review): trim SKILL.md to 71 lines; fix v1 drift in Observability/state/delta sections
+- docs(retros): brainstorm-to-merge session pattern retrospective
+- install: relax disable-model-invocation validation to warning
+- chore: allow stark-data-core PR workflow; merge pending repo cleanup updates
+
 ## [v0.6.1] - 2026-04-11
 
 ### Added
