@@ -50,16 +50,25 @@ Check the repo root for `AGENTS.md` and `CLAUDE.md` and report one of:
 - **(D)** Both exist; `CLAUDE.md` is a symlink to `AGENTS.md`. (No action needed.)
 - **(E)** Both exist; `CLAUDE.md` is **not** a symlink. Diff the two and report whether content is equivalent or divergent.
 
-If the user invoked the skill in **review mode**, stop here after reporting state — do not mutate any files.
+In **review mode**, record the detected state and continue through the analysis phases. Skip Phase 0b — review mode never mutates files.
 
-### Phase 0b: Apply Migration (only when authoring or refactoring)
+### Phase 0b: Apply Migration (authoring or refactor only)
 
-When the user has explicitly asked to create or refactor (not review-only), and after confirming, execute the migration matching the detected state:
+When the user has explicitly asked to create or refactor (not review-only), and after confirming, execute the migration matching the detected state. Each step must be fail-closed — if any sub-step fails, stop and leave the prior file state intact:
 
 1. **(A)** Offer to create `AGENTS.md` and symlink `CLAUDE.md` to it.
 2. **(B)** Create the symlink: `ln -s AGENTS.md CLAUDE.md`.
-3. **(C)** Rename and symlink: `mv CLAUDE.md AGENTS.md && ln -s AGENTS.md CLAUDE.md`.
-4. **(E)** If the two files are **equivalent**, replace `CLAUDE.md` with the symlink. If they are **divergent** (host-specific install paths, command names, or audience-specific content), stop and surface the diff — do not silently merge. Divergence is intentional in some repos (e.g., when Claude-specific tooling reads `CLAUDE.md` directly), and merging would collapse working host-specific content.
+3. **(C)** Migrate atomically: copy `CLAUDE.md` to `AGENTS.md.tmp`, create the symlink at `CLAUDE.md.tmp`, then swap both into place. Concretely:
+
+   ```bash
+   cp CLAUDE.md AGENTS.md.tmp
+   ln -s AGENTS.md CLAUDE.md.tmp || { rm -f AGENTS.md.tmp CLAUDE.md.tmp; exit 1; }
+   mv AGENTS.md.tmp AGENTS.md
+   mv CLAUDE.md.tmp CLAUDE.md
+   ```
+
+   This avoids the half-converted state where the rename succeeds but the symlink doesn't.
+4. **(E)** If the two files are **equivalent**, replace `CLAUDE.md` with the symlink. If they are **divergent** (host-specific install paths, command names, or audience-specific content), stop and surface the diff — do not silently merge. Divergence is intentional in some repos (e.g., when Claude-specific tooling reads `CLAUDE.md` directly), and merging would collapse working host-specific content. See [Cross-Tool Compatibility](#cross-tool-compatibility) for when keeping divergent files is the right call.
 
 ### Phase 1: Assess Current State
 
@@ -209,13 +218,15 @@ Before adding anything to `AGENTS.md`:
 
 `AGENTS.md` is an open standard supported by 20+ tools including GitHub Copilot (Coding Agent), Cursor, Codex (OpenAI), Gemini CLI (Google), Windsurf, Devin (Cognition), Zed, Warp, VS Code, Aider, goose, and RooCode.
 
-**Claude Code** uses `CLAUDE.md`. `AGENTS.md` is always the source of truth. `CLAUDE.md` must always be a symlink to it:
+**Claude Code** uses `CLAUDE.md`. The default ownership model is: `AGENTS.md` is the source of truth, and `CLAUDE.md` is a symlink to it:
 
 ```bash
 ln -s AGENTS.md CLAUDE.md
 ```
 
-Never create a standalone `CLAUDE.md`. Never put content in `CLAUDE.md` that isn't in `AGENTS.md`.
+In this default mode, don't put content in `CLAUDE.md` that isn't in `AGENTS.md` — the symlink would shadow it anyway.
+
+**Divergent mode (exception):** some repos intentionally keep `CLAUDE.md` as a standalone file with host-specific content (install paths, Claude-specific tooling references, audience-specific framing). State (E) in Phase 0 covers this: if a diff shows the two files have meaningfully divergent content, leave them divergent rather than collapsing into a symlink. Treat divergent mode as opt-in, not the default.
 
 ## Resources
 
