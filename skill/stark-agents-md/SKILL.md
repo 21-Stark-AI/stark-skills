@@ -60,12 +60,12 @@ When the user has explicitly asked to create or refactor (not review-only), and 
 |-------|--------|
 | (A) Neither exists | Create `AGENTS.md` from Phase 1 answers, then `ln -s AGENTS.md CLAUDE.md` |
 | (B) Only `AGENTS.md` | `ln -s AGENTS.md CLAUDE.md` |
-| (C) Only `CLAUDE.md` | Backup-and-rollback swap into `AGENTS.md` + symlink (see migration.md) |
+| (C) Only `CLAUDE.md` | Backup-and-rollback swap into `AGENTS.md` + symlink (see references/migration.md) |
 | (D) `CLAUDE.md` is symlink | No action |
-| (E) equivalent | Backup-and-rollback replace `CLAUDE.md` with symlink (see migration.md) |
+| (E) equivalent | Backup-and-rollback replace `CLAUDE.md` with symlink (see references/migration.md) |
 | (E) divergent | Stop and surface the diff — do not merge. See [Cross-Tool Compatibility](#cross-tool-compatibility). |
 
-For the exact shell recipes, see [`migration.md`](./migration.md).
+For the exact shell recipes, see [`references/migration.md`](./references/migration.md).
 
 ### Phase 1: Assess Current State
 
