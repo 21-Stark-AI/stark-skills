@@ -40,14 +40,26 @@ Humans can be skeptical of outdated docs. Agents can't — they trust what they 
 
 ## Process
 
-### Phase 0: Detect Missing Files
+### Phase 0: Detect File State
 
-Check the repo root for `AGENTS.md` and `CLAUDE.md`:
+Check the repo root for `AGENTS.md` and `CLAUDE.md` and report one of:
 
-1. If **neither** exists, offer to create `AGENTS.md` and symlink `CLAUDE.md` to it.
-2. If `AGENTS.md` exists but `CLAUDE.md` does not, create the symlink: `ln -s AGENTS.md CLAUDE.md`.
-3. If `CLAUDE.md` exists but `AGENTS.md` does not, rename and symlink: `mv CLAUDE.md AGENTS.md && ln -s AGENTS.md CLAUDE.md`.
-4. If both exist but `CLAUDE.md` is not a symlink to `AGENTS.md`, merge any unique content from `CLAUDE.md` into `AGENTS.md`, remove standalone `CLAUDE.md`, and create the symlink.
+- **(A)** Neither exists.
+- **(B)** Only `AGENTS.md` exists (no `CLAUDE.md`).
+- **(C)** Only `CLAUDE.md` exists (no `AGENTS.md`).
+- **(D)** Both exist; `CLAUDE.md` is a symlink to `AGENTS.md`. (No action needed.)
+- **(E)** Both exist; `CLAUDE.md` is **not** a symlink. Diff the two and report whether content is equivalent or divergent.
+
+If the user invoked the skill in **review mode**, stop here after reporting state — do not mutate any files.
+
+### Phase 0b: Apply Migration (only when authoring or refactoring)
+
+When the user has explicitly asked to create or refactor (not review-only), and after confirming, execute the migration matching the detected state:
+
+1. **(A)** Offer to create `AGENTS.md` and symlink `CLAUDE.md` to it.
+2. **(B)** Create the symlink: `ln -s AGENTS.md CLAUDE.md`.
+3. **(C)** Rename and symlink: `mv CLAUDE.md AGENTS.md && ln -s AGENTS.md CLAUDE.md`.
+4. **(E)** If the two files are **equivalent**, replace `CLAUDE.md` with the symlink. If they are **divergent** (host-specific install paths, command names, or audience-specific content), stop and surface the diff — do not silently merge. Divergence is intentional in some repos (e.g., when Claude-specific tooling reads `CLAUDE.md` directly), and merging would collapse working host-specific content.
 
 ### Phase 1: Assess Current State
 
@@ -106,7 +118,11 @@ Each file can reference the next — agents walk the tree on demand, only loadin
 
 ### Phase 5: Handle Monorepos
 
-Use nested `AGENTS.md` files.
+Use nested `AGENTS.md` files. For each one, also create a sibling `CLAUDE.md` symlink so Claude-oriented tooling that walks `CLAUDE.md` hierarchically still finds package-level rules:
+
+```bash
+(cd packages/api && ln -s AGENTS.md CLAUDE.md)
+```
 
 **Root `AGENTS.md`:**
 
@@ -123,7 +139,14 @@ GraphQL API using Prisma. See docs/API_CONVENTIONS.md for patterns.
 
 ### Phase 6: Output
 
-Provide:
+**Review mode** — report only, no file mutations:
+
+1. Detected file state from Phase 0 (A–E)
+2. Findings: bloat, contradictions, anti-patterns, stale paths
+3. Suggested removals and relocations with reasoning
+4. Recommendation on the `CLAUDE.md` symlink (or note that current state is intentional)
+
+**Authoring or refactor mode** — provide:
 
 1. The new/refactored `AGENTS.md` content
 2. Any new files created for progressive disclosure
