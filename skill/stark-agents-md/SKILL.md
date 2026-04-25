@@ -58,32 +58,42 @@ When the user has explicitly asked to create or refactor (not review-only), and 
 
 1. **(A)** Offer to create `AGENTS.md` and symlink `CLAUDE.md` to it.
 2. **(B)** Create the symlink: `ln -s AGENTS.md CLAUDE.md`.
-3. **(C)** Migrate with rollback: back up `CLAUDE.md`, stage `AGENTS.md` and the symlink, and on any failure undo every step that already ran so the repo never lands half-converted. Concretely:
+3. **(C)** Migrate with rollback: refuse to start if any reserved path is taken, back up `CLAUDE.md`, stage `AGENTS.md` and the symlink, and on any failure undo every step that already ran so the repo never lands half-converted. Phase 0 already established that `AGENTS.md` does not exist in state (C), so any `AGENTS.md` present at trap time was created by this run and is safe to remove. Concretely:
 
    ```bash
    set -e
+   for f in AGENTS.md AGENTS.md.tmp CLAUDE.md.tmp CLAUDE.md.bak; do
+     if [ -e "$f" ] || [ -L "$f" ]; then
+       echo "Refusing to migrate: $f already exists" >&2
+       exit 1
+     fi
+   done
    cp -p CLAUDE.md CLAUDE.md.bak
-   agents_promoted=0
    trap '
      rm -f AGENTS.md.tmp CLAUDE.md.tmp
-     [ "$agents_promoted" = 1 ] && rm -f AGENTS.md
+     [ -e AGENTS.md ] && rm -f AGENTS.md
      [ -e CLAUDE.md.bak ] && mv -f CLAUDE.md.bak CLAUDE.md
      exit 1
    ' ERR INT
    cp CLAUDE.md AGENTS.md.tmp
    ln -s AGENTS.md CLAUDE.md.tmp
    mv AGENTS.md.tmp AGENTS.md
-   agents_promoted=1
    mv -f CLAUDE.md.tmp CLAUDE.md      # overwrites the regular file with the symlink
    trap - ERR INT
    rm -f CLAUDE.md.bak
    ```
 
-   If any step fails, the trap removes the staged temp files, deletes `AGENTS.md` if it was already promoted, and restores the original `CLAUDE.md` from the backup, leaving the repo in its pre-migration state.
-4. **(E) equivalent:** swap `CLAUDE.md` for a symlink with the same backup-and-restore pattern as (C):
+   If any step (or an interrupt) fires, the trap removes the staged temp files, deletes `AGENTS.md` if it was already promoted, and restores the original `CLAUDE.md` from the backup, leaving the repo in its pre-migration state.
+4. **(E) equivalent:** swap `CLAUDE.md` for a symlink with the same preflight + backup-and-restore pattern as (C):
 
    ```bash
    set -e
+   for f in CLAUDE.md.tmp CLAUDE.md.bak; do
+     if [ -e "$f" ] || [ -L "$f" ]; then
+       echo "Refusing to migrate: $f already exists" >&2
+       exit 1
+     fi
+   done
    cp -p CLAUDE.md CLAUDE.md.bak
    trap 'rm -f CLAUDE.md.tmp; [ -e CLAUDE.md.bak ] && mv -f CLAUDE.md.bak CLAUDE.md; exit 1' ERR INT
    ln -s AGENTS.md CLAUDE.md.tmp
