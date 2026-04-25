@@ -58,21 +58,28 @@ When the user has explicitly asked to create or refactor (not review-only), and 
 
 1. **(A)** Offer to create `AGENTS.md` and symlink `CLAUDE.md` to it.
 2. **(B)** Create the symlink: `ln -s AGENTS.md CLAUDE.md`.
-3. **(C)** Migrate with rollback: back up `CLAUDE.md`, stage `AGENTS.md` and the symlink, and on any failure restore the backup so the repo never lands half-converted. Concretely:
+3. **(C)** Migrate with rollback: back up `CLAUDE.md`, stage `AGENTS.md` and the symlink, and on any failure undo every step that already ran so the repo never lands half-converted. Concretely:
 
    ```bash
    set -e
    cp -p CLAUDE.md CLAUDE.md.bak
-   trap 'rm -f AGENTS.md.tmp CLAUDE.md.tmp; [ -e CLAUDE.md.bak ] && mv -f CLAUDE.md.bak CLAUDE.md; exit 1' ERR INT
+   agents_promoted=0
+   trap '
+     rm -f AGENTS.md.tmp CLAUDE.md.tmp
+     [ "$agents_promoted" = 1 ] && rm -f AGENTS.md
+     [ -e CLAUDE.md.bak ] && mv -f CLAUDE.md.bak CLAUDE.md
+     exit 1
+   ' ERR INT
    cp CLAUDE.md AGENTS.md.tmp
    ln -s AGENTS.md CLAUDE.md.tmp
    mv AGENTS.md.tmp AGENTS.md
+   agents_promoted=1
    mv -f CLAUDE.md.tmp CLAUDE.md      # overwrites the regular file with the symlink
    trap - ERR INT
    rm -f CLAUDE.md.bak
    ```
 
-   If any step fails, the trap removes the staged temp files and restores the original `CLAUDE.md` from the backup, leaving the repo in its pre-migration state.
+   If any step fails, the trap removes the staged temp files, deletes `AGENTS.md` if it was already promoted, and restores the original `CLAUDE.md` from the backup, leaving the repo in its pre-migration state.
 4. **(E) equivalent:** swap `CLAUDE.md` for a symlink with the same backup-and-restore pattern as (C):
 
    ```bash
@@ -91,10 +98,9 @@ When the user has explicitly asked to create or refactor (not review-only), and 
 
 Pick the branch matching the state from Phase 0:
 
-**(A) Neither file exists — new repo:**
-- Ask about the project's purpose (one sentence)
-- Ask about package manager (if not npm)
-- Ask about non-standard build commands
+**(A) Neither file exists:**
+- *Authoring or refactor mode (new repo):* Ask about the project's purpose (one sentence), the package manager (if not npm), and any non-standard build commands.
+- *Review mode:* Skip the rest of Phase 1 — there is nothing to assess. Report "no `AGENTS.md` or `CLAUDE.md` exists" and continue to Phase 6 with that recommendation.
 
 **(B) Only `AGENTS.md` / (D) `CLAUDE.md` is a symlink — existing authoritative file:**
 - Read `AGENTS.md`
