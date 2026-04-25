@@ -248,15 +248,26 @@ def resolve_workflow_path(skill_root: Path) -> Path:
     """Return the workflow markdown path for a skill directory.
 
     Defaults to ``<skill_root>/SKILL.md``. If SKILL.md frontmatter contains
-    ``workflow_path:``, the value is resolved relative to ``skill_root`` and
-    must stay inside it; absolute paths or ``..`` segments that escape the
-    skill directory are rejected and we fall back to ``SKILL.md``.
+    ``workflow_path:``, the value must be a relative path that stays inside
+    ``skill_root``; absolute paths and ``..`` segments that escape the skill
+    directory are rejected and we fall back to ``SKILL.md``.
+
+    Returns ``<skill_root>/SKILL.md`` for any failure mode (missing file,
+    unreadable bytes, malformed frontmatter) so callers can rely on a
+    deterministic Path return without exception handling.
     """
     skill_md = skill_root / 'SKILL.md'
     if not skill_md.exists():
         return skill_md
-    relpath = _read_workflow_path_frontmatter(skill_md)
+    try:
+        relpath = _read_workflow_path_frontmatter(skill_md)
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning('Failed to read frontmatter from %s: %s', skill_md, exc)
+        return skill_md
     if relpath is None:
+        return skill_md
+    if Path(relpath).is_absolute():
+        logger.warning('workflow_path %r is absolute; using SKILL.md', relpath)
         return skill_md
     candidate = (skill_root / relpath).resolve()
     try:

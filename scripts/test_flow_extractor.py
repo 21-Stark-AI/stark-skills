@@ -83,6 +83,19 @@ def test_resolve_workflow_path_rejects_traversal(tmp_path):
     assert resolved == tmp_path / 'skill_a' / 'SKILL.md'
 
 
+def test_resolve_workflow_path_rejects_absolute_in_root(tmp_path):
+    """Absolute paths are rejected even if they happen to point inside skill_root."""
+    skill_dir = tmp_path / 'skill_d'
+    inside = skill_dir / 'references' / 'workflow.md'
+    _make_fixture_skill(
+        skill_dir,
+        frontmatter_extra=f'workflow_path: {inside}\n',
+        workflow_body='## Phase 1\n\nbody\n',
+    )
+    resolved = resolve_workflow_path(skill_dir)
+    assert resolved == skill_dir / 'SKILL.md'
+
+
 def test_extract_skill_workflow_returns_none_for_directory_target(tmp_path):
     """`workflow_path` pointing at a directory yields None, not a crash."""
     _make_fixture_skill(tmp_path / 'skill_b', frontmatter_extra='workflow_path: references\n')
