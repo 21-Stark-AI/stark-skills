@@ -248,7 +248,9 @@ def resolve_workflow_path(skill_root: Path) -> Path:
     """Return the workflow markdown path for a skill directory.
 
     Defaults to ``<skill_root>/SKILL.md``. If SKILL.md frontmatter contains
-    ``workflow_path:`` (relative to skill_root), returns that path instead.
+    ``workflow_path:``, the value is resolved relative to ``skill_root`` and
+    must stay inside it; absolute paths or ``..`` segments that escape the
+    skill directory are rejected and we fall back to ``SKILL.md``.
     """
     skill_md = skill_root / 'SKILL.md'
     if not skill_md.exists():
@@ -256,7 +258,13 @@ def resolve_workflow_path(skill_root: Path) -> Path:
     relpath = _read_workflow_path_frontmatter(skill_md)
     if relpath is None:
         return skill_md
-    return skill_root / relpath
+    candidate = (skill_root / relpath).resolve()
+    try:
+        candidate.relative_to(skill_root.resolve())
+    except ValueError:
+        logger.warning('workflow_path %r escapes skill root %s; using SKILL.md', relpath, skill_root)
+        return skill_md
+    return candidate
 
 
 def extract_skill_workflow(
@@ -267,17 +275,24 @@ def extract_skill_workflow(
     """Resolve a skill's workflow path and extract its diagram.
 
     Override JSON files are always looked up at ``skill_root`` regardless of
-    where the workflow markdown actually lives.
+    where the workflow markdown actually lives. Bad ``workflow_path`` values
+    (missing, directory, unreadable) yield ``None`` rather than crashing.
     """
     workflow_path = resolve_workflow_path(skill_root)
-    if not workflow_path.exists():
-        logger.info('Workflow file %s not found for %s', workflow_path, skill_root)
+    if not workflow_path.is_file():
+        logger.info('Workflow file %s not usable for %s', workflow_path, skill_root)
         return None
-    return extract_workflow(workflow_path, override_dir=skill_root, section=section)
+    try:
+        return extract_workflow(workflow_path, override_dir=skill_root, section=section)
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning('Failed to read workflow %s: %s', workflow_path, exc)
+        return None
 
 
 def extract_all(skill_dir: Path) -> dict[str, FlowDiagram | None]:
     """Extract workflows for every skill directory under skill/."""
+    if not skill_dir.is_dir():
+        return {}
     diagrams: dict[str, FlowDiagram | None] = {}
     skill_roots = sorted(p for p in skill_dir.iterdir() if p.is_dir() and (p / 'SKILL.md').exists())
     for skill_root in skill_roots:

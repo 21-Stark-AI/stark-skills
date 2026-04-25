@@ -11,6 +11,7 @@ from flow_extractor import (
     _detect_direction,
     _generate_node_id,
     _load_override,
+    extract_all,
     extract_skill_workflow,
     extract_workflow,
     resolve_workflow_path,
@@ -60,6 +61,61 @@ def test_resolve_workflow_path_uses_frontmatter_override():
 def test_resolve_workflow_path_defaults_to_skill_md():
     resolved = resolve_workflow_path(_skill_root('stark-pr-flow'))
     assert resolved == ROOT / 'skill' / 'stark-pr-flow' / 'SKILL.md'
+
+
+def _make_fixture_skill(skill_dir: Path, *, frontmatter_extra: str = '', workflow_body: str | None = None) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / 'SKILL.md'
+    skill_md.write_text(
+        '---\nname: fixture\n' + frontmatter_extra + '---\n\n## Workflow\n\nstub\n',
+        encoding='utf-8',
+    )
+    if workflow_body is not None:
+        target = skill_dir / 'references' / 'workflow.md'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(workflow_body, encoding='utf-8')
+
+
+def test_resolve_workflow_path_rejects_traversal(tmp_path):
+    """Absolute paths or `..` segments in workflow_path fall back to SKILL.md."""
+    _make_fixture_skill(tmp_path / 'skill_a', frontmatter_extra='workflow_path: ../etc/passwd\n')
+    resolved = resolve_workflow_path(tmp_path / 'skill_a')
+    assert resolved == tmp_path / 'skill_a' / 'SKILL.md'
+
+
+def test_extract_skill_workflow_returns_none_for_directory_target(tmp_path):
+    """`workflow_path` pointing at a directory yields None, not a crash."""
+    _make_fixture_skill(tmp_path / 'skill_b', frontmatter_extra='workflow_path: references\n')
+    (tmp_path / 'skill_b' / 'references').mkdir(parents=True, exist_ok=True)
+    assert extract_skill_workflow(tmp_path / 'skill_b') is None
+
+
+def test_extract_skill_workflow_loads_root_override_when_workflow_in_references(tmp_path):
+    """Override JSON at the skill root is honored even when workflow_path points into references/."""
+    workflow_md = '## Phase 1\n\nstep one\n\n## Phase 2\n\nstep two\n'
+    _make_fixture_skill(
+        tmp_path / 'skill_c',
+        frontmatter_extra='workflow_path: references/workflow.md\n',
+        workflow_body=workflow_md,
+    )
+    override_data = {
+        'version': 1,
+        'nodes': [
+            {'id': 'a', 'type': 'start', 'label': 'A', 'position': {'x': 0, 'y': 0}},
+            {'id': 'b', 'type': 'end', 'label': 'B', 'position': {'x': 100, 'y': 0}},
+        ],
+        'edges': [{'id': 'a-b', 'source': 'a', 'target': 'b'}],
+    }
+    (tmp_path / 'skill_c' / 'usage.flow-override.json').write_text(json.dumps(override_data))
+
+    diagram = extract_skill_workflow(tmp_path / 'skill_c')
+
+    assert diagram is not None
+    assert [n.id for n in diagram.nodes] == ['a', 'b']
+
+
+def test_extract_all_returns_empty_for_missing_skill_dir(tmp_path):
+    assert extract_all(tmp_path / 'does_not_exist') == {}
 
 
 def test_extract_step_based_skill():
