@@ -1650,6 +1650,7 @@ def save_round_history(
             "success": res.error is None,
             "timeout": "Timed out" in (res.error or ""),
             "finding_count": len(res.findings), "mode": mode,
+            "review_type": "pr",
         }, project=repo, dedupe_key=f"review:{file_key}:agent:{res.agent}:{res.domain}"))
 
         for f in res.findings:
@@ -1666,6 +1667,8 @@ def save_round_history(
                 "fix_verified": f.fix_verified,
                 "mode": mode,
                 "domain_agent": (domain_agents or {}).get(f.domain),
+                "review_type": "pr",
+                "file": f.file or None,
             }, project=repo, dedupe_key=f"review:{file_key}:finding:{finding_idx}"))
             finding_idx += 1
 

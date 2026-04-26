@@ -415,6 +415,72 @@ def _run_plan_subagent(
 MAX_WORKERS = 21
 
 
+def _emit_plan_dispatch_events(
+    results: list[PlanSubAgentResult],
+    review_type: str,
+    file_path: str,
+    round_num: int,
+) -> None:
+    """Best-effort emit ``agent_dispatch`` and ``review_finding`` events to
+    the stark-insights queue for design/plan reviews so they're first-class
+    in dashboards (mirrors what ``multi_review.save_round_history`` does for
+    PR reviews).
+    """
+    try:
+        from emit_queue import enqueue
+    except ImportError:
+        return
+
+    import datetime as _dt
+    now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    def _envelope(event_type: str, payload: dict, dedupe_key: str) -> dict:
+        return {
+            "type": event_type,
+            "timestamp": now_iso,
+            "cli": "claude",
+            "source": "skill",
+            "schema_version": 1,
+            "project": review_type,
+            "dedupe_key": dedupe_key,
+            "payload": payload,
+        }
+
+    file_key = f"{review_type}:{file_path}:round-{round_num}"
+    finding_idx = 0
+    for r in results:
+        try:
+            enqueue(_envelope("agent_dispatch", {
+                "agent": r.agent,
+                "model": r.model,
+                "task": f"{r.domain} review",
+                "duration_s": r.duration_s,
+                "success": r.error is None,
+                "timeout": "timeout" in (r.error or ""),
+                "finding_count": len(r.findings),
+                "review_type": review_type,
+                "file": file_path,
+            }, f"{file_key}:agent:{r.agent}:{r.domain}"))
+        except Exception as exc:  # pragma: no cover - never block dispatch on telemetry
+            print(f"  [!] Failed to emit agent_dispatch: {exc}", file=sys.stderr)
+        for f in r.findings:
+            try:
+                enqueue(_envelope("review_finding", {
+                    "pr_number": None,
+                    "repo": review_type,
+                    "agent": f.agent,
+                    "domain": f.domain,
+                    "severity": f.severity,
+                    "title": f.title,
+                    "description": f.description,
+                    "review_type": review_type,
+                    "file": file_path,
+                }, f"{file_key}:finding:{finding_idx}"))
+            except Exception as exc:  # pragma: no cover
+                print(f"  [!] Failed to emit review_finding: {exc}", file=sys.stderr)
+            finding_idx += 1
+
+
 def dispatch_plan_review(
     plan_content: str,
     round_num: int,
@@ -424,6 +490,8 @@ def dispatch_plan_review(
     domains: dict[str, dict[str, Any]] | None = None,
     disabled_domains: list[str] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    review_type: str | None = None,
+    file_path: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch plan review across agents × domains in parallel.
 
@@ -581,6 +649,9 @@ def dispatch_plan_review(
 
     models_in_use = {agent: _agent_model_label(agent) for agent in agents}
 
+    if review_type and file_path:
+        _emit_plan_dispatch_events(results, review_type, file_path, round_num)
+
     return {
         "round": round_num,
         "agents": agents,
@@ -653,6 +724,14 @@ def main():
         domains = {k: v for k, v in domains.items() if k in allowed}
 
     plan_content = Path(args.file).read_text()
+    # Derive insights review_type from the prompts dir convention:
+    # "design-review" → "design", "plan-review" → "plan". Anything else
+    # falls through and disables emission (file_path stays None).
+    inferred_review_type = (
+        "design" if args.prompts_dir == "design-review"
+        else "plan" if args.prompts_dir == "plan-review"
+        else None
+    )
     result = dispatch_plan_review(
         plan_content=plan_content,
         round_num=args.round,
@@ -662,6 +741,8 @@ def main():
         disabled_domains=disabled,
         timeout=timeout,
         global_prompts_dir=global_prompts_dir,
+        review_type=inferred_review_type,
+        file_path=args.file if inferred_review_type else None,
     )
     print(json.dumps(result, indent=2))
 
