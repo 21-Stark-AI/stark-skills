@@ -1762,55 +1762,40 @@ class TestDrainToBufferV2:
             f"no .v1-<timestamp>.db should have been created; found {siblings}"
         )
 
-    def test_legacy_replay_refuses_paths_outside_buffer_dir(self, isolated_queue):
-        """Regression: a legacy buffer path that isn't a sibling of BUFFER_PATH
-        must be rejected up front, never opened, and never produce queue rows.
+    def test_legacy_replay_refuses_paths_outside_queue_dir(self, isolated_queue, tmp_path_factory):
+        """Regression: a legacy buffer path that isn't inside QUEUE_DIR must be
+        rejected before sqlite is touched, and never produce queue rows.
 
-        Pre-fix, a test (or any caller) could hand ``_replay_legacy_rows_into_queue``
-        a pytest tmpdir while ``BUFFER_PATH`` still pointed at the real
-        ``~/.stark-insights/`` and the function would happily insert the
-        fixture's non-UUID dimension values into the live queue, where they
-        flowed downstream and choked Cloud SQL's UUID-typed dimension columns.
+        Exercises the exact shape of the production leak: a caller patches
+        ``BUFFER_PATH`` at a tmpdir-shaped fixture but leaves ``QUEUE_DIR``
+        pointed at the real ``~/.stark-insights/``. The function would write
+        rows into ``QUEUE_DB`` (under QUEUE_DIR), so the guard validates the
+        destination, not the BUFFER_PATH dir.
+
+        The test does not pre-create the legacy file: a correctly-placed
+        guard rejects the path before ``sqlite3.connect()`` runs, so the
+        file must NOT exist after the call. If a future refactor moves
+        the guard below the connect call, sqlite would create the file
+        (default open-or-create behavior) and this assertion fires.
         """
-        # Point BUFFER_PATH at one tmp dir, build a legacy fixture in another.
-        # Both dirs are isolated from the real ~/.stark-insights/, but the
-        # mismatch between them is what the guard exists to catch — it's the
-        # exact shape of the production bug (BUFFER_PATH = real, fixture path
-        # = pytest tmpdir).
-        canonical_dir = isolated_queue / "canonical"
-        canonical_dir.mkdir()
-        stranger_dir = isolated_queue / "stranger"
-        stranger_dir.mkdir()
+        # Distinct dir from QUEUE_DIR (which isolated_queue patched to tmp_path).
+        # tmp_path_factory.mktemp gives a sibling tmpdir guaranteed not to
+        # collide with the patched QUEUE_DIR.
+        stranger_dir = tmp_path_factory.mktemp("stranger")
         stranger_legacy = stranger_dir / "buffer.v1-legacy.db"
-        legacy = sqlite3.connect(str(stranger_legacy))
-        legacy.executescript(
-            """
-            CREATE TABLE events (
-                id TEXT PRIMARY KEY,
-                dedupe_key TEXT,
-                type TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                user_id TEXT,
-                project TEXT,
-                payload TEXT NOT NULL,
-                synced_at TEXT
-            );
-            """
-        )
-        legacy.execute(
-            "INSERT INTO events (id, type, timestamp, user_id, project, payload) "
-            "VALUES ('row-1', 'skill_invocation', '2026-01-01T00:00:00Z', "
-            "'test-fixture-user', '/tmp/test-fixture-project', '{}')"
-        )
-        legacy.commit()
-        legacy.close()
+        # Deliberately NOT created — guard must reject before any IO.
 
-        with patch.object(emit_queue, "BUFFER_PATH", canonical_dir / "buffer.db"):
-            with pytest.raises(ValueError, match="sibling of BUFFER_PATH"):
+        # The real leak shape: BUFFER_PATH lives next to the stray fixture but
+        # QUEUE_DIR (the actual destination root) does not.
+        with patch.object(emit_queue, "BUFFER_PATH", stranger_dir / "buffer.db"):
+            with pytest.raises(ValueError, match="inside QUEUE_DIR"):
                 emit_queue._replay_legacy_rows_into_queue(stranger_legacy)
 
-        # No fixture rows should have leaked into the queue — the guard must
-        # reject before any INSERT runs.
+        assert not stranger_legacy.exists(), (
+            "guard ran after sqlite3.connect — legacy file was created. "
+            "Guard must reject before any sqlite call."
+        )
+        # No fixture rows should have leaked into the queue.
         qdb = emit_queue._get_db()
         try:
             count = qdb.execute("SELECT COUNT(*) FROM pending").fetchone()[0]

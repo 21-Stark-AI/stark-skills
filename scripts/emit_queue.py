@@ -585,20 +585,23 @@ def _replay_legacy_rows_into_queue(legacy_path: Path) -> int:
     Raises if the DB is unreadable — the caller keeps the quarantined file
     in place so the operator can recover the backlog manually.
 
-    Refuses to operate on a path that isn't a sibling of ``BUFFER_PATH``.
+    Refuses to operate on a path that isn't inside ``QUEUE_DIR``.
     The only sanctioned production caller is ``_quarantine_legacy_buffer``
-    on ``BUFFER_PATH`` itself, so a non-sibling path means a test (or
-    misconfigured caller) is pointing this function at tmpdir-shaped
-    fixtures while ``BUFFER_PATH`` still references the real
-    ``~/.stark-insights/`` — the rows would land in the live queue and
-    flow downstream as bogus dimension values. Tests that need to drive
-    the replay must patch ``BUFFER_PATH`` to the same directory as
-    ``legacy_path`` (the ``isolated_queue`` fixture does this).
+    on ``BUFFER_PATH`` itself, and ``BUFFER_PATH`` lives inside
+    ``QUEUE_DIR`` by default. The destination of the replay is
+    ``QUEUE_DB`` (under ``QUEUE_DIR``), so validating against
+    ``QUEUE_DIR`` is the right invariant: rows can only land in the
+    queue we'd point this function at if its source legacy file is also
+    in that queue's directory. A test that patches ``BUFFER_PATH`` to a
+    tmpdir but leaves ``QUEUE_DIR`` on the real ``~/.stark-insights/``
+    (where rows actually go) is exactly the leak this guard catches.
+    Tests that need to drive the replay must patch ``QUEUE_DIR`` (the
+    ``isolated_queue`` fixture patches both QUEUE_DIR and BUFFER_PATH).
     """
-    if legacy_path.parent.resolve() != BUFFER_PATH.parent.resolve():
+    if legacy_path.parent.resolve() != QUEUE_DIR.resolve():
         raise ValueError(
-            f"legacy_path must be a sibling of BUFFER_PATH; refusing to replay "
-            f"{legacy_path} (BUFFER_PATH dir is {BUFFER_PATH.parent})"
+            f"legacy_path must be inside QUEUE_DIR; refusing to replay "
+            f"{legacy_path} (QUEUE_DIR is {QUEUE_DIR})"
         )
     legacy = sqlite3.connect(str(legacy_path), timeout=10)
     legacy.row_factory = sqlite3.Row
