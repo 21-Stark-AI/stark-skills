@@ -584,7 +584,25 @@ def _replay_legacy_rows_into_queue(legacy_path: Path) -> int:
 
     Raises if the DB is unreadable — the caller keeps the quarantined file
     in place so the operator can recover the backlog manually.
+
+    Refuses to operate on a path that isn't inside ``QUEUE_DIR``.
+    The only sanctioned production caller is ``_quarantine_legacy_buffer``
+    on ``BUFFER_PATH`` itself, and ``BUFFER_PATH`` lives inside
+    ``QUEUE_DIR`` by default. The destination of the replay is
+    ``QUEUE_DB`` (under ``QUEUE_DIR``), so validating against
+    ``QUEUE_DIR`` is the right invariant: rows can only land in the
+    queue we'd point this function at if its source legacy file is also
+    in that queue's directory. A test that patches ``BUFFER_PATH`` to a
+    tmpdir but leaves ``QUEUE_DIR`` on the real ``~/.stark-insights/``
+    (where rows actually go) is exactly the leak this guard catches.
+    Tests that need to drive the replay must patch ``QUEUE_DIR`` (the
+    ``isolated_queue`` fixture patches both QUEUE_DIR and BUFFER_PATH).
     """
+    if legacy_path.parent.resolve() != QUEUE_DIR.resolve():
+        raise ValueError(
+            f"legacy_path must be inside QUEUE_DIR; refusing to replay "
+            f"{legacy_path} (QUEUE_DIR is {QUEUE_DIR})"
+        )
     legacy = sqlite3.connect(str(legacy_path), timeout=10)
     legacy.row_factory = sqlite3.Row
     try:
