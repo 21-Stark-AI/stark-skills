@@ -16,11 +16,21 @@ import emit_queue
 
 @pytest.fixture(autouse=True)
 def isolated_queue(tmp_path):
-    """Each test gets its own queue directory."""
+    """Each test gets its own queue directory.
+
+    Also redirects ``BUFFER_PATH`` into the same tmpdir so the legacy-replay
+    paths (which refuse to operate on a path that isn't a sibling of
+    ``BUFFER_PATH``) accept a ``tmp_path / "buffer.v1-…db"`` fixture without
+    a per-test ``patch.object`` dance. Without this, a test that hands a
+    tmpdir path to ``_replay_legacy_rows_into_queue`` would either be
+    rejected by the guard, or — pre-guard — silently dump fixture rows into
+    the real ``~/.stark-insights/`` queue.
+    """
     with patch.object(emit_queue, "QUEUE_DIR", tmp_path), \
          patch.object(emit_queue, "QUEUE_DB", tmp_path / "queue.db"), \
          patch.object(emit_queue, "TOKEN_PATH", tmp_path / "api-token"), \
-         patch.object(emit_queue, "LAST_TOOL_PATH", tmp_path / "last-tool"):
+         patch.object(emit_queue, "LAST_TOOL_PATH", tmp_path / "last-tool"), \
+         patch.object(emit_queue, "BUFFER_PATH", tmp_path / "buffer.db"):
         (tmp_path / "api-token").write_text("test-token")
         yield tmp_path
 
@@ -1750,6 +1760,49 @@ class TestDrainToBufferV2:
         siblings = sorted(isolated_queue.glob(f"{legacy_pattern}*"))
         assert siblings == [], (
             f"no .v1-<timestamp>.db should have been created; found {siblings}"
+        )
+
+    def test_legacy_replay_refuses_paths_outside_queue_dir(self, isolated_queue, tmp_path_factory):
+        """Regression: a legacy buffer path that isn't inside QUEUE_DIR must be
+        rejected before sqlite is touched, and never produce queue rows.
+
+        Exercises the exact shape of the production leak: a caller patches
+        ``BUFFER_PATH`` at a tmpdir-shaped fixture but leaves ``QUEUE_DIR``
+        pointed at the real ``~/.stark-insights/``. The function would write
+        rows into ``QUEUE_DB`` (under QUEUE_DIR), so the guard validates the
+        destination, not the BUFFER_PATH dir.
+
+        The test does not pre-create the legacy file: a correctly-placed
+        guard rejects the path before ``sqlite3.connect()`` runs, so the
+        file must NOT exist after the call. If a future refactor moves
+        the guard below the connect call, sqlite would create the file
+        (default open-or-create behavior) and this assertion fires.
+        """
+        # Distinct dir from QUEUE_DIR (which isolated_queue patched to tmp_path).
+        # tmp_path_factory.mktemp gives a sibling tmpdir guaranteed not to
+        # collide with the patched QUEUE_DIR.
+        stranger_dir = tmp_path_factory.mktemp("stranger")
+        stranger_legacy = stranger_dir / "buffer.v1-legacy.db"
+        # Deliberately NOT created — guard must reject before any IO.
+
+        # The real leak shape: BUFFER_PATH lives next to the stray fixture but
+        # QUEUE_DIR (the actual destination root) does not.
+        with patch.object(emit_queue, "BUFFER_PATH", stranger_dir / "buffer.db"):
+            with pytest.raises(ValueError, match="inside QUEUE_DIR"):
+                emit_queue._replay_legacy_rows_into_queue(stranger_legacy)
+
+        assert not stranger_legacy.exists(), (
+            "guard ran after sqlite3.connect — legacy file was created. "
+            "Guard must reject before any sqlite call."
+        )
+        # No fixture rows should have leaked into the queue.
+        qdb = emit_queue._get_db()
+        try:
+            count = qdb.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+        finally:
+            qdb.close()
+        assert count == 0, (
+            f"guard must reject before opening the queue; found {count} pending rows"
         )
 
     def test_legacy_replay_skips_already_synced_rows(self, isolated_queue):
