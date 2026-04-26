@@ -532,6 +532,94 @@ class TestParallelDispatch:
         assert "Low coverage" in captured.err
 
     @patch("plan_review_dispatch._run_plan_subagent")
+    def test_emits_insights_events_when_review_type_set(self, mock_sub, tmp_path):
+        """When ``review_type`` and ``file_path`` are passed, dispatch_plan_review
+        must enqueue agent_dispatch + review_finding events so design/plan
+        reviews are first-class in stark-insights (parallel to what
+        multi_review.save_round_history does for PR reviews).
+        """
+        from plan_review_dispatch import (
+            PlanFinding, PlanSubAgentResult, dispatch_plan_review,
+        )
+        for agent in ["claude"]:
+            d = tmp_path / "prompts" / agent
+            d.mkdir(parents=True)
+            (d / "agent.md").write_text("preamble")
+            (d / "00-general.md").write_text("General prompt")
+        finding = PlanFinding(
+            agent="claude", domain="general", severity="high",
+            section="API", title="Missing rate limit",
+            description="No rate limiting on /events", suggestion="Add it",
+        )
+        mock_sub.return_value = PlanSubAgentResult(
+            agent="claude", domain="general", raw_output="[]",
+            model="claude-opus-4-7", findings=[finding], duration_s=1.5,
+        )
+        with patch("emit_queue.enqueue") as mock_enqueue:
+            dispatch_plan_review(
+                plan_content="Test plan", round_num=1,
+                agents=["claude"],
+                global_prompts_dir=str(tmp_path / "prompts"),
+                review_type="design",
+                file_path="docs/specs/foo.md",
+                repo="acme/spec-repo",
+            )
+        # One agent_dispatch + one review_finding
+        types = [c.args[0]["type"] for c in mock_enqueue.call_args_list]
+        assert "agent_dispatch" in types
+        assert "review_finding" in types
+        # Per-finding event carries the doc context attributed to the real repo
+        finding_event = next(
+            c.args[0] for c in mock_enqueue.call_args_list
+            if c.args[0]["type"] == "review_finding"
+        )
+        assert finding_event["payload"]["pr_number"] is None
+        assert finding_event["payload"]["review_type"] == "design"
+        assert finding_event["payload"]["file"] == "docs/specs/foo.md"
+        # repo is the actual repo identifier — must NOT be the review_type
+        # (catches the prior bug where "design"/"plan" leaked into payload.repo
+        # and corrupted repo-scoped analytics).
+        assert finding_event["payload"]["repo"] == "acme/spec-repo"
+        assert finding_event["project"] == "acme/spec-repo"
+        assert finding_event["payload"]["title"] == "Missing rate limit"
+        # Dedupe key is repo-scoped so the same relative doc path in another
+        # repo can't collide and silently drop events.
+        assert "acme/spec-repo" in finding_event["dedupe_key"]
+        # agent_dispatch carries model + review_type and is repo-attributed.
+        ad = next(
+            c.args[0] for c in mock_enqueue.call_args_list
+            if c.args[0]["type"] == "agent_dispatch"
+        )
+        assert ad["payload"]["model"] == "claude-opus-4-7"
+        assert ad["payload"]["review_type"] == "design"
+        assert ad["payload"]["file"] == "docs/specs/foo.md"
+        assert ad["project"] == "acme/spec-repo"
+
+    @patch("plan_review_dispatch._run_plan_subagent")
+    def test_no_insights_emission_when_review_type_omitted(self, mock_sub, tmp_path):
+        """Without review_type, no events are emitted — preserves the
+        previous behavior for callers that didn't opt in.
+        """
+        from plan_review_dispatch import PlanSubAgentResult, dispatch_plan_review
+        for agent in ["claude"]:
+            d = tmp_path / "prompts" / agent
+            d.mkdir(parents=True)
+            (d / "agent.md").write_text("preamble")
+            (d / "00-general.md").write_text("General prompt")
+        mock_sub.return_value = PlanSubAgentResult(
+            agent="claude", domain="general", raw_output="[]",
+            model="claude-opus-4-7",
+        )
+        with patch("emit_queue.enqueue") as mock_enqueue:
+            dispatch_plan_review(
+                plan_content="Test plan", round_num=1,
+                agents=["claude"],
+                global_prompts_dir=str(tmp_path / "prompts"),
+                # review_type/file_path omitted
+            )
+        assert mock_enqueue.call_count == 0
+
+    @patch("plan_review_dispatch._run_plan_subagent")
     def test_dispatch_emits_top_level_models_map(self, mock_sub, tmp_path):
         """Top-level ``models`` map must list one entry per agent so
         triage_orchestrator can forward it to stark-insights without scanning
@@ -555,7 +643,13 @@ class TestParallelDispatch:
             global_prompts_dir=str(tmp_path / "prompts"),
         )
         assert "models" in result
-        assert set(result["models"].keys()) == {"claude", "codex"}
-        # Every per-result row also carries its model id.
+        # Lock in exact agent → model values, not just keys — triage_orchestrator
+        # prefers this map over per-result rows, so a stale or unresolved model
+        # string here would silently misattribute downstream telemetry.
+        assert result["models"] == {
+            "claude": "claude-opus-4-7",
+            "codex": "gpt-5.4",
+        }
+        # Top-level map must match the per-result model fields exactly.
         for row in result["results"]:
-            assert "model" in row and row["model"]
+            assert row["model"] == result["models"][row["agent"]]
