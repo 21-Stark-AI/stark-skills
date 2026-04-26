@@ -584,7 +584,22 @@ def _replay_legacy_rows_into_queue(legacy_path: Path) -> int:
 
     Raises if the DB is unreadable — the caller keeps the quarantined file
     in place so the operator can recover the backlog manually.
+
+    Refuses to operate on a path that isn't a sibling of ``BUFFER_PATH``.
+    The only sanctioned production caller is ``_quarantine_legacy_buffer``
+    on ``BUFFER_PATH`` itself, so a non-sibling path means a test (or
+    misconfigured caller) is pointing this function at tmpdir-shaped
+    fixtures while ``BUFFER_PATH`` still references the real
+    ``~/.stark-insights/`` — the rows would land in the live queue and
+    flow downstream as bogus dimension values. Tests that need to drive
+    the replay must patch ``BUFFER_PATH`` to the same directory as
+    ``legacy_path`` (the ``isolated_queue`` fixture does this).
     """
+    if legacy_path.parent.resolve() != BUFFER_PATH.parent.resolve():
+        raise ValueError(
+            f"legacy_path must be a sibling of BUFFER_PATH; refusing to replay "
+            f"{legacy_path} (BUFFER_PATH dir is {BUFFER_PATH.parent})"
+        )
     legacy = sqlite3.connect(str(legacy_path), timeout=10)
     legacy.row_factory = sqlite3.Row
     try:

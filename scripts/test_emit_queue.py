@@ -16,11 +16,21 @@ import emit_queue
 
 @pytest.fixture(autouse=True)
 def isolated_queue(tmp_path):
-    """Each test gets its own queue directory."""
+    """Each test gets its own queue directory.
+
+    Also redirects ``BUFFER_PATH`` into the same tmpdir so the legacy-replay
+    paths (which refuse to operate on a path that isn't a sibling of
+    ``BUFFER_PATH``) accept a ``tmp_path / "buffer.v1-…db"`` fixture without
+    a per-test ``patch.object`` dance. Without this, a test that hands a
+    tmpdir path to ``_replay_legacy_rows_into_queue`` would either be
+    rejected by the guard, or — pre-guard — silently dump fixture rows into
+    the real ``~/.stark-insights/`` queue.
+    """
     with patch.object(emit_queue, "QUEUE_DIR", tmp_path), \
          patch.object(emit_queue, "QUEUE_DB", tmp_path / "queue.db"), \
          patch.object(emit_queue, "TOKEN_PATH", tmp_path / "api-token"), \
-         patch.object(emit_queue, "LAST_TOOL_PATH", tmp_path / "last-tool"):
+         patch.object(emit_queue, "LAST_TOOL_PATH", tmp_path / "last-tool"), \
+         patch.object(emit_queue, "BUFFER_PATH", tmp_path / "buffer.db"):
         (tmp_path / "api-token").write_text("test-token")
         yield tmp_path
 
@@ -1750,6 +1760,64 @@ class TestDrainToBufferV2:
         siblings = sorted(isolated_queue.glob(f"{legacy_pattern}*"))
         assert siblings == [], (
             f"no .v1-<timestamp>.db should have been created; found {siblings}"
+        )
+
+    def test_legacy_replay_refuses_paths_outside_buffer_dir(self, isolated_queue):
+        """Regression: a legacy buffer path that isn't a sibling of BUFFER_PATH
+        must be rejected up front, never opened, and never produce queue rows.
+
+        Pre-fix, a test (or any caller) could hand ``_replay_legacy_rows_into_queue``
+        a pytest tmpdir while ``BUFFER_PATH`` still pointed at the real
+        ``~/.stark-insights/`` and the function would happily insert the
+        fixture's non-UUID dimension values into the live queue, where they
+        flowed downstream and choked Cloud SQL's UUID-typed dimension columns.
+        """
+        # Point BUFFER_PATH at one tmp dir, build a legacy fixture in another.
+        # Both dirs are isolated from the real ~/.stark-insights/, but the
+        # mismatch between them is what the guard exists to catch — it's the
+        # exact shape of the production bug (BUFFER_PATH = real, fixture path
+        # = pytest tmpdir).
+        canonical_dir = isolated_queue / "canonical"
+        canonical_dir.mkdir()
+        stranger_dir = isolated_queue / "stranger"
+        stranger_dir.mkdir()
+        stranger_legacy = stranger_dir / "buffer.v1-legacy.db"
+        legacy = sqlite3.connect(str(stranger_legacy))
+        legacy.executescript(
+            """
+            CREATE TABLE events (
+                id TEXT PRIMARY KEY,
+                dedupe_key TEXT,
+                type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                user_id TEXT,
+                project TEXT,
+                payload TEXT NOT NULL,
+                synced_at TEXT
+            );
+            """
+        )
+        legacy.execute(
+            "INSERT INTO events (id, type, timestamp, user_id, project, payload) "
+            "VALUES ('row-1', 'skill_invocation', '2026-01-01T00:00:00Z', "
+            "'test-fixture-user', '/tmp/test-fixture-project', '{}')"
+        )
+        legacy.commit()
+        legacy.close()
+
+        with patch.object(emit_queue, "BUFFER_PATH", canonical_dir / "buffer.db"):
+            with pytest.raises(ValueError, match="sibling of BUFFER_PATH"):
+                emit_queue._replay_legacy_rows_into_queue(stranger_legacy)
+
+        # No fixture rows should have leaked into the queue — the guard must
+        # reject before any INSERT runs.
+        qdb = emit_queue._get_db()
+        try:
+            count = qdb.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+        finally:
+            qdb.close()
+        assert count == 0, (
+            f"guard must reject before opening the queue; found {count} pending rows"
         )
 
     def test_legacy_replay_skips_already_synced_rows(self, isolated_queue):
