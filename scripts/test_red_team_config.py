@@ -161,6 +161,16 @@ import pytest
         ("min_severity_to_block", "high", "critical"),
         ("halt_on_unresolved", True, False),
         ("allow_human_review_halt", True, False),
+        # `stages` locked as a unit — repo cannot disable a globally-enabled
+        # stage via `stages.design.enabled: false`. Closes the bypass that
+        # round-1 review (architecture + security domains) flagged: locking
+        # `enabled` was insufficient because callers also gate on
+        # `stages.<name>.enabled`.
+        (
+            "stages",
+            {"design": {"enabled": True}, "plan": {"enabled": False}},
+            {"design": {"enabled": False}, "plan": {"enabled": False}},
+        ),
     ],
 )
 def test_get_red_team_config_rejects_security_critical_overrides(
@@ -186,6 +196,54 @@ def test_get_red_team_config_rejects_security_critical_overrides(
     assert locked_field in err
     assert "locked" in err.lower() or "rejected" in err.lower()
     assert str(repo_cfg) in err
+
+
+def test_locked_override_emits_audit_event(tmp_path, capsys, monkeypatch):
+    """Spec §6 requires `red_team.config.override_rejected` for locked
+    org/repo overrides. Verify the event is enqueued (not just stderr-warned)
+    so audit pipelines can detect bypass attempts."""
+    captured: list[dict] = []
+
+    class _FakeEmitQueue:
+        @staticmethod
+        def make_event(name, payload):
+            return {"name": name, "payload": payload}
+
+        @staticmethod
+        def enqueue(event):
+            captured.append(event)
+
+    monkeypatch.setattr(config_loader, "_EMIT_QUEUE", _FakeEmitQueue)
+
+    global_cfg = tmp_path / "global.json"
+    global_cfg.write_text(json.dumps({"red_team": {"model": "o3"}}))
+    repo_dir = tmp_path / "repo"
+    repo_cfg = repo_dir / ".code-review" / "config.json"
+    repo_cfg.parent.mkdir(parents=True)
+    repo_cfg.write_text(json.dumps({
+        "red_team": {"model": "gpt-3.5-turbo", "enabled": False},
+    }))
+    monkeypatch.chdir(repo_dir)
+    with patch.object(config_loader, "CONFIG_PATH", global_cfg):
+        config_loader.load_config.cache_clear()
+        config_loader.get_red_team_config()
+
+    names = [e["name"] for e in captured]
+    assert "red_team.config.override_rejected" in names
+    rejected_fields = {
+        e["payload"]["field"]
+        for e in captured
+        if e["name"] == "red_team.config.override_rejected"
+    }
+    assert "model" in rejected_fields
+    assert "enabled" in rejected_fields
+    # Source path is captured for audit forensics.
+    sources = {
+        e["payload"]["source"]
+        for e in captured
+        if e["name"] == "red_team.config.override_rejected"
+    }
+    assert any(str(repo_cfg) in s for s in sources)
 
 
 def test_get_red_team_config_warns_on_falsey_non_dict_repo_override(tmp_path, capsys, monkeypatch):

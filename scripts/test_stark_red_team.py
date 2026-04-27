@@ -911,6 +911,147 @@ def test_run_red_team_parse_error_surfaces_as_error(tmp_path, monkeypatch):
     assert result.findings == []
 
 
+def test_run_red_team_missing_findings_field_surfaces_as_error(tmp_path, monkeypatch):
+    """Schema drift: model returns valid JSON but no `findings` field. Without
+    explicit handling this looks like clean (0 findings, no error). Treat as
+    parse error so a degraded model output can't masquerade as a successful
+    review."""
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output='{"synthesis": "stuff but no findings field"}',
+            duration_s=1.0, input_tokens=10, output_tokens=10,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+    monkeypatch.setattr(rt, "dispatch_responses_api", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART", source_spec="SRC", pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="gpt-5.5-pro",
+        model_rates={"_fallback": {"input_per_1m_usd": 0, "output_per_1m_usd": 0}},
+        cwd=None, timeout_s=60,
+        min_severity_to_block="high", max_input_chars=200_000,
+    )
+    assert result.error is not None
+
+
+def test_run_red_team_non_list_findings_surfaces_as_error(tmp_path, monkeypatch):
+    """findings field exists but isn't a list — schema violation."""
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output='{"synthesis": "x", "findings": "not-a-list"}',
+            duration_s=1.0, input_tokens=10, output_tokens=10,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+    monkeypatch.setattr(rt, "dispatch_responses_api", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART", source_spec="SRC", pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="gpt-5.5-pro",
+        model_rates={"_fallback": {"input_per_1m_usd": 0, "output_per_1m_usd": 0}},
+        cwd=None, timeout_s=60,
+        min_severity_to_block="high", max_input_chars=200_000,
+    )
+    assert result.error is not None
+
+
+def test_run_red_team_explicit_empty_findings_is_clean(tmp_path, monkeypatch):
+    """Explicit `findings: []` from a valid model response IS clean. Don't
+    flag it as a parse error — that would be the inverse failure mode."""
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output='{"synthesis":"clean","findings":[]}',
+            duration_s=1.0, input_tokens=10, output_tokens=10,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+    monkeypatch.setattr(rt, "dispatch_responses_api", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART", source_spec="SRC", pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="gpt-5.5-pro",
+        model_rates={"_fallback": {"input_per_1m_usd": 0, "output_per_1m_usd": 0}},
+        cwd=None, timeout_s=60,
+        min_severity_to_block="high", max_input_chars=200_000,
+    )
+    assert result.error is None
+    assert result.synthesis == "clean"
+    assert result.findings == []
+    assert result.blocking_count == 0
+
+
+def test_run_red_team_parse_error_does_not_echo_raw_excerpt(tmp_path, monkeypatch):
+    """The raw model output may contain echoed attacker-controlled spec/diff
+    content. Don't put it into `error` (which lands in audit logs / state) —
+    `raw_output` already preserves the full text on the same dataclass."""
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    secret_marker = "ATTACKER_LEAKED_SECRET_TOKEN_12345"
+
+    def fake_dispatch(**kwargs):
+        return rt.CodexCallResult(
+            raw_output=f"prose containing {secret_marker} and more",
+            duration_s=1.0, input_tokens=10, output_tokens=10,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+    monkeypatch.setattr(rt, "dispatch_responses_api", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART", source_spec="SRC", pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="gpt-5.5-pro",
+        model_rates={"_fallback": {"input_per_1m_usd": 0, "output_per_1m_usd": 0}},
+        cwd=None, timeout_s=60,
+        min_severity_to_block="high", max_input_chars=200_000,
+    )
+    assert result.error is not None
+    assert secret_marker not in result.error  # leaked into audit string
+    assert secret_marker in result.raw_output  # but preserved for debug
+
+
 def test_run_red_team_empty_output_surfaces_as_error(tmp_path, monkeypatch):
     """Truly empty raw_output (e.g. model returned nothing at all) must also
     surface as error rather than clean."""

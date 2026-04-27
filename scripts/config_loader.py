@@ -10,6 +10,13 @@ from typing import Any
 
 CONFIG_PATH = Path.home() / ".claude" / "code-review" / "config.json"
 
+try:  # emit_queue is best-effort — config loading must not fail if it's
+    # unavailable (e.g. partial install, missing optional dep). Tests
+    # monkeypatch _EMIT_QUEUE to capture events.
+    import emit_queue as _EMIT_QUEUE  # type: ignore[assignment]
+except ImportError:  # pragma: no cover
+    _EMIT_QUEUE = None  # type: ignore[assignment]
+
 DEFAULT_MODELS = {
     "claude": {"enabled": True, "model_id": "claude-opus-4-7"},
     "codex": {"enabled": True, "model_id": "gpt-5.5"},
@@ -195,6 +202,12 @@ _RED_TEAM_LOCKED_FIELDS: frozenset[str] = frozenset({
     "min_severity_to_block",
     "halt_on_unresolved",
     "allow_human_review_halt",
+    # Locking the whole `stages` dict closes the round-1 review bypass:
+    # without it, a repo could disable a globally-enabled stage via
+    # `stages.design.enabled: false` and skip the gate entirely. Adding a
+    # new stage now requires a global config change — same friction as a
+    # legitimate persona addition.
+    "stages",
 })
 
 
@@ -358,7 +371,16 @@ def _strip_locked_fields(
     *,
     source: str | None = None,
 ) -> dict[str, Any]:
-    """Remove locked fields from an override dict with a warning to stderr."""
+    """Remove locked fields from an override dict.
+
+    Each rejection produces both a stderr warning (operator visibility) and
+    a `red_team.config.override_rejected` audit event (so a downstream
+    audit pipeline can detect bypass attempts that an operator might miss
+    in the noise of routine config loading). The event payload is
+    deliberately minimal and avoids embedding the override value, since
+    that value is attacker-controlled in the threat model and we don't
+    want to round-trip it through the durable event queue.
+    """
     cleaned = {}
     for k, v in override.items():
         if k in locked:
@@ -367,9 +389,29 @@ def _strip_locked_fields(
                 f"{section_name}.{k} is locked to global config and cannot be "
                 f"overridden{source_suffix} — rejecting override value {v!r}"
             )
+            _emit_override_rejected(section_name, k, source)
         else:
             cleaned[k] = v
     return cleaned
+
+
+def _emit_override_rejected(
+    section_name: str, field: str, source: str | None,
+) -> None:
+    if _EMIT_QUEUE is None:
+        return
+    try:
+        event = _EMIT_QUEUE.make_event(
+            f"{section_name}.config.override_rejected",
+            {
+                "section": section_name,
+                "field": field,
+                "source": source or "",
+            },
+        )
+        _EMIT_QUEUE.enqueue(event)
+    except Exception as exc:  # noqa: BLE001 — emitting must never break load
+        _warn(f"failed to enqueue override_rejected event: {exc}")
 
 
 def _prune_unknown_keys(

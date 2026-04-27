@@ -777,14 +777,25 @@ def run_red_team(
         )
 
     parsed = parse_output(call.raw_output)
-    # rt3 — do not fail open into clean. A non-dict parse (empty raw_output,
-    # or output that isn't valid JSON, or JSON that isn't an object) is
-    # indistinguishable from "0 findings = clean" if we silently fall back
-    # to empty defaults. Surface it as an error so the orchestrator routes
-    # to a degraded/halted path instead of letting a model outage, prompt
-    # drift, or schema mismatch look identical to a successful clean run.
+    # rt3 — do not fail open into clean. There are three ways the model
+    # output can look like "0 findings = clean" without actually being one:
+    #   (a) empty raw_output / non-JSON / non-object JSON  → parsed == {}
+    #   (b) valid object but no `findings` key             → schema drift
+    #   (c) `findings` key present but not a list          → schema drift
+    # All three were previously indistinguishable from a successful clean
+    # review. Surface them as `error` so the orchestrator routes to a
+    # degraded/halted path. raw_output is preserved on the same dataclass
+    # for debug; the error string itself is generic so it's safe to land
+    # in audit logs (model output may echo attacker-controlled spec/diff
+    # content, so we don't embed an excerpt here — review found 9).
+    parse_error_reason: str | None = None
     if not parsed:
-        excerpt = (call.raw_output or "")[:200]
+        parse_error_reason = "empty or not valid JSON"
+    elif "findings" not in parsed:
+        parse_error_reason = "missing required 'findings' field"
+    elif not isinstance(parsed.get("findings"), list):
+        parse_error_reason = "'findings' field is not a list"
+    if parse_error_reason is not None:
         return RedTeamResult(
             stage=stage,
             round_num=round_num,
@@ -796,14 +807,14 @@ def run_red_team(
             duration_s=call.duration_s,
             cost_usd=cost_usd,
             error=(
-                "red-team output is empty or not valid JSON — "
-                f"refusing to treat as clean. Raw excerpt: {excerpt!r}"
+                f"red-team output {parse_error_reason} — refusing to treat as "
+                "clean. See raw_output for full text."
             ),
             input_tokens=call.input_tokens,
             output_tokens=call.output_tokens,
         )
     synthesis = parsed.get("synthesis", "")
-    raw_findings = parsed.get("findings", []) or []
+    raw_findings = parsed.get("findings") or []
     findings = validate_findings(raw_findings) if isinstance(raw_findings, list) else []
 
     return RedTeamResult(

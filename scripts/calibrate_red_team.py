@@ -121,13 +121,22 @@ def run_calibration(
     source_spec = source_spec_path.read_text(encoding="utf-8")
 
     if synthetic:
-        rt.dispatch_codex = _synthetic_dispatch_factory(seed=42)  # type: ignore[assignment]
+        # Patch BOTH dispatchers — the new default model (gpt-5.5-pro) and
+        # o3 route through dispatch_responses_api, so a synthetic mode that
+        # only mocked dispatch_codex would silently hit the live API or
+        # fail for missing OPENAI_API_KEY.
+        synthetic_fn = _synthetic_dispatch_factory(seed=42)
+        rt.dispatch_codex = synthetic_fn  # type: ignore[assignment]
+        rt.dispatch_responses_api = synthetic_fn  # type: ignore[assignment]
         # Also patch PROMPTS_ROOT to the worktree location so assemble_prompt
         # can load prompt files without requiring the install symlink.
         worktree_prompts = Path(__file__).parent.parent / "global" / "prompts" / "red-team"
         if worktree_prompts.exists():
             rt.PROMPTS_ROOT = worktree_prompts  # type: ignore[assignment]
-        print("[calibration] SYNTHETIC mode — dispatch_codex mocked", file=sys.stderr)
+        print(
+            "[calibration] SYNTHETIC mode — dispatch_codex + dispatch_responses_api mocked",
+            file=sys.stderr,
+        )
 
     results: list[rt.RedTeamResult] = []
     print(f"[calibration] Running {n_runs} passes…", file=sys.stderr)

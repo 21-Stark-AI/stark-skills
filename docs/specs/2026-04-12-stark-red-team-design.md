@@ -392,8 +392,9 @@ Standard config hierarchy applies: repo → org → global, but **seven fields a
 | `min_severity_to_block` | A repo could raise the blocking floor past every real finding, making the red team always-clean while still appearing to run. (rt2) |
 | `halt_on_unresolved` | A repo could flip the gate to advisory, preserving the appearance of a blocking review while neutering its enforcement. (rt2) |
 | `allow_human_review_halt` | A repo could turn off the human-review halt, downgrading findings to medium advisory and bypassing the explicit "this needs a human" signal personas raise. (rt2) |
+| `stages` | Locked as a unit because callers gate on `stages.<name>.enabled` to skip a stage entirely. Without this lock, a repo could disable a globally-enabled `stages.design.enabled` and bypass the gate while `enabled` was still locked-true. Round-1 self-review on the locked-fields PR flagged this as the same substance-vs-appearance failure that motivated the original lock. |
 
-All other fields (`max_rounds`, `stages.*.enabled`, `per_run_budget_usd`, `timeout_s`, `stability_overlap_jaccard_min`, `max_input_chars`) respect the full hierarchy. These are operational tuning knobs whose worst-case override (e.g. raising the timeout, narrowing the stages list) doesn't compromise the substance of the gate; if the gate fires, it still fires.
+All other fields (`max_rounds`, `per_run_budget_usd`, `timeout_s`, `stability_overlap_jaccard_min`, `max_input_chars`) respect the full hierarchy. These are operational tuning knobs whose worst-case override (e.g. raising the timeout, raising the budget) doesn't compromise the substance of the gate; if the gate fires, it still fires.
 
 A repo that needs a *stricter* posture than the global default (e.g. blocking on `medium`) must open a PR against `stark-skills` to set the global default — same friction as a legitimate persona addition. A repo that wants a *weaker* posture is exactly the failure mode this lock prevents.
 
