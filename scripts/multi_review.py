@@ -279,7 +279,7 @@ MAX_GEMINI_CONCURRENT = 3  # Vertex AI rate-limits under heavy parallel load
 _gemini_semaphore = threading.Semaphore(MAX_GEMINI_CONCURRENT)
 
 
-_SHA_RE = re.compile(r"^[0-9a-f]{4,40}$")
+_QUALIFIED_REF_PREFIXES = ("refs/", "origin/", "remotes/")
 
 
 def _resolve_base_ref(base: str, cwd: str | None = None) -> str:
@@ -295,12 +295,22 @@ def _resolve_base_ref(base: str, cwd: str | None = None) -> str:
     in the (overstated) diff.
 
     Resolution rules:
-      - If *base* contains '/' (e.g. ``origin/main``, refs/...), use as-is.
-      - If *base* looks like a SHA, use as-is.
-      - Otherwise, prefer ``origin/<base>`` when it exists locally; fall
-        back to ``<base>`` if not.
+      - Empty / falsy: return as-is.
+      - Already qualified (``refs/...``, ``origin/...``, ``remotes/...``):
+        return as-is.
+      - Otherwise, prefer ``origin/<base>`` whenever that ref exists
+        locally — this catches both bare branch names like ``main`` *and*
+        slash-containing branches like ``release/2026.04`` or
+        ``feature/foo``. Hex-looking names that are actually branches
+        (``deadbeef`` as a branch) also benefit, since we probe
+        ``origin/<base>`` before treating it as a SHA.
+      - If ``origin/<base>`` doesn't exist but the input looks like a
+        SHA or otherwise resolves locally, fall through unchanged so the
+        caller's git command can still succeed.
     """
-    if not base or "/" in base or _SHA_RE.fullmatch(base):
+    if not base:
+        return base
+    if base.startswith(_QUALIFIED_REF_PREFIXES):
         return base
     try:
         result = subprocess.run(
@@ -311,6 +321,9 @@ def _resolve_base_ref(base: str, cwd: str | None = None) -> str:
             return f"origin/{base}"
     except (subprocess.TimeoutExpired, OSError):
         pass
+    # No origin/<base>. SHA-like input is fine to pass through; bare
+    # branch names will fall through too and the caller's git diff will
+    # handle the (possibly stale) local ref.
     return base
 
 
@@ -849,12 +862,20 @@ def _run_subagent_inner(
     parts.append(domain_prompt)
     full_prompt = "\n\n".join(parts)
 
+    # Resolve base once so the agent's `git diff` runs against the same
+    # ref the file-level filter (`_get_changed_files`) uses. Without
+    # this, the agent reads an inflated patch via stale local `main`
+    # while the filter scopes correctly to `origin/main`, and findings
+    # against files in the over-large diff still pass the filter check
+    # because they look "in scope" to the agent but aren't.
+    resolved_base = _resolve_base_ref(base, cwd=cwd)
+
     stdin_input = None
     gemini_home = None
 
     if agent == "claude":
         prompt = (
-            f"Run 'git diff {base}...HEAD' and read all changed files. "
+            f"Run 'git diff {resolved_base}...HEAD' and read all changed files. "
             f"Then review them according to these instructions:\n\n"
             f"{full_prompt}"
         )
@@ -866,7 +887,7 @@ def _run_subagent_inner(
         # Codex's built-in review skill which overrides our domain prompts.
         # --json emits JSONL to stdout; parsed below to extract agent text.
         prompt = (
-            f"Run 'git diff {base}...HEAD' and read all changed files. "
+            f"Run 'git diff {resolved_base}...HEAD' and read all changed files. "
             f"ONLY review files that appear in the diff. "
             f"Then review them according to these instructions:\n\n"
             f"{full_prompt}"
@@ -883,7 +904,7 @@ def _run_subagent_inner(
 
     elif agent == "gemini":
         prompt = (
-            f"Run 'git diff {base}...HEAD' and read all changed files. "
+            f"Run 'git diff {resolved_base}...HEAD' and read all changed files. "
             f"ONLY review files that appear in the diff. "
             f"Then review them according to these instructions:\n\n"
             f"{full_prompt}"

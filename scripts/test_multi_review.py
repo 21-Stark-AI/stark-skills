@@ -161,8 +161,15 @@ class TestModelFlags:
 
     @patch("multi_review.subprocess.run")
     def test_gemini_temp_dir_seeded(self, mock_run):
-        """projects.json must exist before subprocess.run is called."""
+        """projects.json must exist before subprocess.run is called.
+
+        Note: ``_run_subagent`` may also invoke ``git rev-parse`` via
+        ``_resolve_base_ref``; skip that bookkeeping call and only
+        assert on the actual gemini CLI invocation.
+        """
         def check_projects_json(cmd, **kwargs):
+            if cmd and cmd[0] == "git":
+                return MagicMock(stdout="", stderr="", returncode=1)
             env = kwargs.get("env", {})
             gemini_home = env.get("GEMINI_CLI_HOME", "")
             pj = os.path.join(gemini_home, ".gemini", "projects.json")
@@ -548,7 +555,15 @@ class TestReturnCodeHandling:
         assert result.error is not None
         assert result.error.startswith("parse_error:")
         assert len(result.findings) == 0
-        assert mock_run.call_count == 2
+        # Two retries of the agent itself + bookkeeping calls from
+        # ``_resolve_base_ref`` (one ``git rev-parse`` per attempt).
+        # The retry behavior — exactly two agent attempts — is what
+        # this test guards.
+        agent_calls = [
+            c for c in mock_run.call_args_list
+            if c.args[0] and c.args[0][0] != "git"
+        ]
+        assert len(agent_calls) == 2
 
     @patch("multi_review.subprocess.run")
     def test_prompt_passed_via_stdin_claude(self, mock_run):
@@ -734,6 +749,67 @@ class TestResolveBaseRef:
         # The diff invocation must use the resolved ref.
         diff_args = next(a for a in seen_args if a[1] == "diff")
         assert diff_args[3] == "origin/main...HEAD"
+
+    def test_get_diff_stats_uses_resolved_base(self, monkeypatch):
+        """_get_diff_stats must resolve through _resolve_base_ref too.
+
+        Without this, adaptive timeouts size sub-agents against the
+        wrong (inflated) merge-base when the local branch ref is stale.
+        Both diff helpers need to agree on the resolved ref.
+        """
+        seen_args: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            seen_args.append(args)
+            class R:
+                returncode = 0
+                if args[1] == "diff":
+                    stdout = " 3 files changed, 12 insertions(+), 4 deletions(-)\n"
+                else:
+                    stdout = "abc\n"
+            return R()
+
+        monkeypatch.setattr(multi_review.subprocess, "run", fake_run)
+        files, lines = multi_review._get_diff_stats("main", cwd="/tmp/wt")
+        assert (files, lines) == (3, 16)
+        diff_args = next(a for a in seen_args if a[1] == "diff")
+        assert diff_args[3] == "origin/main...HEAD"
+
+    def test_resolves_slash_branch_when_origin_exists(self, monkeypatch):
+        """Branch names containing ``/`` (e.g. ``release/2026.04``,
+        ``feature/foo``) must still get the origin prefix when one
+        exists. The earlier ``"/" in base`` passthrough was too broad
+        and reintroduced the stale-base bug for any non-``main`` branch."""
+        def fake_run(args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = "abc\n"
+            return R()
+        monkeypatch.setattr(multi_review.subprocess, "run", fake_run)
+        assert multi_review._resolve_base_ref("release/2026.04") == "origin/release/2026.04"
+        assert multi_review._resolve_base_ref("feature/foo") == "origin/feature/foo"
+
+    def test_resolves_hex_looking_branch_when_origin_exists(self, monkeypatch):
+        """Hex-looking branch names (``deadbeef`` as a branch, not a
+        SHA) must still get probed via ``origin/<base>`` first. The
+        earlier explicit SHA short-circuit skipped the probe entirely."""
+        def fake_run(args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = "abc\n"
+            return R()
+        monkeypatch.setattr(multi_review.subprocess, "run", fake_run)
+        assert multi_review._resolve_base_ref("deadbeef") == "origin/deadbeef"
+
+    def test_passthrough_for_remotes_prefix(self, monkeypatch):
+        """``remotes/upstream/main`` is fully qualified — don't double-prefix."""
+        called = {"n": 0}
+        def fake_run(args, **kwargs):
+            called["n"] += 1
+            raise AssertionError("should not invoke git for qualified refs")
+        monkeypatch.setattr(multi_review.subprocess, "run", fake_run)
+        assert multi_review._resolve_base_ref("remotes/upstream/main") == "remotes/upstream/main"
+        assert called["n"] == 0
 
 
 class TestHistoryPersistence:

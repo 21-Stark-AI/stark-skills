@@ -196,20 +196,49 @@ def check_model_resolution() -> tuple[str, str]:
         if isinstance(cfg, dict) and not cfg.get("enabled")
     )
 
-    # Intersect with the dispatch rotation list (config.agents).
-    # ``discover_config`` may not be importable in older installs; degrade
-    # gracefully to the legacy "enabled" reporting in that case.
+    # Intersect with the dispatch rotation list (``config.agents``).
+    # Three failure modes to handle distinctly:
+    #   - ImportError: older install doesn't ship dispatcher_base. Fall
+    #     back to legacy reporting; this is expected, not broken.
+    #   - Other exceptions (malformed JSON, unreadable file, etc.):
+    #     surface as ``warn`` so the operator sees something is wrong
+    #     instead of silently passing.
+    #   - ``config.agents`` present but not a list of strings: same —
+    #     warn on malformed config rather than fail-open.
     dispatch_list: list[str] | None = None
+    discover_warning: str | None = None
     try:
         from dispatcher_base import discover_config  # type: ignore[import]
-        cfg = discover_config()
-        agents_list = cfg.get("agents")
-        if isinstance(agents_list, list):
-            dispatch_list = sorted(a for a in agents_list if isinstance(a, str))
-    except Exception:  # pragma: no cover - defense in depth
-        dispatch_list = None
+    except ImportError:
+        # Older install path; legacy reporting is the right answer.
+        pass
+    else:
+        try:
+            cfg = discover_config()
+        except Exception as exc:  # noqa: BLE001 — intentional broad catch with warning
+            discover_warning = f"could not load review config: {exc}"
+        else:
+            agents_list = cfg.get("agents")
+            if agents_list is None:
+                # No override; the dispatcher will use AGENTS keys (all enabled).
+                dispatch_list = list(enabled)
+            elif isinstance(agents_list, list) and all(isinstance(a, str) for a in agents_list):
+                dispatch_list = sorted(set(agents_list))
+            else:
+                discover_warning = (
+                    f"config.agents is malformed (expected list[str], got "
+                    f"{type(agents_list).__name__}: {agents_list!r}) — "
+                    f"falling back to enabled-models reporting"
+                )
+
+    if discover_warning is not None:
+        msg = f"enabled agents: {enabled}"
+        if disabled:
+            msg += f"; disabled agents: {disabled}"
+        return "warn", f"{discover_warning}; {msg}"
 
     if dispatch_list is None:
+        # ImportError path — legacy report.
         if disabled:
             return "pass", f"enabled agents: {enabled}; disabled agents: {disabled}"
         return "pass", f"enabled agents: {enabled}"
@@ -219,13 +248,6 @@ def check_model_resolution() -> tuple[str, str]:
     dispatched = sorted(enabled_set & rotation_set)
     enabled_but_not_in_rotation = sorted(enabled_set - rotation_set)
     in_rotation_but_not_enabled = sorted(rotation_set - enabled_set)
-
-    if not dispatched:
-        return (
-            "fail",
-            "no agents would dispatch — enabled (in models) and rotation "
-            f"(config.agents) don't overlap. enabled={enabled} rotation={dispatch_list}",
-        )
 
     notes: list[str] = [f"dispatched agents: {dispatched}"]
     if enabled_but_not_in_rotation:
@@ -240,6 +262,19 @@ def check_model_resolution() -> tuple[str, str]:
         )
     if disabled:
         notes.append(f"disabled in models: {disabled}")
+
+    # Empty intersection is "warn" rather than "fail" — single-agent
+    # workflows (stark-review with --agent or per-domain via
+    # domain_agents) can still dispatch successfully without going
+    # through ``config.agents``. Let the dispatcher itself error if
+    # there's truly no agent to run; preflight surfaces the
+    # misalignment as a warning so the operator notices.
+    if not dispatched:
+        notes.insert(
+            0,
+            "no agents in the team-review intersection — single-agent dispatch may still work",
+        )
+        return "warn", "; ".join(notes)
 
     status = "warn" if (enabled_but_not_in_rotation or in_rotation_but_not_enabled) else "pass"
     return status, "; ".join(notes)
