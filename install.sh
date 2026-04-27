@@ -277,6 +277,49 @@ print(f"{e['sha']} @ {e['commit_iso']}{suffix}")
 PY
 }
 
+# ── Git hooks ────────────────────────────────────────────────
+#
+# Symlink the repo-tracked .githooks/* into the local .git/hooks/ so changes
+# to the hook are version-controlled and propagate without per-clone editing.
+# Worktree-aware: .git/hooks/ lives in --git-common-dir (the main clone's git
+# dir), shared across all worktrees. Coexists with git-lfs hooks because
+# nothing else uses pre-commit in this repo.
+
+install_git_hooks() {
+    local hook_src="$REPO_DIR/.githooks/pre-commit"
+    [ -f "$hook_src" ] || { warn "Git hooks: $hook_src not found"; return; }
+    local common_dir
+    common_dir=$(git -C "$REPO_DIR" rev-parse --git-common-dir 2>/dev/null) || {
+        warn "Git hooks: not in a git repo (skipping)"
+        return
+    }
+    # rev-parse may return a relative path; resolve against the repo root.
+    case "$common_dir" in /*) ;; *) common_dir="$REPO_DIR/$common_dir" ;; esac
+    local hook_dst="$common_dir/hooks/pre-commit"
+    chmod +x "$hook_src" 2>/dev/null || true
+    if [ -L "$hook_dst" ] && [ "$(readlink "$hook_dst")" = "$hook_src" ]; then
+        info "Git hook: pre-commit already linked"
+        return
+    fi
+    if [ -e "$hook_dst" ] && [ ! -L "$hook_dst" ]; then
+        warn "Git hook: $hook_dst exists and is not a symlink — leaving as-is"
+        return
+    fi
+    ln -sf "$hook_src" "$hook_dst"
+    info "Git hook: pre-commit → $hook_src"
+}
+
+uninstall_git_hooks() {
+    local common_dir
+    common_dir=$(git -C "$REPO_DIR" rev-parse --git-common-dir 2>/dev/null) || return
+    case "$common_dir" in /*) ;; *) common_dir="$REPO_DIR/$common_dir" ;; esac
+    local hook_dst="$common_dir/hooks/pre-commit"
+    if [ -L "$hook_dst" ]; then
+        rm -f "$hook_dst"
+        info "Removed git hook: pre-commit"
+    fi
+}
+
 # ── TUI: Interactive Skill Selection ─────────────────────────
 
 declare -a TUI_NAMES=()
@@ -502,6 +545,7 @@ tui_apply() {
     [ "$skipped" -gt 0 ] && warn "${skipped} skill(s) skipped (validation failed)"
 
     write_skill_manifest
+    install_git_hooks
 }
 
 interactive() {
@@ -706,6 +750,7 @@ install() {
     provision_infrastructure
 
     write_skill_manifest
+    install_git_hooks
 
     echo ""
     info "Note: To enable staleness detection in a repo, copy or reference:"
@@ -772,6 +817,8 @@ uninstall() {
         rm -f "$SKILL_MANIFEST_PATH"
         info "Removed skill manifest"
     fi
+
+    uninstall_git_hooks
 
     echo ""
     echo "Note: $CODE_REVIEW_DIR/history/ was not removed (contains local data)"
