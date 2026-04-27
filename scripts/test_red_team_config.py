@@ -31,10 +31,30 @@ def test_get_model_rates_returns_defaults(tmp_path):
     assert "claude-opus-4-7" in rates
     assert "gpt-5.4" in rates
     assert "gpt-5.5" in rates
+    assert "gpt-5.4-pro" in rates
+    assert "gpt-5.5-pro" in rates
     assert rates["gpt-5.4"]["input_per_1m_usd"] > 0
     assert rates["gpt-5.5"]["input_per_1m_usd"] > 0
+    assert rates["gpt-5.4-pro"]["input_per_1m_usd"] > 0
+    assert rates["gpt-5.5-pro"]["input_per_1m_usd"] > 0
     assert rates["o3"]["input_per_1m_usd"] > 0
     assert "_fallback" in rates
+
+
+def test_default_red_team_model_has_a_rate_entry(tmp_path):
+    """rt_b7 preflight requires red_team.model to be in model_rates. A typo
+    that decoupled the two would silently pass tests and only surface at
+    preflight, where it blocks real runs. Round-2 review (test-coverage)."""
+    with patch.object(config_loader, "CONFIG_PATH", tmp_path / "nope.json"):
+        config_loader.load_config.cache_clear()
+        cfg = config_loader.get_red_team_config()
+        rates = config_loader.get_model_rates()
+    assert cfg["model"] in rates, (
+        f"red_team.model={cfg['model']!r} has no model_rates entry — "
+        f"preflight would block all red-team runs"
+    )
+    assert rates[cfg["model"]]["input_per_1m_usd"] > 0
+    assert rates[cfg["model"]]["output_per_1m_usd"] > 0
 
 
 def test_get_red_team_config_merges_non_locked_overrides(tmp_path):
@@ -199,21 +219,26 @@ def test_get_red_team_config_rejects_security_critical_overrides(
 
 
 def test_locked_override_emits_audit_event(tmp_path, capsys, monkeypatch):
-    """Spec §6 requires `red_team.config.override_rejected` for locked
-    org/repo overrides. Verify the event is enqueued (not just stderr-warned)
-    so audit pipelines can detect bypass attempts."""
+    """Spec §6 requires `red_team_override_rejected` for locked org/repo
+    overrides. Use the *real* emit_queue.validate so the event survives
+    schema enforcement (round-2 finding 6/7: the previous event name was
+    rejected by emit_queue.validate(), silently dropped, and the test
+    only passed because it was monkeypatched onto a fake queue)."""
+    import emit_queue
+
     captured: list[dict] = []
 
-    class _FakeEmitQueue:
-        @staticmethod
-        def make_event(name, payload):
-            return {"name": name, "payload": payload}
+    def capture_enqueue(event, *_, **__):
+        # Round-trip through the real validator — if the event type isn't
+        # in _VALID_TYPES, this will raise and we'll see it as a hard
+        # failure rather than a silent stderr noise.
+        errors = emit_queue.validate(event)
+        assert errors == [], f"event failed real validate(): {errors}"
+        captured.append(event)
+        return True
 
-        @staticmethod
-        def enqueue(event):
-            captured.append(event)
-
-    monkeypatch.setattr(config_loader, "_EMIT_QUEUE", _FakeEmitQueue)
+    monkeypatch.setattr(emit_queue, "enqueue", capture_enqueue)
+    monkeypatch.setattr(config_loader, "_EMIT_QUEUE", emit_queue)
 
     global_cfg = tmp_path / "global.json"
     global_cfg.write_text(json.dumps({"red_team": {"model": "o3"}}))
@@ -228,12 +253,12 @@ def test_locked_override_emits_audit_event(tmp_path, capsys, monkeypatch):
         config_loader.load_config.cache_clear()
         config_loader.get_red_team_config()
 
-    names = [e["name"] for e in captured]
-    assert "red_team.config.override_rejected" in names
+    types = [e["type"] for e in captured]
+    assert "red_team_override_rejected" in types
     rejected_fields = {
         e["payload"]["field"]
         for e in captured
-        if e["name"] == "red_team.config.override_rejected"
+        if e["type"] == "red_team_override_rejected"
     }
     assert "model" in rejected_fields
     assert "enabled" in rejected_fields
@@ -241,7 +266,7 @@ def test_locked_override_emits_audit_event(tmp_path, capsys, monkeypatch):
     sources = {
         e["payload"]["source"]
         for e in captured
-        if e["name"] == "red_team.config.override_rejected"
+        if e["type"] == "red_team_override_rejected"
     }
     assert any(str(repo_cfg) in s for s in sources)
 

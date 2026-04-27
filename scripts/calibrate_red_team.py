@@ -269,12 +269,20 @@ def write_calibration_doc(output_path: Path, summary: dict, fixture: Path) -> No
 
 | Metric | Value |
 |---|---|
-| Mean cost per run | ${summary['mean_cost_usd']:.4f} |
+| Mean cost per call | ${summary['mean_cost_usd']:.4f} |
 | Stdev | ${summary['stdev_cost_usd']:.4f} |
-| 95th percentile | ${summary['p95_cost_usd']:.4f} |
-| **Proposed `per_run_budget_usd`** | **${summary['proposed_per_run_budget_usd']:.2f}** |
+| 95th percentile (per-call) | ${summary['p95_cost_usd']:.4f} |
+| **Per-call ceiling (p95 × 1.5)** | **${summary['proposed_per_run_budget_usd']:.2f}** |
 
-Raw cost per run (USD): {[round(c, 4) for c in summary['costs']]}
+Raw cost per call (USD): {[round(c, 4) for c in summary['costs']]}
+
+> **Note (round-2 review #4):** `red_team.per_run_budget_usd` is a *total
+> cycle* ceiling: red-team calls + stability verification calls + design
+> regens + inner design-review loop calls. The single-call p95 above is a
+> floor for that ceiling, not the ceiling itself. Multiply by an estimated
+> cycle factor (rule of thumb: `2 × max_rounds + 1` when stability
+> verification fires) before applying to config. For default
+> `max_rounds=2`, treat ~5× the per-call ceiling as the cycle budget.
 
 ## Stability (Jaccard overlap of blocking findings across pairs)
 
@@ -344,10 +352,19 @@ def main() -> int:
                              "for substantive A/B comparison across models.")
     args = parser.parse_args()
 
-    model_slug = (args.model or "default").replace(".", "-").replace("/", "-")
-    out = Path("docs/calibration") / (
-        f"{time.strftime('%Y-%m-%d')}-red-team-v1-calibration-{model_slug}.md"
-    )
+    # Preserve the historical filename (`…-calibration.md`) when --model is
+    # omitted so any consumer that grepped for the v0 path still finds it.
+    # Only suffix the model slug for explicit A/B runs, where avoiding
+    # back-to-back clobber is the whole point of the suffix.
+    if args.model:
+        model_slug = args.model.replace(".", "-").replace("/", "-")
+        out = Path("docs/calibration") / (
+            f"{time.strftime('%Y-%m-%d')}-red-team-v1-calibration-{model_slug}.md"
+        )
+    else:
+        out = Path("docs/calibration") / (
+            f"{time.strftime('%Y-%m-%d')}-red-team-v1-calibration.md"
+        )
     findings_dump_path = (
         out.with_suffix(".findings.json") if args.dump_findings else None
     )

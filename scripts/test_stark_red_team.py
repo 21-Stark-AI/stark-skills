@@ -1014,6 +1014,92 @@ def test_run_red_team_explicit_empty_findings_is_clean(tmp_path, monkeypatch):
     assert result.blocking_count == 0
 
 
+def test_dispatch_responses_api_sets_store_false(monkeypatch):
+    """OpenAI Responses API persists prompts by default (`store: true`).
+    Red-team prompts contain attacker-controlled artifact / spec / PR-diff
+    content; persisting them server-side leaks attacker-influenced material
+    into the org's response-retention surface. Round-2 review (security
+    domain) flagged this. Request body must include `store: false`."""
+    payload = {
+        "id": "r",
+        "status": "completed",
+        "output": [{"content": [{"type": "output_text", "text": "OK"}]}],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    captured: dict = {}
+    monkeypatch.setattr(rt.urllib.request, "urlopen", _fake_urlopen_factory(payload, captured))
+
+    rt.dispatch_responses_api(
+        prompt="x", model="o3", timeout_s=60, env={"OPENAI_API_KEY": "sk-test"},
+    )
+    assert captured["body"].get("store") is False
+
+
+def test_dispatch_responses_api_http_error_does_not_echo_body(monkeypatch):
+    """Round-2 finding 10: HTTPError path used to embed the first 400 chars
+    of the provider response in `error`, which can leak rejected prompt
+    content (provider responses sometimes echo input snippets). Status code
+    is enough for triage; the body stays out of audit-bound `error`."""
+    import urllib.error
+
+    secret_marker = "ATTACKER_PAYLOAD_LEAKED_VIA_PROVIDER_BODY"
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            url=req.full_url, code=400, msg="Bad Request",
+            hdrs=None,
+            fp=__import__("io").BytesIO(
+                f'{{"error":{{"message":"bad: {secret_marker}"}}}}'.encode()
+            ),
+        )
+
+    monkeypatch.setattr(rt.urllib.request, "urlopen", fake_urlopen)
+
+    result = rt.dispatch_responses_api(
+        prompt="x", model="o3", timeout_s=60, env={"OPENAI_API_KEY": "sk-test"},
+    )
+    assert result.error is not None
+    assert "400" in result.error
+    assert secret_marker not in result.error
+
+
+def test_derive_status_treats_error_as_halted():
+    """Status helper: when `error` is set, status is `error` even if counts
+    are zero. Without this helper, callers that derive status from counts
+    alone classify parse errors as `clean` (round-2 #8)."""
+    err_result = rt.RedTeamResult(
+        stage="design", round_num=1, synthesis="",
+        findings=[], blocking_count=0, human_review_count=0,
+        raw_output="", duration_s=0.5, error="parse failed",
+    )
+    assert rt.derive_status(err_result) == "error"
+
+
+def test_derive_status_clean_when_no_findings_and_no_error():
+    clean = rt.RedTeamResult(
+        stage="design", round_num=1, synthesis="",
+        findings=[], blocking_count=0, human_review_count=0,
+        raw_output="{}", duration_s=0.5,
+    )
+    assert rt.derive_status(clean) == "clean"
+
+
+def test_derive_status_halted_when_blocking_or_human_review():
+    blocking = rt.RedTeamResult(
+        stage="design", round_num=1, synthesis="",
+        findings=[], blocking_count=2, human_review_count=0,
+        raw_output="{}", duration_s=0.5,
+    )
+    assert rt.derive_status(blocking) == "halted"
+
+    needs_human = rt.RedTeamResult(
+        stage="design", round_num=1, synthesis="",
+        findings=[], blocking_count=0, human_review_count=1,
+        raw_output="{}", duration_s=0.5,
+    )
+    assert rt.derive_status(needs_human) == "halted_human_review"
+
+
 def test_run_red_team_parse_error_does_not_echo_raw_excerpt(tmp_path, monkeypatch):
     """The raw model output may contain echoed attacker-controlled spec/diff
     content. Don't put it into `error` (which lands in audit logs / state) —

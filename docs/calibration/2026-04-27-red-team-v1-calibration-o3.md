@@ -9,12 +9,14 @@
 
 | Metric | Value |
 |---|---|
-| Mean cost per run | $0.6879 |
+| Mean cost per call | $0.6879 |
 | Stdev | $0.0000 |
-| 95th percentile | $0.6879 |
-| **Proposed `per_run_budget_usd`** | **$1.03** |
+| 95th percentile (per-call) | $0.6879 |
+| **Per-call ceiling (p95 × 1.5)** | **$1.03** |
 
-Raw cost per run (USD): [0.6879]
+Raw cost per call (USD): [0.6879]
+
+> **Note (round-2 review #4):** `red_team.per_run_budget_usd` is a total-cycle ceiling, not per-call. For default `max_rounds=2`, multiply the per-call ceiling above by ~5 to get a cycle budget. The v1.1 default ships with `gpt-5.5-pro` at `$15.00`; this o3 calibration is retained as A/B reference.
 
 ## Stability (Jaccard overlap of blocking findings across pairs)
 

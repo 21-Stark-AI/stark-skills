@@ -289,6 +289,24 @@ def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding
     return out
 
 
+def derive_status(result: "RedTeamResult") -> str:
+    """Map a RedTeamResult to a single canonical status string for callers.
+
+    Centralized so that every caller follows the same precedence rule —
+    `error` first, then human-review halt, then blocking-finding halt,
+    then clean. Without this helper, callers that only checked counts
+    silently classified parse errors as `clean` (round-2 finding 8).
+    Returns one of: ``"error" | "halted_human_review" | "halted" | "clean"``.
+    """
+    if result.error:
+        return "error"
+    if result.human_review_count > 0:
+        return "halted_human_review"
+    if result.blocking_count > 0:
+        return "halted"
+    return "clean"
+
+
 def count_blocking(
     findings: list[RedTeamFinding],
     min_severity: str = "high",
@@ -604,6 +622,11 @@ def dispatch_responses_api(
         "input": prompt,
         "reasoning": {"effort": _map_reasoning_effort(model, reasoning_effort)},
         "max_output_tokens": max_output_tokens,
+        # Red-team prompts contain attacker-controlled artifact / spec /
+        # PR-diff content. Responses API defaults `store: true` (30-day
+        # retention for retrieval). Opt out so attacker-influenced material
+        # is not persisted server-side beyond the call itself.
+        "store": False,
     }
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -620,16 +643,15 @@ def dispatch_responses_api(
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             payload_bytes = resp.read()
     except urllib.error.HTTPError as exc:
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001 — defensive on already-consumed body
-            err_body = ""
+        # Provider response bodies can echo rejected prompt content; status
+        # code is enough for triage. The body is intentionally not embedded
+        # in `error` because that string lands in audit logs and run state.
         return CodexCallResult(
             raw_output="",
             duration_s=time.time() - t0,
             input_tokens=0,
             output_tokens=0,
-            error=f"responses api http {exc.code}: {err_body[:400]}",
+            error=f"responses api http {exc.code} {exc.reason or ''}".strip(),
         )
     except urllib.error.URLError as exc:
         return CodexCallResult(

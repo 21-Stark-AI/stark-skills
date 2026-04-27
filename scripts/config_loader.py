@@ -402,7 +402,7 @@ def _emit_override_rejected(
         return
     try:
         event = _EMIT_QUEUE.make_event(
-            f"{section_name}.config.override_rejected",
+            "red_team_override_rejected",
             {
                 "section": section_name,
                 "field": field,

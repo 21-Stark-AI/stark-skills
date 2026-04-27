@@ -9,12 +9,19 @@
 
 | Metric | Value |
 |---|---|
-| Mean cost per run | $1.9009 |
+| Mean cost per call | $1.9009 |
 | Stdev | $0.0000 |
-| 95th percentile | $1.9009 |
-| **Proposed `per_run_budget_usd`** | **$2.85** |
+| 95th percentile (per-call) | $1.9009 |
+| **Per-call ceiling (p95 × 1.5)** | **$2.85** |
 
-Raw cost per run (USD): [1.9009]
+Raw cost per call (USD): [1.9009]
+
+> **Note (round-2 review #4):** the $2.85 figure above is a *per-call*
+> ceiling, not a `per_run_budget_usd`. The latter is a total-cycle ceiling
+> covering red-team calls + stability verification + design regens + inner
+> design-review loop calls. For default `max_rounds=2`, treat ~5× the
+> per-call ceiling as the cycle budget (≈$15.00) — which is the value the
+> v1.1 default in `global/config.json` ships with.
 
 ## Stability (Jaccard overlap of blocking findings across pairs)
 
