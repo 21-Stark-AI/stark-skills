@@ -691,25 +691,36 @@ def dispatch_responses_api(
         )
 
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    in_tokens = int(usage.get("input_tokens") or 0)
     # output_tokens already includes reasoning tokens; do NOT add
     # output_tokens_details.reasoning_tokens or we'd double-count cost.
-    out_tokens = int(usage.get("output_tokens") or 0)
+    # Coerce defensively — schema drift (string instead of int) shouldn't
+    # crash dispatch; treat as unknown and zero out. Round-3 finding 4.
+    def _safe_int(v: Any) -> int:
+        try:
+            return int(v) if v is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    in_tokens = _safe_int(usage.get("input_tokens"))
+    out_tokens = _safe_int(usage.get("output_tokens"))
 
     text = _extract_responses_text(payload)
     status = payload.get("status")
     if isinstance(status, str) and status != "completed":
-        err = payload.get("error") or {}
-        try:
-            err_summary = json.dumps(err)
-        except (TypeError, ValueError):
-            err_summary = str(err)
+        # Provider error objects can echo rejected prompt content into
+        # `error.message`; that string lands in audit logs. Surface only
+        # status + structured `error.code` (which is enumerated provider
+        # state, not free-form content). Full error remains in raw_output
+        # for debug. Round-3 finding 3.
+        err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        code = err.get("code") if isinstance(err, dict) else None
+        code_suffix = f" ({code})" if isinstance(code, str) and code else ""
         return CodexCallResult(
             raw_output=text,
             duration_s=duration,
             input_tokens=in_tokens,
             output_tokens=out_tokens,
-            error=f"responses api status {status}: {err_summary[:400]}",
+            error=f"responses api status {status}{code_suffix}",
         )
 
     return CodexCallResult(
@@ -838,6 +849,31 @@ def run_red_team(
     synthesis = parsed.get("synthesis", "")
     raw_findings = parsed.get("findings") or []
     findings = validate_findings(raw_findings) if isinstance(raw_findings, list) else []
+
+    # rt3 (round-3 #8) — if the model emitted findings but ALL of them
+    # failed schema validation, that's schema drift, not a clean run. The
+    # earlier guards caught missing/non-list findings; this one catches
+    # the case where the array exists with N entries but every entry is
+    # malformed (wrong persona slug, missing required fields, etc.).
+    if raw_findings and not findings:
+        return RedTeamResult(
+            stage=stage,
+            round_num=round_num,
+            synthesis=synthesis if isinstance(synthesis, str) else "",
+            findings=[],
+            blocking_count=0,
+            human_review_count=0,
+            raw_output=call.raw_output,
+            duration_s=call.duration_s,
+            cost_usd=cost_usd,
+            error=(
+                f"red-team output had {len(raw_findings)} findings but all "
+                "failed schema validation — refusing to treat as clean. "
+                "See raw_output for full text."
+            ),
+            input_tokens=call.input_tokens,
+            output_tokens=call.output_tokens,
+        )
 
     return RedTeamResult(
         stage=stage,

@@ -398,7 +398,7 @@ All other fields (`max_rounds`, `per_run_budget_usd`, `timeout_s`, `stability_ov
 
 A repo that needs a *stricter* posture than the global default (e.g. blocking on `medium`) must open a PR against `stark-skills` to set the global default — same friction as a legitimate persona addition. A repo that wants a *weaker* posture is exactly the failure mode this lock prevents.
 
-**Enforcement:** `get_red_team_config()` in `config_loader.py` checks if the resolved config from org/repo level contains a key in `_RED_TEAM_LOCKED_FIELDS`. If yes, the value is dropped from the override, a warning is logged to stderr with the locked field name and the source file that tried to set it, and a `red_team.config.override_rejected` event is emitted for audit.
+**Enforcement:** `get_red_team_config()` in `config_loader.py` checks if the resolved config from org/repo level contains a key in `_RED_TEAM_LOCKED_FIELDS`. If yes, the value is dropped from the override, a warning is logged to stderr with the locked field name and the source file that tried to set it, and a `red_team_override_rejected` event is emitted for audit.
 
 A repo that genuinely needs a custom persona (e.g., an ML-heavy repo wanting an "ML Systems Architect") must open a PR against `stark-skills` to add the persona file to the global repo. This is by design: customization has the same friction as abuse, so legitimate additions are reviewable.
 
@@ -635,7 +635,7 @@ A persona whose findings are always dismissed is probably badly scoped. A person
 | Red team still blocking after `max_rounds` AND `halt_on_unresolved: false` | Same stability check. On confirmed blocking, log prominently, post comments, exit 0. On flicker, mark `clean_after_flicker`, exit 0. |
 | Red team produces human-review findings at any round (rt4 + rt_b3) | Halt with `halted_human_review` unless all offending finding IDs are in `--accept-red-team-human-review`. If `cfg.allow_human_review_halt: false`, downgrade to `medium` advisory instead of halting. Exit 1. Preserve state. User resumes by re-running with the CLI override. |
 | Total cycle cost exceeds `per_run_budget_usd` (rt5 + rt_b4) | Halt immediately with `halted_budget` before the next round starts. Cost is the **total** of red-team calls + stability verification calls + design regens + inner design-review calls during a red-team cycle. Exit 1. Preserve state. |
-| Repo-level config attempts to override `red_team.personas` or `red_team.model` (rt1) | Drop the override. Log warning to stderr with source file. Emit `red_team.config.override_rejected` event. Continue with global-locked values. |
+| Repo-level config attempts to override `red_team.personas` or `red_team.model` (rt1) | Drop the override. Log warning to stderr with source file. Emit `red_team_override_rejected` event. Continue with global-locked values. |
 | Injected instructions detected inside artifact/spec/PR-diff delimiters (rt_b1) | Personas instructed to flag injection as a `security-trust` critical finding. Pipeline halts on the blocking finding normally. Dispatcher also logs the detection independently. |
 | Attacker input exceeds `max_input_chars` (rt_b1) | Truncate with visible `[TRUNCATED to N chars]` marker. Log `red_team.input.truncated` event. Continue. |
 | Round-N blocking findings fail stability check (rt2 + rt_b2) | That round produces no regen. Log both red-team outputs with `tag: "flicker"`. Post advisory comment. Advance to next round without mutating the design. |
@@ -688,7 +688,7 @@ Refine persona files based on halt patterns. If single-call synthesis proves sha
 - [ ] `global/prompts/red-team/design.md` exists; `plan.md` exists as a scaffolded placeholder.
 - [ ] Persona prompts explicitly invite `REQUEST_HUMAN_REVIEW` as a first-class option (rt4).
 - [ ] `red_team` section added to `global/config.json` with the exact shape in §6, including `per_run_budget_usd` and `stability_overlap_jaccard_min`.
-- [ ] `get_red_team_config()` typed accessor in `config_loader.py` returns the merged default + override dict AND rejects overrides of `personas` / `model` from org/repo levels, emitting a warning + `red_team.config.override_rejected` event (rt1).
+- [ ] `get_red_team_config()` typed accessor in `config_loader.py` returns the merged default + override dict AND rejects overrides of `personas` / `model` from org/repo levels, emitting a warning + `red_team_override_rejected` event (rt1).
 - [ ] `red_team_audit.py` creates all **three** tables in §10 (`red_team_runs`, `red_team_persona_stats`, `red_team_findings` — rt3); inserting a round + persona stats + raw findings survives a round-trip read.
 - [ ] `record_findings()` persists `concern`, `consequence`, `counter_proposal`, `trade_off`, and `reason_for_uncertainty` for every finding (rt3).
 - [ ] Unit tests cover:
@@ -709,7 +709,7 @@ Refine persona files based on halt patterns. If single-call synthesis proves sha
 - [ ] `forged_review_metrics.db` opens with the new tables; existing `forged-review` audits still work.
 - [ ] PR commenting: when a PR context exists, red-team findings post as separate comments under `stark-codex[bot]`, one per persona, each including the shared `synthesis`. Comments are idempotent across rounds via deterministic markers.
 - [ ] `red_team.skipped` event fires correctly when enabled=false, CLI missing, or `stages.design.enabled: false`.
-- [ ] `red_team.config.override_rejected` event fires when a repo/org config tries to override `personas` or `model`.
+- [ ] `red_team_override_rejected` event fires when a repo/org config tries to override `personas` or `model`.
 - [ ] Design spec references red-team personas in `skill/stark-forge/SKILL.md` and `skill/stark-forged-review/README.md`.
 - [ ] `skill-creator:skill-creator` structural eval passes on the updated skills.
 - [ ] **Week 0 calibration committed** — `docs/calibration/YYYY-MM-DD-red-team-v1-calibration.md` exists with observed Jaccard distribution and per-run cost percentiles (rt_b5). The `per_run_budget_usd` and `stability_overlap_jaccard_min` values in `global/config.json` match the calibration.

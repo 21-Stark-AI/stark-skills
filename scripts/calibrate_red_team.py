@@ -325,7 +325,10 @@ $10.00 placeholder until real calibration data arrives from live o3 runs.
 ```json
 {{
   "red_team": {{
-    "per_run_budget_usd": {summary['proposed_per_run_budget_usd']},
+    // Cycle budget = per-call ceiling × estimated cycle factor.
+    // For default max_rounds=2: ~5× covers worst-case
+    // (2 primary calls + 2 stability verifications + 1 inner review).
+    "per_run_budget_usd": {round(summary['proposed_per_run_budget_usd'] * 5, 2)},
     "stability_overlap_jaccard_min": {summary['proposed_stability_overlap_jaccard_min']}
   }}
 }}

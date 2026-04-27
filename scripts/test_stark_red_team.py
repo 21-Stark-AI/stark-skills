@@ -1014,6 +1014,92 @@ def test_run_red_team_explicit_empty_findings_is_clean(tmp_path, monkeypatch):
     assert result.blocking_count == 0
 
 
+def test_run_red_team_all_invalid_findings_surface_as_error(tmp_path, monkeypatch):
+    """Round-3 finding 8: a non-empty `findings` array whose every entry
+    fails schema validation drops to an empty list — without this guard,
+    the result looks identical to a real clean run."""
+    prompts_root = tmp_path / "red-team"
+    personas_dir = prompts_root / "personas"
+    personas_dir.mkdir(parents=True)
+    (prompts_root / "preamble.md").write_text("p")
+    (prompts_root / "design.md").write_text("d")
+    for slug in rt.VALID_PERSONA_SLUGS:
+        (personas_dir / f"{slug}.md").write_text(f"{slug}")
+    monkeypatch.setattr(rt, "PROMPTS_ROOT", prompts_root)
+
+    def fake_dispatch(**kwargs):
+        # Three findings, each with an unknown persona — all dropped.
+        return rt.CodexCallResult(
+            raw_output=json.dumps({
+                "synthesis": "x",
+                "findings": [
+                    {"id": f"rt{i}", "persona": "quantum-architect",
+                     "severity": "high", "concern": "c", "consequence": "c2",
+                     "counter_proposal": "cp", "trade_off": "to"}
+                    for i in range(3)
+                ],
+            }),
+            duration_s=1.0, input_tokens=10, output_tokens=10,
+        )
+
+    monkeypatch.setattr(rt, "dispatch_codex", fake_dispatch)
+    monkeypatch.setattr(rt, "dispatch_responses_api", fake_dispatch)
+
+    result = rt.run_red_team(
+        stage="design",
+        artifact="ART", source_spec="SRC", pr_diff=None,
+        personas=list(rt.VALID_PERSONA_SLUGS),
+        model="gpt-5.5-pro",
+        model_rates={"_fallback": {"input_per_1m_usd": 0, "output_per_1m_usd": 0}},
+        cwd=None, timeout_s=60,
+        min_severity_to_block="high", max_input_chars=200_000,
+    )
+    assert result.error is not None
+    assert "schema validation" in result.error
+    assert result.findings == []
+
+
+def test_dispatch_responses_api_safe_int_on_malformed_usage(monkeypatch):
+    """Round-3 finding 4: schema drift in usage fields (string instead of
+    int, or missing entirely) must not crash dispatch."""
+    payload = {
+        "id": "r",
+        "status": "completed",
+        "output": [{"content": [{"type": "output_text", "text": "OK"}]}],
+        "usage": {"input_tokens": "not-a-number", "output_tokens": None},
+    }
+    captured: dict = {}
+    monkeypatch.setattr(rt.urllib.request, "urlopen", _fake_urlopen_factory(payload, captured))
+    result = rt.dispatch_responses_api(
+        prompt="x", model="o3", timeout_s=60, env={"OPENAI_API_KEY": "sk-test"},
+    )
+    assert result.error is None
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+
+
+def test_dispatch_responses_api_non_completed_status_does_not_leak_error_message(monkeypatch):
+    """Round-3 finding 3: provider's `error.message` can echo rejected
+    prompt fragments; only the `error.code` enum is safe to expose."""
+    secret_marker = "ATTACKER_PAYLOAD_IN_PROVIDER_ERROR_MESSAGE"
+    payload = {
+        "id": "r",
+        "status": "failed",
+        "error": {"code": "rate_limit", "message": f"slow down: {secret_marker}"},
+        "output": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    captured: dict = {}
+    monkeypatch.setattr(rt.urllib.request, "urlopen", _fake_urlopen_factory(payload, captured))
+    result = rt.dispatch_responses_api(
+        prompt="x", model="o3", timeout_s=60, env={"OPENAI_API_KEY": "sk-test"},
+    )
+    assert result.error is not None
+    assert "failed" in result.error
+    assert "rate_limit" in result.error  # code is safe (enumerated)
+    assert secret_marker not in result.error  # message is not
+
+
 def test_dispatch_responses_api_sets_store_false(monkeypatch):
     """OpenAI Responses API persists prompts by default (`store: true`).
     Red-team prompts contain attacker-controlled artifact / spec / PR-diff

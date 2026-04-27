@@ -59,7 +59,8 @@ $10.00 placeholder until real calibration data arrives from live o3 runs.
 ```json
 {
   "red_team": {
-    "per_run_budget_usd": 1.03,
+    // Cycle factor ~5× per-call ceiling (max_rounds=2). 1.03 × 5 = 5.15.
+    "per_run_budget_usd": 5.15,
     "stability_overlap_jaccard_min": 0.0
   }
 }
