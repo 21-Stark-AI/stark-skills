@@ -71,9 +71,21 @@ from dispatcher_base import (
 # ── Config ──────────────────────────────────────────────────────────────
 
 SCRIPTS_DIR = Path(__file__).parent
-PYTHON = str(SCRIPTS_DIR / ".venv" / "bin" / "python3")
 GITHUB_APP = str(SCRIPTS_DIR / "github_app.py")
 GLOBAL_PROMPTS_DIR = Path.home() / ".claude" / "code-review" / "prompts"
+
+
+def _resolve_python() -> str:
+    override = os.environ.get("STARK_REVIEW_PYTHON")
+    if override:
+        return override
+    venv_python = SCRIPTS_DIR / ".venv" / "bin" / "python3"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
+PYTHON = _resolve_python()
 
 # AGENTS: filtered by is_agent_enabled, sourced from dispatcher_base
 AGENTS = _BASE_AGENTS

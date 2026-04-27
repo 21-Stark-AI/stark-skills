@@ -23,6 +23,17 @@ FAKE_DOMAINS = {
 }
 
 
+class TestGithubAppPython:
+    def test_resolve_python_prefers_override(self, monkeypatch):
+        monkeypatch.setenv("STARK_REVIEW_PYTHON", "/opt/review-python")
+        assert multi_review._resolve_python() == "/opt/review-python"
+
+    def test_resolve_python_falls_back_to_current_interpreter(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("STARK_REVIEW_PYTHON", raising=False)
+        with patch.object(multi_review, "SCRIPTS_DIR", tmp_path):
+            assert multi_review._resolve_python() == sys.executable
+
+
 class TestJsonOnlyFlag:
     """--json-only must produce pure JSON on stdout, logs on stderr."""
 
