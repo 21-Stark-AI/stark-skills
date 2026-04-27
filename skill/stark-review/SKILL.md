@@ -218,10 +218,13 @@ Fail closed before classification if any of these are true:
 
 - the review command exits non-zero, even if it printed JSON
 - stdout is not valid JSON
-- `triage.error` is non-null in triage-orchestrator output
 - `triage.dispatched_domains` is non-empty but dispatch returned zero result records
 - `dispatch.failed > 0` in triage output
 - direct `multi_review.py` output has `summary.failed_results > 0`
+
+If `triage.error` is set but dispatch produced result records and
+`dispatch.failed == 0`, treat it as a fail-open triage warning rather than a
+cleanliness blocker.
 
 In those cases, print the failed domains/agents and stop. Do not report the PR
 as clean. Use the actual dispatched domain count from the payload; do not
