@@ -1119,6 +1119,15 @@ class TestSingleAgentMode:
         result = multi_review.resolve_domain_agents(config, domains, override_agent="gemini")
         assert result == {"security": "gemini"}
 
+    def test_resolve_domain_agents_rejects_non_string_value(self):
+        config = {"domain_agents": {"security": None}}
+        with pytest.raises(RuntimeError, match="Invalid domain_agents value"):
+            multi_review.resolve_domain_agents(config, ["security"])
+
+    def test_resolve_domain_agents_rejects_non_mapping_config(self):
+        with pytest.raises(RuntimeError, match="domain_agents must be an object"):
+            multi_review.resolve_domain_agents({"domain_agents": ["codex"]}, ["security"])
+
     @patch("multi_review._build_graph_dependency_context", return_value=None)
     @patch("multi_review.subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr=""))
     @patch("multi_review.run_single_agent_round", return_value=ReviewRound(round_num=1))
@@ -1245,6 +1254,27 @@ class TestSingleAgentMode:
     ):
         with patch("multi_review.run_single_agent_round") as mock_round:
             with pytest.raises(RuntimeError, match="not enabled or unknown"):
+                multi_review.review_pr_single(
+                    "GetEvinced/test",
+                    1,
+                    dry_run=True,
+                    json_output=True,
+                    persist_history=False,
+                )
+        mock_round.assert_not_called()
+
+    @patch("multi_review._build_graph_dependency_context", return_value=None)
+    @patch("multi_review.subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr=""))
+    @patch("multi_review.discover_config", return_value={"domain_agents": {"architecture": None}})
+    @patch("multi_review.DOMAINS", FAKE_DOMAINS)
+    def test_review_pr_single_rejects_invalid_configured_agent_value(
+        self,
+        _mock_config,
+        _mock_run,
+        _mock_graph,
+    ):
+        with patch("multi_review.run_single_agent_round") as mock_round:
+            with pytest.raises(RuntimeError, match="Invalid domain_agents value"):
                 multi_review.review_pr_single(
                     "GetEvinced/test",
                     1,

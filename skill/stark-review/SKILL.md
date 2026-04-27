@@ -216,7 +216,9 @@ Flatten findings from:
 
 Fail closed before classification if any of these are true:
 
+- the review command exits non-zero, even if it printed JSON
 - stdout is not valid JSON
+- `triage.error` is non-null in triage-orchestrator output
 - `triage.dispatched_domains` is non-empty but dispatch returned zero result records
 - `dispatch.failed > 0` in triage output
 - direct `multi_review.py` output has `summary.failed_results > 0`

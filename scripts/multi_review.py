@@ -1243,7 +1243,7 @@ def run_review_round(
 
 
 def resolve_domain_agents(
-    config: dict,
+    config: dict[str, Any],
     domains: list[str],
     override_agent: str | None = None,
 ) -> dict[str, str]:
@@ -1251,10 +1251,26 @@ def resolve_domain_agents(
 
     Priority: CLI override > config domain_agents > fallback "codex".
     """
-    if override_agent:
-        return {d: override_agent for d in domains}
+    if override_agent is not None:
+        if not isinstance(override_agent, str) or not override_agent.strip():
+            raise RuntimeError("--agent must be a non-empty string")
+        return {d: override_agent.strip() for d in domains}
+
     da = config.get("domain_agents", {})
-    return {d: da.get(d, "codex") for d in domains}
+    if da is None:
+        da = {}
+    if not isinstance(da, dict):
+        raise RuntimeError("domain_agents must be an object mapping domains to agent names")
+
+    resolved: dict[str, str] = {}
+    for domain in domains:
+        agent = da.get(domain, "codex")
+        if not isinstance(agent, str) or not agent.strip():
+            raise RuntimeError(
+                f"Invalid domain_agents value for {domain!r}: expected a non-empty string"
+            )
+        resolved[domain] = agent.strip()
+    return resolved
 
 
 def run_single_agent_round(
