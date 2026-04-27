@@ -183,9 +183,16 @@ def _build_graph_dependency_context(
 
     Returns None on failure (exit 2, timeout, parse error) — callers degrade gracefully.
     Token budget: ~2000 tokens. Truncates to blast radius edges when exceeded.
+
+    Resolves *base* through :func:`_resolve_base_ref` so blast-radius
+    discovery uses the same merge-base as ``_get_changed_files`` and
+    the agent prompts. Without this, a stale local ``main`` ref could
+    feed architecture/correctness sub-agents dependency nodes from
+    other PRs that already landed on origin/main.
     """
     stark_graph = SCRIPTS_DIR / "stark_graph.py"
-    cmd = [sys.executable, str(stark_graph), "--stage", "diff", "--repo", cwd, "--base", base]
+    resolved_base = _resolve_base_ref(base, cwd=cwd)
+    cmd = [sys.executable, str(stark_graph), "--stage", "diff", "--repo", cwd, "--base", resolved_base]
     if pr_number is not None:
         cmd.extend(["--pr", str(pr_number)])
     try:

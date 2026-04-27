@@ -812,6 +812,78 @@ class TestResolveBaseRef:
         assert called["n"] == 0
 
 
+class TestSubagentPromptUsesResolvedBase:
+    """The agent's `git diff <base>...HEAD` call must use the same
+    resolved base as ``_get_changed_files``. Otherwise the agent
+    reads an inflated patch via stale local ``main`` while the file
+    filter scopes correctly to ``origin/main`` — out-of-bloat-but-
+    still-in-changed-files findings would slip through (the failure
+    mode that motivated round-1 finding #4)."""
+
+    @patch("multi_review.is_agent_enabled", return_value=True)
+    @patch("multi_review.subprocess.run")
+    def _captured_prompt(self, agent: str, mock_run, _enabled, *,
+                         base: str = "main") -> str:
+        captured: dict[str, str] = {}
+        def fake_run(cmd, **kwargs):
+            if cmd and cmd[0] == "git":
+                # _resolve_base_ref's origin/<base> probe — succeed.
+                return MagicMock(stdout="abc1234\n", stderr="", returncode=0)
+            # Agent invocation — record stdin or -p prompt arg.
+            if "input" in kwargs and kwargs["input"]:
+                captured["prompt"] = kwargs["input"]
+            elif cmd and "-p" in cmd:
+                captured["prompt"] = cmd[cmd.index("-p") + 1]
+            return MagicMock(stdout='[]', stderr="", returncode=0)
+        mock_run.side_effect = fake_run
+        multi_review._run_subagent(agent, "architecture", base)
+        return captured.get("prompt", "")
+
+    def test_claude_prompt_uses_resolved_base(self):
+        prompt = self._captured_prompt("claude")
+        assert "git diff origin/main...HEAD" in prompt
+        assert "git diff main...HEAD" not in prompt
+
+    def test_codex_prompt_uses_resolved_base(self):
+        prompt = self._captured_prompt("codex")
+        assert "git diff origin/main...HEAD" in prompt
+        assert "git diff main...HEAD" not in prompt
+
+    def test_gemini_prompt_uses_resolved_base(self):
+        prompt = self._captured_prompt("gemini")
+        assert "git diff origin/main...HEAD" in prompt
+        assert "git diff main...HEAD" not in prompt
+
+
+class TestGraphContextUsesResolvedBase:
+    """``_build_graph_dependency_context`` must run stark_graph with
+    the resolved base. Otherwise architecture/correctness sub-agents
+    receive blast-radius data from a stale local ``main``, which can
+    inject out-of-PR dependency nodes even when the agent's own diff
+    and the file filter both scope correctly to ``origin/main``."""
+
+    @patch("multi_review.subprocess.run")
+    def test_graph_context_uses_resolved_base(self, mock_run):
+        seen_args: list[list[str]] = []
+        def fake_run(args, **kwargs):
+            seen_args.append(list(args))
+            class R:
+                returncode = 0
+                stdout = "abc1234\n"
+                stderr = ""
+            return R()
+        mock_run.side_effect = fake_run
+        multi_review._build_graph_dependency_context(
+            cwd="/tmp/wt", base="main", pr_number=1, config={},
+        )
+        graph_calls = [a for a in seen_args if "stark_graph.py" in " ".join(a)]
+        assert graph_calls, "expected at least one stark_graph invocation"
+        # The --base argument follows the --base flag.
+        last = graph_calls[-1]
+        idx = last.index("--base")
+        assert last[idx + 1] == "origin/main"
+
+
 class TestHistoryPersistence:
     """save_round_history and save_review_summary write correct schema."""
 

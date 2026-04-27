@@ -164,7 +164,14 @@ def check_working_dir() -> tuple[str, str]:
     return "pass", "clean"
 
 
-def check_model_resolution() -> tuple[str, str]:
+_TEAM_REVIEW_WORKFLOWS = frozenset({
+    "stark-team-review",
+    "team-review",
+    "review",  # legacy alias used by older preflight callers
+})
+
+
+def check_model_resolution(workflow: str | None = None) -> tuple[str, str]:
     """Report the agents that will actually dispatch for a review run.
 
     There are two knobs that gate dispatch and they don't always agree:
@@ -172,11 +179,20 @@ def check_model_resolution() -> tuple[str, str]:
       - ``config.agents`` — the explicit dispatch rotation list.
 
     The dispatcher only runs an agent when both say yes, so this check
-    reports the intersection (the *dispatched* set) and warns explicitly
-    when the two knobs disagree. Without that, an operator sees
-    "enabled agents: [claude, codex, gemini]" here and is then surprised
-    when a team review produces 0 gemini runs because ``config.agents``
-    excludes it.
+    reports the intersection (the *dispatched* set) and warns when the
+    two knobs disagree in the surprising direction (an agent enabled
+    in models but excluded from the rotation, where preflight had been
+    advertising it as ready and the dispatcher was silently dropping
+    it). The opposite direction — an agent listed in the rotation but
+    disabled in models — is benign because the dispatcher skips it
+    explicitly; we don't warn on that case.
+
+    Empty intersection severity is workflow-aware: ``stark-team-review``
+    relies on the rotation as its only dispatch source, so an empty
+    intersection there is a hard ``fail``. Single-agent workflows
+    (``stark-review`` with ``--agent`` or ``domain_agents``) can still
+    dispatch without going through the rotation, so we only ``warn``
+    there and let the dispatcher itself error if no agent can run.
     """
     models = get_models_config()
     expected = ["claude", "codex"]
@@ -247,7 +263,6 @@ def check_model_resolution() -> tuple[str, str]:
     rotation_set = set(dispatch_list)
     dispatched = sorted(enabled_set & rotation_set)
     enabled_but_not_in_rotation = sorted(enabled_set - rotation_set)
-    in_rotation_but_not_enabled = sorted(rotation_set - enabled_set)
 
     notes: list[str] = [f"dispatched agents: {dispatched}"]
     if enabled_but_not_in_rotation:
@@ -255,28 +270,41 @@ def check_model_resolution() -> tuple[str, str]:
             f"enabled but excluded from config.agents (silently skipped): "
             f"{enabled_but_not_in_rotation}"
         )
-    if in_rotation_but_not_enabled:
-        notes.append(
-            f"in config.agents but not enabled in models (silently skipped): "
-            f"{in_rotation_but_not_enabled}"
-        )
+    # Disabled-but-in-rotation is *not* a misalignment worth flagging:
+    # the dispatcher explicitly checks ``is_agent_enabled`` and drops
+    # those, which is exactly the behavior we want. Reporting it as a
+    # warning meant a fresh install that disabled gemini got marked
+    # ``degraded`` despite being in a perfectly healthy steady state.
     if disabled:
         notes.append(f"disabled in models: {disabled}")
 
-    # Empty intersection is "warn" rather than "fail" — single-agent
-    # workflows (stark-review with --agent or per-domain via
-    # domain_agents) can still dispatch successfully without going
-    # through ``config.agents``. Let the dispatcher itself error if
-    # there's truly no agent to run; preflight surfaces the
-    # misalignment as a warning so the operator notices.
+    # Empty intersection severity depends on workflow.
+    #
+    # Team-review dispatches strictly off ``config.agents`` — an empty
+    # rotation/enabled overlap means the entire run produces a clean
+    # 0-finding round with no review work done, which is worse than
+    # blocking the run. Hard fail.
+    #
+    # Single-agent workflows (``stark-review`` and friends) can still
+    # dispatch via ``--agent`` or per-domain ``domain_agents`` mappings
+    # that bypass ``config.agents`` entirely. A warn lets the operator
+    # see the misalignment without preventing a perfectly valid run.
     if not dispatched:
+        if (workflow or "") in _TEAM_REVIEW_WORKFLOWS:
+            return (
+                "fail",
+                "team-review has no dispatchable agents — config.agents "
+                f"({sorted(rotation_set)}) and enabled models "
+                f"({sorted(enabled_set)}) don't overlap. Empty rotation "
+                "would silently produce a clean 0-finding review.",
+            )
         notes.insert(
             0,
             "no agents in the team-review intersection — single-agent dispatch may still work",
         )
         return "warn", "; ".join(notes)
 
-    status = "warn" if (enabled_but_not_in_rotation or in_rotation_but_not_enabled) else "pass"
+    status = "warn" if enabled_but_not_in_rotation else "pass"
     return status, "; ".join(notes)
 
 
@@ -361,7 +389,7 @@ def check_red_team_model_rates() -> tuple[str, str]:
 # critical=True → a "fail" status sets overall to "blocked"
 # ---------------------------------------------------------------------------
 
-_CHECKS: list[tuple[str, Callable[[], tuple[str, str]], bool]] = [
+_CHECKS: list[tuple[str, Callable[..., tuple[str, str]], bool]] = [
     ("check_cli_claude",       check_cli_claude,       False),
     ("check_cli_codex",        check_cli_codex,        False),
     ("check_cli_gemini",       check_cli_gemini,       False),
@@ -399,7 +427,18 @@ def run_preflight(workflow: str, skip: set[str] | None = None) -> PreFlightResul
             )
             continue
 
-        status, message, duration_s = _timed(fn)
+        # ``check_model_resolution`` reads the workflow to decide
+        # whether an empty rotation/enabled overlap is a hard fail
+        # (team-review) or a warn (single-agent). Pass workflow
+        # through without overriding the registered function — that
+        # way monkeypatching the registry in tests still takes effect.
+        if name == "check_model_resolution":
+            bound_fn = fn
+            timed_callable = lambda: bound_fn(workflow)
+        else:
+            timed_callable = fn
+
+        status, message, duration_s = _timed(timed_callable)
         results.append(CheckResult(name=name, status=status,
                                    message=message, duration_s=duration_s))
 

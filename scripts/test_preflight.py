@@ -47,7 +47,11 @@ def test_check_model_resolution_warns_when_enabled_agent_excluded_from_rotation(
     assert "enabled but excluded from config.agents (silently skipped): ['gemini']" in message
 
 
-def test_check_model_resolution_warns_when_rotation_lists_disabled_agent() -> None:
+def test_check_model_resolution_passes_when_rotation_lists_disabled_agent() -> None:
+    """An agent listed in ``config.agents`` but disabled in models is
+    dropped silently and *intentionally* by the dispatcher — that's
+    not a misalignment worth flagging. Only the surprising direction
+    (enabled but excluded from rotation) warrants ``warn``."""
     models = {
         "claude": {"enabled": True, "model_id": "claude-opus-4-7"},
         "codex": {"enabled": False, "model_id": "gpt-5.4"},
@@ -55,28 +59,41 @@ def test_check_model_resolution_warns_when_rotation_lists_disabled_agent() -> No
     p1, p2 = _patch_models_and_dispatch(models, ["claude", "codex"])
     with p1, p2:
         status, message = preflight.check_model_resolution()
-    assert status == "warn"
+    assert status == "pass"
     assert "dispatched agents: ['claude']" in message
-    assert "in config.agents but not enabled in models" in message
+    assert "in config.agents but not enabled in models" not in message
 
 
-def test_check_model_resolution_warns_when_intersection_is_empty() -> None:
-    """Empty rotation/enabled overlap is a misalignment but not a hard
-    block — single-agent flows (``--agent`` or ``domain_agents``) can
-    still dispatch without going through ``config.agents``. Surface
-    the misalignment as ``warn`` and let the dispatcher itself error
-    if there's truly no agent to run."""
+def test_check_model_resolution_warns_on_empty_intersection_for_single_agent_workflow() -> None:
+    """For non-team workflows, empty rotation/enabled overlap is a
+    ``warn`` — single-agent flows (``--agent`` / ``domain_agents``)
+    bypass ``config.agents`` and can still dispatch."""
     models = {
         "claude": {"enabled": True, "model_id": "claude-opus-4-7"},
         "codex": {"enabled": True, "model_id": "gpt-5.4"},
     }
-    # Rotation lists only gemini; intersection with enabled is empty.
     p1, p2 = _patch_models_and_dispatch(models, ["gemini"])
     with p1, p2:
-        status, message = preflight.check_model_resolution()
+        status, message = preflight.check_model_resolution(workflow="stark-review")
     assert status == "warn"
     assert "no agents in the team-review intersection" in message
     assert "single-agent dispatch may still work" in message
+
+
+def test_check_model_resolution_fails_on_empty_intersection_for_team_workflow() -> None:
+    """For team-review workflows, empty intersection is a hard fail.
+    A clean 0-finding round produced by an empty rotation is worse
+    than blocking the run, because the operator might think the PR
+    actually passed review."""
+    models = {
+        "claude": {"enabled": True, "model_id": "claude-opus-4-7"},
+        "codex": {"enabled": True, "model_id": "gpt-5.4"},
+    }
+    p1, p2 = _patch_models_and_dispatch(models, ["gemini"])
+    with p1, p2:
+        status, message = preflight.check_model_resolution(workflow="stark-team-review")
+    assert status == "fail"
+    assert "team-review has no dispatchable agents" in message
 
 
 def test_check_model_resolution_warns_on_malformed_config_agents() -> None:
@@ -152,7 +169,7 @@ def test_run_preflight_propagates_warn_to_degraded(monkeypatch) -> None:
     _replace_checks_with_target(
         monkeypatch,
         "check_model_resolution",
-        lambda: ("warn", "dispatched agents: ['claude']; enabled but excluded ['gemini']"),
+        lambda _workflow=None: ("warn", "dispatched agents: ['claude']; enabled but excluded ['gemini']"),
         True,
     )
     result = preflight.run_preflight("stark-review")
@@ -167,7 +184,7 @@ def test_run_preflight_propagates_critical_fail_to_blocked(monkeypatch) -> None:
     _replace_checks_with_target(
         monkeypatch,
         "check_model_resolution",
-        lambda: ("fail", "missing agent config: ['codex']"),
+        lambda _workflow=None: ("fail", "missing agent config: ['codex']"),
         True,
     )
     result = preflight.run_preflight("stark-team-review")
@@ -175,6 +192,20 @@ def test_run_preflight_propagates_critical_fail_to_blocked(monkeypatch) -> None:
     assert result.recommended_mode == "abort"
     mr = next(c for c in result.checks if c["name"] == "check_model_resolution")
     assert mr["status"] == "fail"
+
+
+def test_run_preflight_passes_workflow_to_check_model_resolution(monkeypatch) -> None:
+    """The workflow argument must propagate so empty-intersection
+    severity is correct (fail for team-review, warn otherwise)."""
+    seen_workflows: list[str | None] = []
+
+    def stub(workflow=None):
+        seen_workflows.append(workflow)
+        return ("pass", "stubbed")
+
+    _replace_checks_with_target(monkeypatch, "check_model_resolution", stub, True)
+    preflight.run_preflight("stark-team-review")
+    assert seen_workflows == ["stark-team-review"]
 
 
 def test_check_model_resolution_fails_when_required_agent_missing() -> None:
