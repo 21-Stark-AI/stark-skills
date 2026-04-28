@@ -64,7 +64,7 @@ Authoritative table reconciling Decisions and Stage 1. `--force` only affects th
 | `isDraft == true` | | ✓ | 11 |
 | `reviewDecision == CHANGES_REQUESTED` | | ✓ | 11 |
 | Any required check failing | | ✓ | 12 |
-| `--no-watch` and not all required checks success | | ✓ | 12 |
+| `--no-watch` and not all required checks success | ✓ | | 12 |
 | Secret in pre-LLM scan (no `--allow-secret-to-llm`) | ✓ | | 16 |
 | Secret in pre-commit scan (no `--allow-secret-commit`) | ✓ | | 28 |
 
@@ -241,7 +241,7 @@ Reuse pr-open's stable codes where applicable; merge-specific codes added:
 | 0 | any | success |
 | 10 | preflight | bad args / unknown PR / no PR for current branch |
 | 11 | preflight | PR is draft, closed, or merged (no `--force` for draft) |
-| 12 | preflight / execute | failing or missing required checks (no `--force`); or `--no-watch` with non-green checks |
+| 12 | preflight / execute | failing or missing required checks (no `--force` for general gate); or `--no-watch` with non-green checks (always-enforced — `--force` does not bypass `--no-watch`'s green requirement) |
 | 13 | preflight | rebase conflict |
 | 14 | preflight | base OID moved between fetch and plan write |
 | 15 | preflight | CHANGELOG.md missing or has no `[Unreleased]` section |
