@@ -18,16 +18,18 @@ A Claude Code plugin (`stark-gh`) housing a family of GitHub workflow slash comm
 | Args policy | Skill body forwards `$ARGUMENTS` to preflight as a **single quoted `--raw-args` value**. Preflight parses, validates, and emits a **plan-file** consumed by execute. No raw `$ARGUMENTS` interpolation past the preflight boundary. Args: `--title`, `--body`, `--body-file`, `--commit-message`, `--commit-message-file`, `--base`, `--reviewer`, `--label`, `--assignee`, `--commit-all`, `--full-context`, `--no-watch` |
 | Existing PR | Push commits (PR auto-updates). Update title/body only for override flags the user passed; never re-draft prose for an existing PR |
 | Commit handling | **Staged-only by default** (`git commit` of already-staged changes). `--commit-all` opts into `git add -A` behavior. Commit message is decoupled from PR title (`--commit-message[-file]`); for existing PR + dirty + no commit message, Stage 2 drafts a commit message *without* touching PR title/body |
-| Secret scan | Preflight runs a regex scan on staged content (AWS keys, GitHub tokens, generic high-entropy strings). On hit → exit `16` with the patterns matched. `--allow-secrets` overrides (logged + audit) |
-| Issue auto-linking | Structured candidates `{ number, owner, repo, source, relation }`. Branch-derived numbers → `Refs #N` by default. `Closes #N` only when commit message contains an explicit close keyword (`close[sd]?`, `fix(es\|ed)?`, `resolve[sd]?`). All `Closes`/`Refs` lines are **emitted by TS in execute, not by the LLM** |
-| Issue verification | Preflight calls `gh issue view <N>` to confirm each candidate exists in base repo. Cross-repo numbers (e.g., Jira-style) are dropped unless owner/repo are explicit |
+| Secret scan | **Multi-point** (rt2). (1) Pre-LLM scan over `base..HEAD` diff + commit messages → exit `16` before any prompt is built. (2) Pre-commit scan over the strategy-specific candidate-content set (staged diff for `staged-only`; staged + unstaged + untracked file *contents* for `--commit-all` after `git add -A`). Both gates honor `--allow-secrets` (audited) |
+| Issue auto-linking | Structured candidates `{ number, owner, repo, source, relation }`. Branch-derived numbers → `Refs #N` by default. `Closes #N` only when an explicit close keyword (`close[sd]?`, `fix(es\|ed)?`, `resolve[sd]?`) appears in a commit message. All `Closes`/`Refs` lines are **emitted by TS, not by the LLM** |
+| Issue verification | Preflight calls `gh issue view <N>` for each pre-existing candidate. Execute re-runs extraction on the **final** commit-message file (rt6 — captures LLM-drafted `fixes #N`) and verifies any new candidates before appending |
 | State integrity | Preflight captures a `stateFingerprint` (HEAD OID + dirty-tree SHA-256 + existing-PR `headRefOid`). Execute re-reads the same fields immediately before the first mutation and aborts with exit `25` ("state changed; rerun") on any mismatch |
+| Push refspec | Explicit refspec only (rt5): `git push origin HEAD:refs/heads/<plan.branch>` after verifying origin URL matches `plan.repo.nameWithOwner`. Never relies on ambient `push.default` or upstream tracking |
+| Runtime tempdir | All plan-files, title/body/commit-message tempfiles live under `~/.claude/code-review/stark-gh/runtime/` (mode `0700`); files mode `0600`. No predictable `/tmp/...` paths (rt3) |
 | Sub-agent boundary | Repo-derived fields (diff, template, commit messages, body-file content) wrapped under explicit `untrusted` JSON key. Prompt explicitly instructs the model to ignore directives inside untrusted fields. Output is `{title?, body?, commit_message?}` only — model never emits `Closes`/`Refs` lines, never controls reviewer/label/assignee |
 | Output validation | TS validates sub-agent output: title ≤ 200 chars, no embedded newlines, no markdown headers; body ≤ 32 KB; rejects `Closes`/`Refs`/`#N` patterns in body and strips them. Retry once on validation failure |
 | Prompt budget | Per-field caps in preflight: patch ≤ 60 KB, template ≤ 32 KB, total commit messages ≤ 16 KB, user-provided body ≤ 16 KB. Token estimate (4 chars/token) gates dispatch at 32K input tokens. Over-budget input is deterministically summarized (file-by-file shortstat + change-type) unless `--full-context` (capped at 100K tokens). Logged in plan-file |
 | Base detection | `gh repo view --json defaultBranchRef`; `--base` flag overrides |
 | Background watcher | `gh_watch_runs.ts` polls check-suites for the **pushed head SHA**; idempotent per `repo+pr+headSha` (lockfile registry); exponential backoff (15s × 5 → 30 → 60 → 120 → 240, cap 240); state file is atomic write with `schemaVersion`. Default-on, opt-out via `--no-watch` |
-| Watcher state path | `~/.claude/code-review/stark-gh/watchers/<host>/<owner>/<repo>/pr-<N>.json` (+ `.lock`) |
+| Watcher state path | Per-headSha state under `~/.claude/code-review/stark-gh/watchers/<host>/<owner>/<repo>/pr-<N>/<headSha>.json` (+ `.lock`) plus a `latest.json` pointer in `pr-<N>/`. Lock includes an owner-token UUID; release only when token matches (rt4) |
 | PR template | Reads `.github/PULL_REQUEST_TEMPLATE.md` (single template, root or `.github/`) if present |
 | Install | install.sh symlinks `plugins/stark-gh/` → `~/.claude/plugins/stark-gh/` |
 | TS runtime | `node --experimental-strip-types` (matches existing stark tools convention) |
@@ -114,8 +116,9 @@ gh_pr_open_preflight.ts    ────►   Agent(model=sonnet)        ──�
 
 **Inputs (CLI args):**
 - `--raw-args "<string>"` — single quoted argument: the verbatim `$ARGUMENTS` string from the skill body. Preflight tokenizes it itself (`shell-quote` parser) and validates each parsed flag value against an allowlist of recognized flags. Anything unrecognized → exit `17` with a usage hint.
-- `--out PATH` — path to write the plan-file (default: tempfile under `os.tmpdir()` with prefix `stark-gh-plan-`).
-- `--json` — also print the plan-file content to stdout (for skill-body consumption without re-reading the file).
+- `--out PATH` — path to write the plan-file (default: a fresh `mktemp` file inside `~/.claude/code-review/stark-gh/runtime/`, mode `0600`; the parent directory is created mode `0700` if absent — rt3).
+- `--emit-plan-path` — print only the chosen plan-file path on stdout (no plan content). Used by the skill body to avoid handling secrets/diff bytes through Claude Code stdout (rt3).
+- `--json` — print the plan-file content to stdout instead of just the path (mutually exclusive with `--emit-plan-path`). Useful for ad-hoc CLI inspection by humans, not by the skill body.
 
 **Recognized flags inside `--raw-args`:**
 - Prose: `--title TITLE`, `--body BODY`, `--body-file PATH`, `--commit-message MSG`, `--commit-message-file PATH`
@@ -149,36 +152,43 @@ Each flag's value is validated by type (string / list / boolean) and length-boun
     }
     ```
     Used by execute to abort on drift.
-11. **Secret scan** (rt3): regex-scan staged content (`git diff --cached`) for:
-    - AWS access key (`AKIA[0-9A-Z]{16}`)
-    - GitHub token (`ghp_[A-Za-z0-9]{36}`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`)
-    - Slack token (`xoxb-…`, `xoxp-…`)
-    - PEM private-key header (`-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----`)
-    - Generic high-entropy: any 40+ char base64-ish hex string with shannon entropy > 4.5
-    
-    On hit → exit `16` with the matched-pattern category and file paths (no value content). `--allow-secrets` overrides; preflight logs the override to `~/.claude/code-review/stark-gh/audit/secrets-allowed.jsonl`.
-12. Locate PR template (`.github/PULL_REQUEST_TEMPLATE.md` → `.github/pull_request_template.md` → `PULL_REQUEST_TEMPLATE.md`); read content (capped at 32 KB, truncate with `[… template truncated …]`).
-13. **Compute candidate issues** (rt6, structured):
+11. **Compute PR delta** (rt7 — what actually lands in the PR, not just `base..HEAD`):
+    - `committedDiff`: `git diff <baseBranch>...HEAD`, file-boundary-truncated at 30 KB.
+    - `stagedDiff`: `git diff --cached`, file-boundary-truncated at 30 KB.
+    - If `--commit-all`:
+      - `unstagedDiff`: `git diff` (working-tree vs. index), 15 KB cap.
+      - `untrackedFiles`: list of paths plus per-file size; for files ≤ 4 KB, include content. Total cap 15 KB.
+    - `combinedStat`: union of `git diff --stat <base>...HEAD`, `--cached`, optional unstaged.
+    - `fileCount`: deduplicated total.
+12. Read commit messages: `git log --format=%B <baseBranch>..HEAD`. Concatenate; cap total at 16 KB (truncate oldest first).
+13. **Pre-LLM secret scan** (rt2 — runs *before* anything is sent to the model):
+    - Targets: `committedDiff`, `stagedDiff`, optional `unstagedDiff`/`untrackedFiles`, and `commitMessages`.
+    - Patterns:
+      - AWS access key (`AKIA[0-9A-Z]{16}`)
+      - GitHub token (`ghp_[A-Za-z0-9]{36}`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`)
+      - Slack token (`xoxb-…`, `xoxp-…`)
+      - PEM private-key header (`-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----`)
+      - Generic high-entropy: any 40+ char base64-ish/hex string with shannon entropy > 4.5
+    - On hit → exit `16` with the pattern category + redacted location (no value content). `--allow-secrets` overrides; preflight appends a record to `~/.claude/code-review/stark-gh/audit/secrets-allowed.jsonl`.
+    - The execute step re-runs this scan over the **post-staging index** before commit (rt2 second gate).
+14. Locate PR template (`.github/PULL_REQUEST_TEMPLATE.md` → `.github/pull_request_template.md` → `PULL_REQUEST_TEMPLATE.md`); read content (capped at 32 KB, truncate with `[… template truncated …]`).
+15. **Compute candidate issues** (rt6, structured) from branch name + commit messages:
     - Branch regex `^(feat|fix|chore|docs|refactor|test|perf|ci|build|style|revert)/(\d+)-` → `{ number: N, owner, repo, source: "branch", relation: "Refs" }`.
-    - Commit message close-keyword regex `\b(close[sd]?|fix(es|ed)?|resolve[sd]?)\s+#(\d+)\b` (case-insensitive) → `relation: "Closes"`, `source: "commit-keyword"`.
-    - Cross-repo refs: `\b([a-z0-9-]+)/([a-z0-9._-]+)#(\d+)\b` → `{ number, owner, repo, source: "cross-repo", relation: "Refs" }`.
+    - Commit close-keyword regex `\b(close[sd]?|fix(es|ed)?|resolve[sd]?)\s+#(\d+)\b` (case-insensitive) → `relation: "Closes"`, `source: "commit-keyword"`.
+    - Cross-repo: `\b([a-z0-9-]+)/([a-z0-9._-]+)#(\d+)\b` → `{ number, owner, repo, source: "cross-repo", relation: "Refs" }`.
     - Plain `#N` mentions in commits → `relation: "Refs"`, `source: "commit-mention"`.
-    - Owner/repo defaults to base repo unless explicit cross-repo form.
-    - Deduplicate by `(owner, repo, number)`; if multiple relations for same key, `Closes` wins over `Refs`.
-14. **Verify each candidate**: `gh issue view <number> --repo <owner>/<repo> --json state -q .state`. Drop candidates that 404 or hit cross-repo permission errors. Mark `verified: true|false`.
-15. Read commit messages: `git log --format=%B <baseBranch>..HEAD`. Concatenate; cap total at **16 KB** (truncate oldest first).
-16. Compute diff context:
-    - `stat`: `git diff --stat <baseBranch>...HEAD` (capped 100 lines).
-    - `patch`: `git diff <baseBranch>...HEAD`, capped at **60 KB** (file-boundary aware).
+    - Deduplicate by `(owner, repo, number)`; `Closes` wins over `Refs`.
+    - **Note:** these are *preflight-time* candidates. Execute re-extracts after the LLM drafts the commit message (rt6).
+16. **Verify each candidate**: `gh issue view <number> --repo <owner>/<repo> --json state -q .state`. Drop 404s and cross-repo permission errors. Set `verified: true|false`.
 17. **Compute prompt budget** (rt9):
-    - Sum field byte-counts; estimate tokens at `bytes / 4`.
-    - Hard cap: 32K tokens of inputs without `--full-context`; 100K with.
-    - If over cap: deterministically summarize patch (replace per-file hunks with `<path>: +N -M (file mode)`) and shrink commit messages to first lines only. Mark `summarized: true`.
-    - Refuse with exit `18` if still over cap after summarization.
-18. **Compute closes/refs lines** (rt2, rt6 — TS owns this, not the LLM):
+    - Field byte-counts → token estimate at `bytes / 4`.
+    - Hard cap: 32K input tokens (or 100K with `--full-context`).
+    - If over cap: deterministically summarize each diff (per-file `<path>: +N -M (mode)`) and shrink commit messages to first lines only. Mark `summarized: true`.
+    - Refuse with exit `18` if still over cap.
+18. **Compute initial `closesLines`/`refsLines`** (TS owns this — rt2-original, rt6):
     - For each verified candidate with `relation == "Closes"` and same-repo: emit `Closes #N`.
     - For each verified `Refs`: emit `Refs #N` (or `Refs owner/repo#N` for cross-repo).
-    - Lines stored in plan-file's `closesLines` array; execute appends them to body before posting.
+    - Stored in plan-file as the **preflight set**. Execute appends an additional **late set** computed from the drafted commit message before posting (see Component 3).
 19. **Build plan-file** (single JSON written to `--out`):
 
 ```jsonc
@@ -203,21 +213,27 @@ Each flag's value is validated by type (string / list / boolean) and length-boun
 
   "secretScan": { "scanned": true, "hits": [], "allowedOverride": false },
 
-  "candidateIssues": [
-    { "number": 123, "owner": "evinced", "repo": "stark-skills", "source": "branch", "relation": "Refs", "verified": true }
-  ],
-  "closesLines": [],                                     // TS-emitted; appended in execute
-  "refsLines":   ["Refs #123"],
+  "candidateIssues": {                                   // preflight-time candidates
+    "preflight": [
+      { "number": 123, "owner": "evinced", "repo": "stark-skills", "source": "branch", "relation": "Refs", "verified": true }
+    ]
+    // Execute appends "lateFromCommitMessage" after Stage 2 — see Component 3
+  },
+  "closesLines": { "preflight": [] },                    // execute extends with "late": [...]
+  "refsLines":   { "preflight": ["Refs #123"] },
 
   "promptBudget": { "estimatedInputTokens": 8400, "cap": 32000, "summarized": false },
 
   "untrustedInputs": {
-    "diffStat":       "src/foo.ts | 30 ++++++++--\n",
-    "diffPatch":      "diff --git ...",
+    "combinedStat":   "src/foo.ts | 30 ++++++++--\n",
+    "committedDiff":  "diff --git ...",                  // base..HEAD
+    "stagedDiff":     "diff --git ...",                  // git diff --cached
+    "unstagedDiff":   null | "...",                      // only if --commit-all
+    "untrackedFiles": null | [ { "path": "x", "size": 1234, "content": "…" | null } ],
     "diffTruncated":  false,
     "prTemplate":     "## Summary\n…\n",
     "commitMessages": "feat(foo): add bar\n\nDetail…\n---\n…",
-    "userBody":       null                              // contents of --body or --body-file (capped at 16 KB)
+    "userBody":       null
   },
 
   "userArgs": {
@@ -304,11 +320,19 @@ trusted:
   userCommitMessage:<plan.userArgs.commitMessage>
 
 untrusted:
-  diffStat:         <plan.untrustedInputs.diffStat>
-  diffPatch:        <plan.untrustedInputs.diffPatch>
+  combinedStat:     <plan.untrustedInputs.combinedStat>     // all changes that will land in the PR
+  committedDiff:    <plan.untrustedInputs.committedDiff>    // already-committed: git diff base..HEAD
+  stagedDiff:       <plan.untrustedInputs.stagedDiff>       // about to be committed: git diff --cached
+  unstagedDiff:     <plan.untrustedInputs.unstagedDiff>     // null unless --commit-all
+  untrackedFiles:   <plan.untrustedInputs.untrackedFiles>   // null unless --commit-all
   prTemplate:       <plan.untrustedInputs.prTemplate>
-  commitMessages:   <plan.untrustedInputs.commitMessages>
-  userBody:         <plan.untrustedInputs.userBody>     // verbatim --body / --body-file content if any
+  commitMessages:   <plan.untrustedInputs.commitMessages>   // existing commits on the branch
+  userBody:         <plan.untrustedInputs.userBody>         // verbatim --body / --body-file content if any
+
+(Treat the union of committedDiff + stagedDiff + unstagedDiff + untrackedFiles as the
+"PR delta" — that's what title and body should describe. The local commit message
+should describe stagedDiff + unstagedDiff + untrackedFiles only — the new commit being
+created — not changes that were already committed.)
 
 RULES:
 1. needTitle: single-line title, ≤ 200 chars, no markdown headers, no newlines. Use
@@ -414,31 +438,45 @@ No other CLI args. Every behavior input is in the plan-file.
    ```
    On exit `25` the message is `state changed between preflight and execute; rerun /stark-gh:pr-open`.
 
-3. **Commit** (if `plan.stage3.willCommit`):
+3. **Stage** (if `plan.stage3.willCommit`):
    - **`commitStrategy == "staged-only"` (default):**
      - Require non-empty `git diff --cached`. If empty → exit `27` ("nothing staged; stage your changes or pass `--commit-all`").
-     - `git commit -F <plan.stage2.outputs.commitMessageFile>` (read message from file; never via shell argv).
-   - **`commitStrategy == "commit-all"` (only if `userArgs.commitAll`):**
-     - `git add -A`
-     - `git commit -F <plan.stage2.outputs.commitMessageFile>`
+   - **`commitStrategy == "commit-all"`:**
+     - `git add -A` (now the index includes everything that will be committed).
 
-4. **Push** (if `plan.stage3.willPush`):
-   - If `tree.hasUpstream`: `git push`.
-   - Else: `git push --set-upstream origin <currentBranch>`.
+4. **Pre-commit secret scan** (rt2 — second gate, runs over the **post-stage** index):
+   - Re-run the same regex+entropy scan as preflight, but now over `git diff --cached` reflecting the staged-or-just-added content.
+   - On hit → exit `28` (distinct from preflight's `16`) with the pattern category + redacted location. `--allow-secrets` overrides; appended to the same audit log.
+   - This catches secrets that landed via `git add -A` between preflight and execute.
+
+5. **Late issue extraction** (rt6) — runs *before* commit and *before* posting:
+   - Read `plan.stage2.outputs.commitMessageFile` (or `userArgs.commitMessageFile` if user-provided).
+   - Re-run the close-keyword regex from preflight step 15 against this file.
+   - For any `(owner, repo, number)` not already in `plan.candidateIssues.preflight`: call `gh issue view`. Append verified ones to `plan.candidateIssues.lateFromCommitMessage`.
+   - Compute `plan.closesLines.late` and `plan.refsLines.late` from the new verified candidates. The existing preflight set is preserved.
+   - On API failure for a candidate: drop it (warn to stderr, non-fatal). Never block on late verification.
+   - Persist updates back to plan-file (atomic write).
+
+6. **Commit:** `git commit -F <commitMessageFile>` (read message from file; never via shell argv).
+
+7. **Push** (if `plan.stage3.willPush`) (rt5 — explicit refspec, no ambient config):
+   - Verify `git remote get-url origin` resolves to a URL whose `nameWithOwner` matches `plan.repo.nameWithOwner`. If mismatch → exit `29` ("origin doesn't match expected repo `<expected>`; ambient remote may be misconfigured").
+   - Push: `git push origin HEAD:refs/heads/<plan.branch>` (always explicit refspec; never relies on `push.default`).
+   - If branch had no upstream tracking: also run `git branch --set-upstream-to=origin/<plan.branch>` after the push (this is metadata-only; the push itself doesn't depend on it).
    - Capture pushed `headSha` via `git rev-parse HEAD`.
 
-5. **Create or edit PR** by `plan.stage3.action`:
-   - `"create"`: `gh pr create --title <read-from-titleFile> --body-file <bodyFileWithClosesAppended> --base <base>` plus `--reviewer`, `--label`, `--assignee` (joined). Never `--draft`. If `gh pr create` fails → exit `21`.
+8. **Append `Closes`/`Refs` lines to body file** (if creating or editing body): TS reads `plan.closesLines.{preflight,late}` + `plan.refsLines.{preflight,late}` (deduped, preflight keys take precedence on relation conflicts), ensures separator newlines, writes the merged body to a fresh tempfile, passes that path to `gh pr create` / `gh pr edit --body-file`.
+
+9. **Create or edit PR** by `plan.stage3.action`:
+   - `"create"`: `gh pr create --title <read-from-titleFile> --body-file <merged-body> --base <base>` plus `--reviewer`, `--label`, `--assignee` (joined). Never `--draft`. Exit `21` on failure.
    - `"edit"`: `gh pr edit <N>` with only the flags computed in `plan.stage3.willEdit*`. Exit `22` on failure.
    - `"push-only"`: skip; just refresh PR URL.
 
-6. **Append `Closes`/`Refs` lines** to body file (if creating or editing body): TS reads `plan.closesLines` + `plan.refsLines`, ensures separator newlines, writes the merged body to a fresh tempfile, then passes that path to `gh pr create` / `gh pr edit --body-file`.
+10. **Resolve PR URL/number:** `gh pr view --json url,number,headRefOid -q '{url,number,headRefOid}'`.
 
-7. **Resolve PR URL/number:** `gh pr view --json url,number,headRefOid -q '{url,number,headRefOid}'`.
+11. **Spawn watcher** (unless `userArgs.noWatch`) — see watcher idempotency rules below.
 
-8. **Spawn watcher** (unless `userArgs.noWatch`) — see watcher idempotency rules below.
-
-9. **Emit result JSON.**
+12. **Emit result JSON.**
 
 **Output:**
 
@@ -469,6 +507,8 @@ No other CLI args. Every behavior input is in the plan-file.
 | 25 | stateFingerprint mismatch — preflight observation is stale; rerun |
 | 26 | plan-file missing/invalid/wrong schemaVersion |
 | 27 | `commitStrategy` is staged-only but nothing is staged |
+| 28 | post-stage secret scan hit (rt2 — caught content added by `git add -A`) |
+| 29 | `origin` URL doesn't match `plan.repo.nameWithOwner` (rt5 — ambient remote misconfigured) |
 
 ### 4. `gh_watch_runs.ts` (background)
 
@@ -484,16 +524,26 @@ No other CLI args. Every behavior input is in the plan-file.
 - `--max-poll-seconds 240` (default)
 - `--no-checks-grace-minutes 5` (default — how long to wait before declaring a repo has no CI)
 
-**Paths:**
-- State file: `${HOME}/.claude/code-review/stark-gh/watchers/<host>/<owner>/<repo>/pr-<N>.json`
-- Lock file: same path with `.lock` suffix; format: `{ pid: <int>, startedAt: <iso>, headSha: <SHA>, command: "gh-watch-runs" }`.
+**Paths** (rt4 — keyed by PR + headSha so concurrent watchers for different SHAs coexist):
+- Per-watcher state: `${HOME}/.claude/code-review/stark-gh/watchers/<host>/<owner>/<repo>/pr-<N>/<headSha>.json`
+- Per-watcher lock:  same path with `.lock` suffix.
+- Latest pointer:    `${HOME}/.claude/code-review/stark-gh/watchers/<host>/<owner>/<repo>/pr-<N>/latest.json` — `{ headSha, status, updatedAt }`. Atomically updated on each terminal-state transition.
+
+**Lock-file format** (rt4 — owner-token prevents older watchers from unlinking newer locks):
+```jsonc
+{ "pid": <int>, "startedAt": "<iso>", "headSha": "<SHA>", "command": "gh-watch-runs",
+  "ownerToken": "<uuid v4 generated at lock creation>" }
+```
 
 **Behavior:**
 
-1. **Idempotent startup** (rt10): try to acquire the lock file:
-   - If lock exists AND PID is alive (`kill -0`) AND `headSha` matches: exit `0` with stderr `watcher already running for this PR + headSha (pid <N>)`. The execute caller surfaces this via `watcherAlreadyRunning: true`.
-   - If lock exists but PID is dead OR `headSha` differs: replace the lock atomically (rename of tempfile).
-   - Else: create lock atomically.
+1. **Idempotent startup** (rt10 + rt4):
+   - Generate `ownerToken = randomUUID()`.
+   - Try to acquire the lock at `pr-<N>/<headSha>.lock`:
+     - If lock exists AND PID is alive (`kill -0`): exit `0` with stderr `watcher already running for PR #<N> @ <headSha> (pid <N>)`. The execute caller surfaces this via `watcherAlreadyRunning: true`. (No lock replacement when same SHA — the running watcher continues.)
+     - If lock exists but PID is dead: atomically replace (write to `<lock>.tmp`, rename).
+     - Else: create lock atomically.
+   - Inspect siblings: any other `pr-<N>/<otherSha>.json` whose status is `watching` and whose lock has a live PID → mark them `superseded` in their state file (atomic update, owner-token check). Send `SIGTERM` only to lockholders that match `command == "gh-watch-runs"` (defensive).
 2. **State init** (atomic write — write to `<state>.tmp`, then `rename`):
    ```jsonc
    {
@@ -523,12 +573,13 @@ No other CLI args. Every behavior input is in the plan-file.
    - On `--max-minutes` cutoff: `status: "timeout"`.
 5. **On terminal:**
    - Final atomic state update including `summary: { total, success, failure, cancelled, skipped, neutral }`.
+   - Atomic update of `latest.json` to point to this `<headSha>.json` (only if our `status` is the most recent; older watchers superseded by newer SHAs do **not** overwrite `latest.json`).
    - macOS notification via `osascript` (best-effort).
-   - Release lock (`unlink` on the `.lock` file). State file is preserved.
+   - **Lock release with owner-token check** (rt4): re-read the lock file; only `unlink` if `lock.ownerToken == <our token>`. Otherwise leave the lock alone (a newer watcher took over).
 
 **Atomicity:** every state write goes `tmp → rename`. Readers see either the previous version or the new version, never a partial write.
 
-**Cleanup:** the lock file is unlinked on terminal/exit (any path). On crash, the next run sees a stale lock (PID dead) and replaces it.
+**Cleanup:** the lock file is unlinked on terminal/exit (any path) only if owner-token matches. On crash, the next run sees a stale lock (PID dead) and replaces it. Per-headSha state files persist and accumulate; a cleanup CLI (`gh_watcher_clean.ts`, future) can prune them.
 
 ### 5. `commands/pr-open.md` (skill body)
 
@@ -562,15 +613,17 @@ You also MUST NOT draft prose; that is Stage 2's job.
 
 ## Stage 1 — Preflight
 
-Run (note the single-quoting around $ARGUMENTS):
+Run (note the single-quoting around $ARGUMENTS — preflight chooses the runtime tempdir itself):
 \`\`\`bash
-PLAN_FILE=$(mktemp /tmp/stark-gh-plan.XXXXXX.json 2>/dev/null || mktemp -t stark-gh-plan)
-node --experimental-strip-types "$TOOLS/gh_pr_open_preflight.ts" \
+PLAN_FILE=$(node --experimental-strip-types "$TOOLS/gh_pr_open_preflight.ts" \
     --raw-args "$ARGUMENTS" \
-    --out "$PLAN_FILE" \
-    --json > /tmp/stark-gh-plan-print.json
+    --emit-plan-path)
 \`\`\`
-Read the plan from `$PLAN_FILE` (or the printed copy). On nonzero exit, surface stderr verbatim and stop.
+
+`--emit-plan-path` makes preflight print only the path of the plan-file (mode `0600`,
+under `~/.claude/code-review/stark-gh/runtime/` mode `0700`). The plan-file itself
+contains the full plan; nothing else is written to stdout. The skill then parses the
+plan-file via `Read $PLAN_FILE`. On nonzero exit, surface stderr verbatim and stop.
 
 ## Stage 2 — Draft (conditional)
 
@@ -781,7 +834,13 @@ The shared `lib/` package + `gh_watch_runs.ts` are the spine of the family.
 
 ## Deferred Red-Team Findings
 
-- **rt5 (medium, reliability):** addressed *partially* in v1 — watcher pins observations to `--head-sha` (so slow-starting CI on the same SHA is detected correctly). The remaining gap is that `--no-checks-grace-minutes` is a heuristic, not a definitive signal. Treat it as best-effort; document `no-checks-observed` as distinct from `done`. A v2 could add a configurable repo allow-list of expected check names and fail-fast when missing.
+**Round 1:**
+- **rt5-r1 (medium, reliability):** addressed *partially* — watcher pins observations to `--head-sha` (so slow-starting CI on the same SHA is detected correctly). The remaining gap is that `--no-checks-grace-minutes` is a heuristic, not a definitive signal. Treat it as best-effort; document `no-checks-observed` as distinct from `done`. A future version could add a configurable repo allow-list of expected check names.
+
+**Round 2:**
+- **rt1-r2 (critical, security):** the parent skill LLM still receives `untrustedInputs` while holding Bash/Write authority. True containment requires moving Stage 2 entirely into a TS wrapper that calls the Anthropic API directly with tool use disabled, so the parent never reads untrusted bytes. This is a deliberate v1 trade-off: the parent only shells out to fixed `node tools/...` commands (not arbitrary Bash), and human-in-loop usage is the assumed mode. The architectural shift to in-TS Claude API calls is the right move once `/stark-gh:pr-open` runs in autonomous fleet contexts. Tracked.
+- **rt8-r2 (high, cost-ops):** default-on watchers spawn one process per PR/head with no global concurrency cap. At team scale (many simultaneous opens), this burns GitHub API quota. v1 is personal-scale; a per-user supervisor with bounded queue + jittered polling + `maxConcurrentWatchers` is the right design at scale. Until then, `--no-watch` is the user-side control.
+- **rt9-r2 (high, cost-ops):** install.sh symlinks the live repo, so `git checkout` instantly changes the code users run; no atomic deploy/rollback. This is the *existing pattern* across stark-skills (skills are already live-symlinked). Fixing this should be a repo-wide change to install.sh — versioned copies under `~/.claude/plugins/<name>@<sha>` plus a `current` symlink — not stark-gh-specific. Tracked as a separate concern.
 
 ## Open Questions
 
