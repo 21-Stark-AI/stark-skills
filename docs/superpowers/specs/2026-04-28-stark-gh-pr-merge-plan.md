@@ -7,6 +7,8 @@ Source spec: `2026-04-28-stark-gh-pr-merge-design.md`.
 
 Build `/stark-gh:pr-merge` as the second command in `plugins/stark-gh`, extending the existing pr-open three-stage TypeScript pipeline. Phases 1–2 add shared merge primitives without altering pr-open behavior; Phase 3 implements preflight; Phase 4 adds Codex drafting; Phase 5 implements the execute stage with the synchronous `--no-watch` path proving the merge-call shape end-to-end before the asynchronous Phase 6 watcher work; Phase 7 wires the slash command and docs; Phase 8 covers integration smoke. **Runtime maintenance/GC is excluded from v1** (flagged as scope creep by both claude and gemini reviewers; tracked in a follow-up plan).
 
+**Trusted control plane (PR1-codex/security):** all stark-gh tool code runs from the **installed plugin path** (`$HOME/.claude/plugins/stark-gh/tools/...`) — never from the PR's working tree. The install symlink resolves to the repo, but the slash command body invokes node with the install path explicitly. This prevents a malicious PR from replacing tool code (e.g., disabling the secret scan) before it executes. Phase 3 additionally **refuses any PR whose diff touches `plugins/stark-gh/**` or `scripts/**`** with exit `19` — these PRs must be merged via plain `gh pr merge` after manual review.
+
 ## 2. Prerequisites
 
 ```bash
@@ -40,7 +42,8 @@ Runtime provisioning (code-owned, not manual):
 
 1. **Extend exit-code contracts.**
    - Modify `plugins/stark-gh/tools/lib/exit.ts`.
-   - Add `export const MergeExit = { OK:0, BAD_ARGS:10, PR_GATE:11, CHECK_FAIL:12, CONFLICT_OR_DIRTY:13, BASE_OID_MOVED:14, NO_CHANGELOG:15, SECRET_LLM:16, FORK_OR_HEAD_MISMATCH:17, LOCAL_DIVERGED:18, DRAFT_INVALID:20, SECRET_COMMIT:28, OID_DRIFT:30, PUSH_REJECTED:31, MERGE_FAILED:32, SPAWN_FAILED:33, WATCHER_RUNNING:34 } as const`.
+   - Add `export const MergeExit = { OK:0, BAD_ARGS:10, PR_GATE:11, CHECK_FAIL:12, CONFLICT_OR_DIRTY:13, BASE_OID_MOVED:14, NO_CHANGELOG:15, SECRET_LLM:16, FORK_OR_HEAD_MISMATCH:17, LOCAL_DIVERGED:18, SELF_MODIFYING_PR:19, DRAFT_INVALID:20, SECRET_COMMIT:28, OID_DRIFT:30, PUSH_REJECTED:31, MERGE_FAILED:32, SPAWN_FAILED:33, WATCHER_RUNNING:34 } as const`.
+   - Exit `19` (PR1-codex/security) is for self-modifying PRs that touch `plugins/stark-gh/**` or `scripts/**`.
    - Keep existing `Exit` names/values stable for pr-open.
    - Done when pr-open tests still pass and merge tools can import `MergeExit`.
 
@@ -48,7 +51,7 @@ Runtime provisioning (code-owned, not manual):
    - Modify `plugins/stark-gh/tools/lib/plan.ts`.
    - Introduce `PrOpenPlan`, `PrMergePlan`, `type Plan = PrOpenPlan | PrMergePlan` with `command` discriminator.
    - Add `validatePrMergePlan(p)`, `isPrMergePlan(p)`; preserve legacy `PrOpenPlan` validation.
-   - `PrMergePlan` includes: `runId`, `pr` (with `headRepositoryOwner/Name`, `isCrossRepository`, `nameWithOwner`), `baseOid`, `originalHeadOid`, `rebasedHeadOid`, `changelogCommitOid`, `pushedHeadOid`, `changelog.{filePath,section,markerComment}`, `startingRef`, `stage2.*`, `execute.{watch,force,watchTimeoutHours,secretOverrides}`.
+   - `PrMergePlan` includes: `runId`, `pr` (with `headRepositoryOwner/Name`, `isCrossRepository`, `nameWithOwner`), `baseOid`, `originalHeadOid`, `rebasedHeadOid`, `changelogCommitOid`, `pushedHeadOid`, `originalChangelogSha` (PR1-claude/risk — durable rollback target via git object store), `changelog.{filePath,section,markerComment}`, `startingRef`, `stage2.*`, `execute.{watch,force,watchTimeoutHours,secretOverrides}`.
    - **`execute.watchTimeoutHours` is persisted** so spawn-fail rerun without `--watch-timeout` flag preserves original timeout (codex review weakness).
    - Done when `readPlan()` rejects malformed merge plans and accepts existing open plans.
 
@@ -175,33 +178,44 @@ node --experimental-strip-types --test \
    - Tests in `merge_preflight_watcher_recovery.test.ts`: live, stale (PID dead), hostname mismatch, start-time mismatch, terminal-state non-blocking, resume detection.
 
 5. **PR resolution + identity.**
-   - `--pr N` → fetch by number; else `gh pr view --json number,headRefName,baseRefName,url,isDraft,state,mergeable,reviewDecision,labels,headRepositoryOwner,headRepository,isCrossRepository,headRefOid`.
+   - `--pr N` → fetch by number; else `gh pr view --json number,headRefName,baseRefName,url,isDraft,state,mergeable,reviewDecision,labels,headRepositoryOwner,headRepository,isCrossRepository,headRefOid,files`.
    - No PR → exit `10`.
    - Cross-repo → exit `17`.
    - Capture `originalHeadOid = headRefOid`.
 
-6. **Rebase safely.**
+6. **Self-modifying PR gate (PR1-codex/security — critical).**
+   - Examine PR `files[].path`; if any path matches `plugins/stark-gh/` or `scripts/` prefix, exit `19` with explicit message: "PR modifies stark-gh tool code; refuse to self-execute. Merge via plain `gh pr merge` after manual review."
+   - Always-enforced; `--force` does not bypass.
+   - Test `merge_preflight_self_modifying.test.ts`: PR touching tool path → exit `19`; PR touching only docs/specs → proceeds.
+
+7. **Pre-LLM secret scan (moved before rebase per PR1-claude/completeness).**
+   - Scan: PR title, PR body, commit messages on PR head (pre-rebase), diff `origin/<baseRef>...origin/<headRef>`.
+   - Exit `16` without `--allow-secret-to-llm`. **Important:** runs before any branch mutation so a failed scan leaves the user's branch untouched.
+   - Tests `merge_preflight_secret_scan.test.ts`: one case per input stream → exit `16`; `--allow-secret-to-llm` waives only pre-LLM, not pre-commit.
+
+8. **Capture pre-edit CHANGELOG.md content (PR1-claude/risk + claude/feasibility).**
+   - Read current `CHANGELOG.md` content before any mutation.
+   - Compute `originalChangelogSha = git hash-object CHANGELOG.md` (the blob OID is durable in git's object store and survives crashes).
+   - Persist `originalChangelogSha` in plan-file. Phase 5's rollback uses `git cat-file blob <sha>` to restore content; no in-memory cache.
+
+9. **Rebase safely.**
    - `git fetch --no-tags origin <baseRef> <headRef>`.
    - Verify `origin/<headRef> === originalHeadOid`; else exit `17`.
    - Verify local `<headRef> === origin/<headRef>`; else exit `18`.
    - Capture `baseOid = origin/<baseRef>` SHA.
    - Checkout `headRef`, rebase onto `origin/<baseRef>`. On conflict: `git rebase --abort`, restore `startingRef`, exit `13`.
    - Capture `rebasedHeadOid = HEAD` SHA.
+   - **Cleanup-on-later-failure invariant (PR1-codex/general):** Stage 1 from this step onward installs an error handler that, on any later non-zero exit, restores `startingRef` (`git checkout` back). The user is never left on a rebased branch after a gate fails.
 
-7. **Changelog section resolution.**
+10. **Changelog section resolution.**
    - `--changelog-section` flag if provided; else label-inferred (`bug`/`fix` label → Fixed; else Added).
-   - Verify CHANGELOG.md exists with `## [Unreleased]`; else exit `15`.
+   - Verify CHANGELOG.md still exists with `## [Unreleased]`; else exit `15`.
 
-8. **Pre-LLM secret scan.**
-   - Scan: PR title, PR body, commit messages on rebased branch, diff vs base.
-   - Exit `16` without `--allow-secret-to-llm`.
-   - Tests `merge_preflight_secret_scan.test.ts`: one case per input stream → exit `16`; `--allow-secret-to-llm` waives only pre-LLM, not pre-commit.
-
-9. **Pre-plan-write base re-check (codex weakness fix for exit `14`).**
+11. **Pre-plan-write base re-check (codex weakness fix for exit `14`).**
    - Immediately before writing the plan-file, re-read `git rev-parse origin/<baseRef>`.
-   - If different from captured `baseOid` → exit `14` (base moved during preflight).
+   - If different from captured `baseOid` → exit `14` (base moved during preflight). Restore `startingRef` per step 9 invariant.
 
-10. **Write plan-file.**
+12. **Write plan-file.**
     - `mktempInRuntime("stark-gh-pr-merge-plan-XXXXXX.json")`, mode `0600`, atomic write.
     - Print plan-file path on stdout when `--emit-plan-path`.
 
@@ -290,8 +304,8 @@ node --experimental-strip-types --test \
    - Build argv: `git push --force-with-lease=refs/heads/<headRef>:<originalHeadOid> origin HEAD:refs/heads/<headRef>`.
    - **Implementation Note:** lease string is built via argv only — never shell-interpolated.
    - On rejection (R3-claude/resilience):
-     - `git reset --hard <rebasedHeadOid>` (rolls back changelog commit).
-     - Restore `CHANGELOG.md` from prior content (cached pre-edit).
+     - `git reset --hard <rebasedHeadOid>` (rolls back changelog commit on the local branch).
+     - Restore `CHANGELOG.md` content via `git cat-file blob <originalChangelogSha> > CHANGELOG.md` (durable; PR1-claude/risk + claude/feasibility — uses the OID captured in Phase 3 step 8, not in-memory state).
      - Retain plan-file for diagnosis.
      - Exit `31`.
    - On success: capture `pushedHeadOid = git rev-parse HEAD`; atomic-update plan-file with `changelogCommitOid` and `pushedHeadOid`.
@@ -301,8 +315,8 @@ node --experimental-strip-types --test \
    - Call `lib/checks_graphql.ts:fetchRequiredCheckRollup` with `expectedHeadOid=pushedHeadOid`; mismatch → exit `30`.
    - Apply `isCheckPassing` to all required contexts. If any not passing → exit `12` (always-enforced; `--force` does NOT bypass per round-4 critical fix).
    - Vacuous pass (zero required) → proceed.
-   - Run `gh pr merge --squash --subject-file <f> --body-file <f> --delete-branch <pr#>`.
-     - `--delete-branch` deletes the **remote** branch only.
+   - **Merge call (PR1-codex/feasibility — critical fix):** `gh pr merge --squash --subject "$(cat <subject-file>)" --body-file <body-file> <pr#>`. The `gh` CLI does NOT support `--subject-file`; `lib/gh.ts` reads the subject tempfile in TS and passes it via `--subject <text>` argv (no shell interpolation). `--body-file` is supported and used directly.
+   - **Branch deletion:** `gh pr merge --delete-branch` deletes BOTH local and remote branches per the GitHub CLI docs — this is incompatible with our local-cleanup-deferred-to-`/stark-gh:cleanup` design. Therefore: do NOT pass `--delete-branch`. After successful merge, delete the **remote** branch via `gh api -X DELETE repos/{owner}/{repo}/git/refs/heads/{headRef}` (or equivalent GraphQL); local branch remains untouched.
    - On success: print merge SHA + PR URL; unlink plan-file and prose tempfiles.
    - On failure: exit `32`.
 
@@ -499,6 +513,8 @@ Implement tests in dependency order:
 | `merge_preflight_rebase.test.ts` | Phase 3 | conflict abort + startingRef restore |
 | `merge_preflight_watcher_recovery.test.ts` | Phase 3 | H12/H14/R2-H11 |
 | `merge_preflight_local_sync.test.ts` | Phase 3 | R2-H3 |
+| `merge_preflight_self_modifying.test.ts` | Phase 3 | PR1-codex/security critical |
+| `merge_rollback_force_push.test.ts` | Section 6 | PR1-codex/rollback critical 1 |
 | `merge_preflight_secret_scan.test.ts` | Phase 3 | R2-H17 |
 | `merge_draft.test.ts` | Phase 4 | codex stub + tempfile placement |
 | `merge_execute_secret_scan.test.ts` | Phase 5 | H05/H16 + R2-H18 |
@@ -526,10 +542,42 @@ Each phase is independently rollback-able by reverting its commits; no destructi
 - **Phase 1–2:** revert; pr-open tests still pass.
 - **Phase 3:** revert preflight tool; no command exposed yet.
 - **Phase 4:** revert draft tool + schema; preflight plans become inert without command registration.
-- **Phase 5:** revert execute tool. **If a test run already force-pushed**, do NOT rewrite remote history automatically — leave plan-file and watcher state on disk for diagnosis; cleanup is manual.
+- **Phase 5:** revert execute tool. See "Operational rollback — force-pushed PR" below if a test run reached the push step.
 - **Phase 6:** revert watcher modifications; pr-open watcher behavior must be preserved (Phase 6 task 2 compat verification).
 - **Phase 7:** revert callback + execute default-watch wiring; sync `--no-watch` path remains functional.
 - **Phase 8:** revert command markdown; install symlink no longer exposes `/stark-gh:pr-merge` after `./install.sh --status` refresh.
+
+### Operational rollback — force-pushed PR (PR1-codex/rollback critical 1)
+
+The plan-file holds `originalHeadOid` (PR's pre-rebase head). If a test run force-pushed and the run must be undone:
+
+```bash
+# 1. Read originalHeadOid from the retained plan-file
+ORIG=$(jq -r .originalHeadOid <plan-file>)
+# 2. Restore the remote head with an explicit-OID lease back to current pushedHeadOid
+PUSHED=$(jq -r .pushedHeadOid <plan-file>)
+git fetch --no-tags origin <headRef>
+git push --force-with-lease=refs/heads/<headRef>:$PUSHED \
+  origin $ORIG:refs/heads/<headRef>
+```
+
+**Operator confirmation required.** This rewrites remote history and must be reviewed by a human before invocation. Test coverage: fixture in `merge_rollback_force_push.test.ts` — populates a fake plan, runs the restore command via shim, asserts the resulting remote head equals `originalHeadOid`.
+
+### Operational rollback — post-merge defect (PR1-codex/rollback critical 2)
+
+`gh pr merge --squash` is irreversible (squash commit lands on base, original PR commits are detached). Recovery procedure:
+
+1. Capture the merge commit SHA from the watcher's terminal state file (`status: merged`, `merge_sha`).
+2. Open a revert PR: `gh pr create --base <baseRef> --title "Revert: <orig title>" --body "Reverts #<orig PR>"` after `git revert <merge_sha>`.
+3. The remote branch was deleted by Phase 5's post-merge step; **branches are not auto-restored**. If the original branch is needed for forensics, recreate from the merge commit's first parent: `git push origin <merge_sha>^2:refs/heads/recovered-<headRef>` (squash-merge's second parent is the squashed PR head).
+
+Document this procedure in `plugins/stark-gh/README.md`. Treat the merge call as an irreversible boundary requiring operator readiness.
+
+## Considered & Rejected — plan-review round 1 (2026-04-28)
+
+| ID | Persona | Concern (summary) | Disposition |
+|----|---------|-------------------|-------------|
+| PR1-codex/security (Codex sandboxing critical) | security | Codex subprocess receives untrusted PR text without a sandbox; "make sandboxing part of v1 or replace Codex" | **Affirmed deferred (R2-H14 carryover).** `codex exec` runs in non-agentic mode here — single inference call producing JSON output. No tool execution loop, no shell tools, no approval escalation. Output is schema-validated by `validateDraft` (rejects `Closes`/`Refs`/`#N`/embedded newlines/additional properties); impact bound to the three drafted prose fields. Prompt-injection risk reduces to "model produces awkward CHANGELOG bullet text," which is not a security-critical outcome. Cross-cutting hardening (run with neutral cwd, no GH tokens in env, no network beyond model call) tracked separately as a stark-skills-wide initiative |
 
 ## 7. Out of Scope (deferred from synthesis)
 
@@ -555,6 +603,8 @@ These were in the design as deferred items and remain so:
 4. **`chore(changelog)` commit subject format:** the design says `chore(changelog): <bullet text>` but the bullet always begins with `- `; stripping the leading `- ` produces a clean conventional commit. Spec to be amended OR Phase 5 task 3 documents the strip explicitly; tests assert the stripped form.
 5. **GraphQL pagination edge case:** Phase 2 task 3 — partial pages cannot satisfy the predicate; `fetchRequiredCheckRollup` aggregates all pages before returning.
 6. **Lock-format migration for in-flight pr-open watchers:** Phase 6 task 2 — verify or migrate; do not silently break running watchers.
+7. **`kill -0` portability (PR1-claude/feasibility):** liveness check uses POSIX `kill -0 <pid>`. Linux/macOS supported; Windows is out of scope for v1. `lib/process.ts` exposes `isProcessAlive(pid, startedAt)` with a clear errno mapping; on `EPERM` the process exists (treat as alive); on `ESRCH` it does not. Tests cover both branches.
+8. **Trusted control plane execution path (PR1-codex/security):** the slash command body invokes node with `TOOLS="$HOME/.claude/plugins/stark-gh/tools"` (matches pr-open). Implementation must verify this resolves to the install symlink, not to a path inside the PR's working tree. Phase 8 task 3 asserts the path resolution.
 
 ## 9. Synthesis Decisions
 
