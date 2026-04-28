@@ -205,11 +205,9 @@ async function mainAsync(): Promise<void> {
           supersededBy: currentHead,
           finishedAt: new Date().toISOString(),
         });
-        atomicWriteJson(latestPointer(args.host, args.owner, args.repo, args.pr), {
-          headSha: currentHead,
-          status: "superseded",
-          updatedAt: new Date().toISOString(),
-        });
+        // Do not touch latest.json: the newer watcher (or its caller) owns
+        // that pointer for currentHead. Overwriting from here would clobber
+        // a fresher status with our terminal "superseded" record.
         releaseLockIfOwner(lf, ownerToken);
         process.exit(0);
       }
