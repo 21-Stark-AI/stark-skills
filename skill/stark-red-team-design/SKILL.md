@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<design-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: 119a85b101220376c49cf8db62fac1fc0564725d
-revision_date: 2026-04-27T18:34:08Z
+revision: d25bc97cf19f68c2cadb2dca4af778b3fe1fbe54
+revision_date: 2026-04-29T07:22:10Z
 ---
 
 # stark-red-team-design
@@ -185,11 +185,26 @@ $PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number \
 
 If posting fails, warn and continue.
 
-### 4.3 Commit (optional, only if user asks)
+### 4.3 Commit sidecar
 
-The skill does **not** auto-commit the sidecar. Adversarial findings often
-spark discussion before being recorded; let the user decide whether to
-commit the sidecar alongside their next design change.
+Skip if `--dry-run` or no sidecar was written. Otherwise commit the sidecar
+so the findings are durable alongside the design:
+
+```bash
+git add "$sidecar_path"
+git commit -m "docs(red-team): findings for $(basename "$design_path")
+
+$total_findings findings ($blocking_count blocking, $human_review_count human-review)
+Model: $model · Run: $run_id"
+```
+
+If the working tree has unrelated staged changes, stage and commit only
+`$sidecar_path` (use `git commit -- "$sidecar_path"` style or reset other
+paths from the index first). If the commit fails (hook rejection, nothing
+to commit because the sidecar is unchanged, etc.), warn and continue —
+the sidecar file is already on disk.
+
+Do not push. The user controls when the branch goes up.
 
 ## Output Contract
 
