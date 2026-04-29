@@ -312,7 +312,8 @@ function main(): void {
 
 const invokedDirectly =
   process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+  import.meta.url ===
+    pathToFileURL(fs.realpathSync(path.resolve(process.argv[1]))).href;
 if (invokedDirectly) {
   main();
 }
