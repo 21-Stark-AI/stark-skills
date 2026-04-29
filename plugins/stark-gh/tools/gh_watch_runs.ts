@@ -599,10 +599,15 @@ async function prMergeWatchLoop(args: PrMergeWatchArgs): Promise<number> {
       consecutiveHeadMoved++;
       if (decideHeadMovedTransition(consecutiveHeadMoved) === "reconfirm") {
         // Likely GraphQL replication lag right after force-push; reconfirm
-        // with a short delay before treating as terminal.
+        // with a short delay before treating as terminal. Reset the green
+        // debounce: a transient head_moved invalidates any in-flight green
+        // streak, otherwise one ready poll before the mismatch plus one
+        // after could dispatch the merge after only one post-mismatch green.
+        consecutiveGreen = 0;
         writeStatus({
           status: "watching",
           consecutiveHeadMoved,
+          consecutiveGreen,
           lastWarning: `head_moved (transient ${consecutiveHeadMoved}/${HEAD_MOVED_REQUIRED_RECONFIRMS}): ${outcome!.reason}`,
         });
         await new Promise(r => setTimeout(r, jitter(HEAD_MOVED_RECONFIRM_DELAY_SEC) * 1000));

@@ -140,10 +140,12 @@ test("decideHeadMovedTransition: at-or-above threshold is terminal", () => {
   assert.equal(decideHeadMovedTransition(HEAD_MOVED_REQUIRED_RECONFIRMS + 1), "terminal");
 });
 
-test("decideHeadMovedTransition: required defaults to >=2 so single observation is never terminal", () => {
+test("decideHeadMovedTransition: required defaults to 3 so single observation is never terminal", () => {
   // The whole point of the debounce — one stale GraphQL response from
-  // post-push replication lag must never end the watcher.
-  assert.ok(HEAD_MOVED_REQUIRED_RECONFIRMS >= 2);
+  // post-push replication lag must never end the watcher. Pinned to the
+  // literal 3 so weakening the configured debounce (e.g. dropping to 2)
+  // is caught here instead of silently passing.
+  assert.equal(HEAD_MOVED_REQUIRED_RECONFIRMS, 3);
 });
 
 test("evaluateRollup: not-required contexts ignored", () => {
