@@ -978,8 +978,19 @@ def dispatch_codex(
     cwd: str | None,
     timeout_s: int,
     env: dict[str, str] | None = None,
+    *,
+    sandbox: bool = True,
 ) -> CodexCallResult:
-    """Run codex with the given model override. Returns CodexCallResult."""
+    """Run codex with the given model override. Returns CodexCallResult.
+
+    When ``sandbox=True`` (the FU-rt1 default), the codex subprocess runs
+    from an empty temp directory with a scrubbed env. This contains the
+    blast radius if attacker-controlled artifact / spec / PR-diff text in
+    the prompt manages to coax codex into a tool call: there's no repo
+    to read, no secrets to exfiltrate, and codex's own ``-s read-only``
+    flag still blocks writes. Pass ``sandbox=False`` only for paths that
+    have already isolated cwd / env upstream.
+    """
     t0 = time.time()
     cmd = [
         "codex",
@@ -994,6 +1005,60 @@ def dispatch_codex(
         "read-only",
         "-",
     ]
+
+    if sandbox:
+        from red_team_sandbox import isolate_workdir, scrub_env, wrap_command
+
+        scrubbed_env = scrub_env(env)
+        wrapped_cmd = wrap_command(cmd)
+        with isolate_workdir() as tmp:
+            try:
+                proc = subprocess.run(
+                    wrapped_cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                    cwd=str(tmp),
+                    env=scrubbed_env,
+                )
+            except subprocess.TimeoutExpired:
+                return CodexCallResult(
+                    raw_output="",
+                    duration_s=time.time() - t0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    error=f"codex timeout after {timeout_s}s",
+                )
+            except (OSError, FileNotFoundError) as exc:
+                return CodexCallResult(
+                    raw_output="",
+                    duration_s=time.time() - t0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    error=f"codex dispatch error: {exc}",
+                )
+
+            duration = time.time() - t0
+            if proc.returncode != 0:
+                return CodexCallResult(
+                    raw_output=proc.stdout or "",
+                    duration_s=duration,
+                    input_tokens=0,
+                    output_tokens=0,
+                    error=f"codex exit {proc.returncode}: {(proc.stderr or '').strip()[:400]}",
+                )
+
+            in_tokens, out_tokens = _parse_codex_jsonl_tokens(proc.stdout or "")
+            raw_text = _extract_codex_assistant_text(proc.stdout or "")
+            return CodexCallResult(
+                raw_output=raw_text,
+                duration_s=duration,
+                input_tokens=in_tokens,
+                output_tokens=out_tokens,
+                error=None,
+            )
+
     try:
         proc = subprocess.run(
             cmd,

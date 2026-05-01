@@ -1,8 +1,21 @@
 # Red-team follow-ups (deferred from 2026-04-27 calibration review)
 
-The 2026-04-27 calibration switched the default red-team model to `gpt-5.5-pro`. Acting on its own findings, the same PR (a) expanded `_RED_TEAM_LOCKED_FIELDS` (rt2) and (b) made parse-error surface as `error` instead of silent clean (rt3). The findings below were deferred to keep that PR focused; each should be filed as its own GitHub issue.
+The 2026-04-27 calibration switched the default red-team model to `gpt-5.5-pro`. Acting on its own findings, the same PR (a) expanded `_RED_TEAM_LOCKED_FIELDS` (rt2) and (b) made parse-error surface as `error` instead of silent clean (rt3). The findings below were deferred to keep that PR focused; each was filed as its own GitHub issue (#338-#345) and all eight landed together in 2026-05.
 
 Each item below lists the original finding ID, the failure mode, the proposed counter-measure, and the rough size of the change.
+
+## Implementation status (2026-05)
+
+All eight follow-ups implemented in a single bundled PR. Per-issue notes:
+
+- **rt7 (stable IDs):** `RedTeamFinding.concern_hash` + `compute_stable_key()` in `scripts/stark_red_team.py`. Stable key threads through the audit DB (`red_team_findings.stable_key`), the insights `red_team_finding` envelope, the PR comment anchors, and the CLI `--accept-red-team-human-review` input.
+- **rt5 (structured fields):** `risk_key`, `affected_component`, `failure_mode` on `RedTeamFinding`. `_overlap()` prefers structured-identity match; falls back to bag-of-words Jaccard for back-compat. Prompts updated. Embedding similarity deferred until 5–10 calibration runs confirm structured-fields-alone isn't enough.
+- **rt6 (sensitive audit):** New `red_team_audit_text` module. Default retention is excerpt-mode (240-char redacted excerpt + SHA-256 of original); full-text requires the locked `red_team.audit.retain_full_text` flag. `emit_queue._redact` reused for secret scrubbing on insert.
+- **rt8 (halt recovery):** `red_team_human_review` module persists per-stable-key acceptances in the audit DB. Both dispatchers gain `--accept-red-team-human-review STABLE_KEY` (with interactive confirmation showing the matched concern). `red_team_status.py` lists pending halts. `red_team_accept.py` is the standalone CLI.
+- **rt9 (PR comment):** `render_pr_comment_body()` in `red_team_dispatch_common.py`. One updatable per-run comment, collapsible per-persona `<details>` blocks, top-level Highlights for critical/high findings, deterministic anchors keyed by FU-rt7 stable key, HTML-comment run marker for find-and-edit. Sidecar markdown keeps its flat layout.
+- **rt4 (state machine):** New `red_team_state_machine` module. Pure-function classification (`clean | confirmed_blocking | flicker | degraded | error`) with named transition labels. Flicker rounds DO NOT consume `max_rounds`. `red_team_dispatch_common._run_iterative` drives primary + verification + stability gate.
+- **rt11 (per-call telemetry):** `red_team_call_start` / `red_team_call_end` events on every primary, verification, regeneration, inner-review, and fix-plan call. Each carries call_phase, configured vs. actual model, transport, prompt char count, truncation flag, token counts, per-call cost, cumulative cost + budget remaining, and the Responses-API request id. `CallTelemetrySink` is the dispatch hook; `_InsightsTelemetrySink` is the live wiring.
+- **rt1 (sandbox):** New `red_team_sandbox` module: env scrub (default allowlist drops Anthropic / GitHub / AWS / Slack / Kubeconfig env vars), workdir isolation (`isolate_workdir` runs codex from an empty temp dir), `wrap_command` hook for future bubblewrap / sandbox-exec wrappers. `dispatch_codex(sandbox=True)` is the new default; preflight check `check_red_team_sandbox` fails closed when primitives don't behave as expected.
 
 ## High priority
 

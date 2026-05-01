@@ -437,6 +437,36 @@ def check_red_team_transport_auth() -> tuple[str, str]:
     return "pass", f"OpenAI API key resolved for {model}"
 
 
+def check_red_team_sandbox() -> tuple[str, str]:
+    """Verify the FU-rt1 hermetic sandbox primitives function on this host.
+
+    Skips when red-team is disabled or when the configured model only uses
+    the Responses API (the sandbox guards the codex-CLI fallback path; the
+    HTTP path has no local tool surface to constrain). Fails closed on any
+    primitive that doesn't behave as expected so an operator hears about a
+    silently-no-op sandbox before a real run.
+    """
+    try:
+        cfg = get_red_team_config()
+    except Exception as exc:
+        return "warn", f"could not load red_team config: {exc}"
+
+    if not cfg.get("enabled", True):
+        return "skip", "red_team disabled in config"
+
+    try:
+        from red_team_sandbox import preflight_sandbox
+    except ImportError as exc:
+        return "warn", f"could not import red_team_sandbox: {exc}"
+
+    status, message = preflight_sandbox()
+    if status == "ready":
+        return "pass", message
+    if status == "degraded":
+        return "warn", message
+    return "fail", message
+
+
 # ---------------------------------------------------------------------------
 # Check registry: (name, fn, is_critical)
 # critical=True → a "fail" status sets overall to "blocked"
@@ -457,6 +487,10 @@ _CHECKS: list[tuple[str, Callable[..., tuple[str, str]], bool]] = [
     ("check_deprecated_config",    check_deprecated_config,    False),
     ("check_red_team_model_rates", check_red_team_model_rates, True),
     ("check_red_team_transport_auth", check_red_team_transport_auth, True),
+    # FU-rt1 sandbox check is non-critical: a failed sandbox should warn
+    # loudly but not block when the operator is dispatching a Responses-API
+    # model (which doesn't traverse the codex-CLI path).
+    ("check_red_team_sandbox", check_red_team_sandbox, False),
 ]
 
 
