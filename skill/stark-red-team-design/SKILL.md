@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<design-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: 56370a3a5169ad65b514a424a1ba551e1012ed86
-revision_date: 2026-05-01T16:02:54Z
+revision: fb51083d1b6e37c5f39ab46687be6e7d9904ba27
+revision_date: 2026-05-01T16:03:29Z
 ---
 
 # stark-red-team-design
@@ -202,9 +202,12 @@ rendered as skipped and no second LLM call is made.
 Post the dispatcher-rendered `pr_comment_body` (FU-rt9). It is a single
 collapsible-per-persona summary with a critical/high "Highlights" section
 on top, deterministic anchors for every finding, and an HTML-comment
-marker (`<!-- stark-red-team: run_id=... -->`) at the head so a re-run
-edits the existing comment in place instead of stacking a new one per
-round.
+marker (`<!-- stark-red-team: stage=design artifact=... -->`) at the head
+so a re-run edits the existing comment in place instead of stacking a
+new one per round. The marker is keyed by stage + artifact path (NOT
+`run_id`); the dispatcher exposes the exact string as `pr_comment_marker`
+in its JSON output, so the lookup below copies the dispatcher's contract
+verbatim.
 
 The flow is **find-by-marker, edit-or-create** (FU-rt9 invariant — "one
 updatable comment per run"):
