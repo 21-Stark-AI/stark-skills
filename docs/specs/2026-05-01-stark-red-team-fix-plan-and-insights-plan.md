@@ -10,7 +10,7 @@
 Two incremental tracks:
 
 - **Track A (stark-skills, this repo):** Phases 1–7 + 9–11 add the gated `gpt-5.5-pro` xhigh fix-plan call, the local SQLite migration, the insights event emission helpers, the backfill CLI, sidecar/PR-comment rendering, and the calibration → enable rollout. Ships with `fix_plan.enabled: false`.
-- **Track B (stark-insights, separate repo):** Phase 8 adds lifter rules. **Runs in parallel with Track A** once the §5.2 payload contracts are locked in Phase 4 (see §4 Integration Points). Producer (Track A) and consumer (Track B) tolerate either deployment order: events written before lifters land ingest into `payload_extra`-only.
+- **Track B (stark-insights, separate repo):** Phase 8 registers the three new event types in `PAYLOAD_SCHEMAS` AND adds lifter rules. Track B can DEVELOP in parallel with Track A, but **Track B MUST DEPLOY before any forward emission of `red_team_*` events drains to cloud** — `EventEnvelope.model_validate` rejects unknown event types with `ValueError`, so producer-first is unsafe. The deployment order is enforced by Phase 11 Task 1 (Phase 8 deployed + smoke-tested) being a hard prerequisite of Task 6 (post-flip PR) AND of any calibration override that targets a non-localhost stark-insights endpoint.
 
 Invariants the implementation MUST preserve:
 - The skill's exit code, terminal status, sidecar banner, and `red_team_runs.final_status` derive ONLY from the challenge call's `RedTeamResult`. Fix-plan success/failure changes only `fix_plan_status` and the `## Proposed Fix Plan` section. (Resolves design rt3.)
@@ -37,15 +37,22 @@ gh auth status
 sqlite3 --version
 test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY not set; required for Responses API" && exit 1)
 
-# Actual install (NOT --status). Creates symlinks under ~/.claude/code-review/
-# and ~/.claude/skills/, plus the scripts/.venv used by every dispatcher.
+# Actual install: install.sh symlinks files but does NOT create scripts/.venv —
+# the venv is the dispatcher's runtime interpreter and must be provisioned
+# explicitly before install.sh's --status check passes green.
 ./install.sh
+test -x ~/.claude/code-review/scripts/.venv/bin/python3 || (
+  cd ~/.claude/code-review/scripts \
+    && python3 -m venv .venv \
+    && ./.venv/bin/pip install --quiet --upgrade pip \
+    && ./.venv/bin/pip install --quiet -r requirements.txt
+)
 ./install.sh --status     # NOW it should report green
 
 # Verify the runtime paths the rest of the plan depends on
-test -x ~/.claude/code-review/scripts/.venv/bin/python3
-test -d ~/.claude/code-review/prompts/red-team
-test -d ~/.claude/skills/stark-red-team-design
+test -x ~/.claude/code-review/scripts/.venv/bin/python3 || (echo "venv missing"; exit 1)
+test -d ~/.claude/code-review/prompts/red-team || (echo "prompts not symlinked"; exit 1)
+test -d ~/.claude/skills/stark-red-team-design || (echo "skills not symlinked"; exit 1)
 
 # Initialize the audit DB so Phase 3 has a place to migrate
 ~/.claude/code-review/scripts/.venv/bin/python3 -c "
@@ -247,10 +254,11 @@ python3 -m pytest scripts/test_red_team_fix_plan.py -v
    - Fresh-DB `CREATE TABLE` matches the migrated shape exactly.
    - **Done when:** migration is idempotent on fresh / v1.0 / v1.1 / v1.2 / partially-migrated (kill-mid-ALTER simulated) DBs. Each test asserts final schema bytes match.
 
-2. **Update `record_red_team_run`** — accept new optional kwargs (`repo`, `artifact_relative_path`, `pr_number`, `fix_plan_status`); use explicit column names in `INSERT`; older callers (v1) still work because all new params default `None`.
-   - **Done when:** existing v1 caller test still passes; new test inserts a row with all v1.2 fields and round-trips.
+2. **Update `record_red_team_run`** — accept new optional kwargs (`repo`, `artifact_relative_path`, `pr_number`, `fix_plan_status="pending"` default for v1.2 callers); use explicit column names in `INSERT`; older callers (v1) still work because all new params default `None` (or `"pending"` for status).
+   - The v1.2 dispatcher always calls `record_red_team_run` with `fix_plan_status="pending"` at step 5.1 of the Phase 5 ordering, then calls `record_fix_plan` at step 5.5 to update `fix_plan_status` to the resolved value. This two-step write means a crash leaves the row visible to backfill recovery.
+   - **Done when:** existing v1 caller test still passes; new test inserts a row with all v1.2 fields and round-trips; a test asserts the "pending" sentinel survives a crash-and-recover cycle via `--scope=forward` backfill.
 
-3. **Add `record_fix_plan` helper** — single-column update keyed by `run_id`:
+3. **Add `record_fix_plan` helper** — UPDATE keyed by `run_id`. Always called for every dispatcher invocation (success, error, skipped — see Phase 5 Task 7 ordering):
    ```python
    def record_fix_plan(
        run_id: str,
@@ -258,13 +266,14 @@ python3 -m pytest scripts/test_red_team_fix_plan.py -v
        fix_plan_md: str | None,
        fix_plan_json: str | None,
        fix_plan_cost_usd: float | None,
-       fix_plan_status: str,
+       fix_plan_status: str,                   # "success" | "error" | "skipped_*"
        db_path: str | None = None,
    ) -> None:
-       ...
+       """UPDATE red_team_runs SET fix_plan_md=?, fix_plan_json=?, fix_plan_cost_usd=?, fix_plan_status=?
+          WHERE run_id=? — assert rowcount == 1."""
    ```
-   - Persist `fix_plan_json` as the validated `RedTeamFixPlan` dict serialized via `json.dumps(asdict(plan))` MINUS `raw_output` (which can echo attacker content).
-   - **Done when:** JSON round-trips via `json.loads`; `dataclass(**parsed)` reconstructs the validated plan with all fields.
+   - Persist `fix_plan_json` as the validated `RedTeamFixPlan` dict serialized via `json.dumps(asdict(plan))` MINUS `raw_output` (which can echo attacker content). For skipped/error paths, `fix_plan_json` is `NULL`.
+   - **Done when:** JSON round-trips via `json.loads`; `dataclass(**parsed)` reconstructs the validated plan with all fields; UPDATE asserts `rowcount == 1` and raises a clear error if the parent `red_team_runs` row is missing; the helper accepts and persists every documented `fix_plan_status` value.
 
 #### Risks
 
@@ -367,9 +376,10 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
 #### Tasks
 
 1. **Construct shared `RedTeamRunContext` once** at dispatcher start — both `red_team_design_dispatch.py` and `red_team_plan_dispatch.py`:
-   - Populate `run_id` (existing `manual-{uuid4.hex[:12]}` pattern), `stage`, `caller="manual"`, `repo` (via `git rev-parse --show-toplevel` + `gh repo view --json nameWithOwner`, fallback `"unknown"`), `artifact_relative_path` (relativized when repo detected, else `None`), `cwd`, `env` (resolved subprocess env), `model_rates` (from config), `cfg_red_team`, `per_run_budget_usd`, `pr_number` (from `gh pr view`), `started_at_iso`.
+   - Populate `run_id` (existing `manual-{uuid4.hex[:12]}` pattern), `stage`, `caller="manual"`, `repo` (via `git rev-parse --show-toplevel` + `gh repo view --json nameWithOwner`, fallback `"unknown"`), `artifact_relative_path` (relativized when repo detected, else `None`), `cwd`, `env` (see below), `model_rates` (from config), `cfg_red_team`, `per_run_budget_usd`, `pr_number` (from `gh pr view`), `started_at_iso`.
+   - **`env` construction is allowlist-based but MUST preserve the OpenAI key** (resolves round-2 high: `ctx.env` could strip the OpenAI key needed by Responses API). Use `runtime_env.build_agent_env(...)` per the v1 pattern, then explicitly merge in `OPENAI_API_KEY` and the `OPENAI_API_KEY_FILE` / `OPENAI_API_KEY_LABEL` pair from `os.environ` if any are set. Add a sanity assertion at construction time: `_resolve_openai_api_key(ctx.env)` must return non-None for any code path that will reach `dispatch_responses_api`. If it doesn't, fail fast with a clear error before the run starts.
    - Pass the same `ctx` to: challenge call, fix-plan call, audit row writes, all three insights emit functions.
-   - **Done when:** integration test asserts byte-identical `(run_id, stage, repo, artifact_relative_path, pr_number, model_rates)` across the challenge transport call, fix-plan transport call, `red_team_runs` row write, and the three emitted envelopes (resolves design §3.5 + rt2).
+   - **Done when:** integration test asserts byte-identical `(run_id, stage, repo, artifact_relative_path, pr_number, model_rates)` across the challenge transport call, fix-plan transport call, `red_team_runs` row write, and the three emitted envelopes; AND a separate test asserts `_resolve_openai_api_key(ctx.env)` returns the same key as `_resolve_openai_api_key(os.environ)` (resolves design §3.5 + rt2).
 
 2. **Add fix-plan gating** — implement the design §3.1 sequence (with the round-1 fixes for `is_human_review` helper, `fix_plan.model` already-present default, and the runtime kill switch):
    ```python
@@ -400,7 +410,13 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
            fix_plan_status = "success" if fix_plan.error is None else "error"
    ```
    - Add CLI-only flag `--enable-fix-plan-for-calibration` that bypasses ONLY the `enabled: false` check. Emit `red_team.fix_plan.calibration_override` to stderr once when active. NOT exposed through the skill argument parsing — dispatcher CLI only.
-   - **Kill-switch env var `STARK_RED_TEAM_FIX_PLAN_KILL`** (resolves round-1 high: locked `enabled` has no fast incident-response path). Takes precedence over `enabled: true`; not gated by `_RED_TEAM_LOCKED_FIELDS` (it's an env var, not a config key). When set, gate yields `skipped_kill_switch`; emits `red_team.fix_plan.kill_switch_active` warning to stderr once per process. Document in Phase 7 SKILL.md and §6 Rollback as the in-band emergency disable.
+   - **Kill-switch env var `STARK_RED_TEAM_FIX_PLAN_KILL`** (resolves round-1 high: locked `enabled` has no fast incident-response path; round-2 critical: clarify why this is not a lock-bypass).
+     - **Threat-model distinction.** `_RED_TEAM_LOCKED_FIELDS` prevents *committed config* (`org.json` / repo `.code-review/config.json`) from silently weakening the substance review — it defends against accidental or malicious commits that would persist across operators. The env var is *per-process, per-machine, operator-controlled* — it does not modify any config file, leaves no committed artifact, and has no fleet-wide effect. These are distinct concerns: locks prevent persistent silent weakening; the kill switch enables in-band incident response. Both are required for a paid, externally-visible feature.
+     - **Audit trail.** When the kill switch fires:
+       - Emit a `red_team.fix_plan.kill_switch_active` warning to stderr once per process.
+       - Append the warning to `red_team_run.payload.warnings`, so an operator-initiated bypass shows up in the cloud `events` table alongside the still-emitted `red_team_run` event (the challenge call still runs and still emits).
+       - The `red_team_runs.fix_plan_status='skipped_kill_switch'` value is the durable local audit record.
+     - Document in Phase 7 SKILL.md and §6 Rollback as the in-band emergency disable. Document the audit trail explicitly so security review has a clear answer to "how do we know who turned it off?"
    - **Done when:** default config always lands on `skipped_disabled`; calibration flag enables real exercise; each skip status (including the new `skipped_kill_switch`) reaches the documented branch and is asserted by tests; tests prove the env-var override fires regardless of `enabled: true` in config.
 
 3. **Compute and append `over_budget_after_fix` warning** (resolves gemini→codex review's missing post-call check):
@@ -465,16 +481,18 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
    ```
    - **Done when:** test for clean / skipped / error / success commit message bodies all match the documented format.
 
-7. **Wire emit_* timing precisely — emit AFTER local audit writes commit** (resolves round-1 high: insights emission must be sequenced after durable audit writes):
-   - **Order of operations** (top-to-bottom, no skipping):
-     1. `record_red_team_run(...)` inserts the parent `red_team_runs` row with `final_status` from challenge. Commits before any emission.
-     2. `emit_finding(ctx, finding=f, round_num=1)` fires for each challenge finding (parent row exists, so subsequent `record_fix_plan` UPDATE is keyed correctly).
-     3. Run the fix-plan gate (Task 2). If fix call fires:
-        a. `record_fix_plan(run_id, fix_plan_md=..., fix_plan_json=..., fix_plan_status='success', fix_plan_cost_usd=...)`. Assert `cursor.rowcount == 1` to catch missing parent row.
-        b. `emit_fix_plan(ctx, fix_plan=..., fix_plan_md=...)`.
-     4. `emit_run(ctx, result=challenge, fix_plan_status=<resolved>, run_warnings=<...>)` LAST — only by then are `fix_plan_status` and `over_budget_after_fix` accurate.
-   - **Crash-safety:** if the dispatcher crashes between step 1 and step 4, the local `red_team_runs` row exists with NULL fix_plan fields, and `red_team_finding` events are queued but the `red_team_run` event isn't. Phase 6 backfill `--scope=forward` reconciles by re-emitting from the surviving local rows; cloud-side dedupe protects against duplicates.
-   - **Done when:** integration test asserts the emission order in mock; a test that simulates a crash between fix-plan call and emit_run leaves recoverable state.
+7. **Wire emit_* timing precisely — emit AFTER local audit writes commit** (resolves round-1 high + round-2 highs: insights emission must be sequenced after durable audit writes for ALL paths, including skipped/error):
+   - **Order of operations** (top-to-bottom, no skipping; applies to success, skip, and error paths):
+     1. `record_red_team_run(...)` inserts the parent `red_team_runs` row with `final_status` from challenge AND a provisional `fix_plan_status="pending"`. Commits before any emission. **Always runs**, even when the fix-plan call will be skipped.
+     2. `record_finding(...)` for each challenge finding into a (Phase 3 task: also add) `red_team_findings` insert. Commits.
+     3. `emit_finding(ctx, finding=f, round_num=1)` fires for each finding (durable local row already exists, so backfill recovery has a source-of-truth).
+     4. Run the fix-plan gate (Task 2). Resolve `fix_plan_status` to one of: `success` / `error` / `skipped_*`.
+     5. `record_fix_plan(run_id, fix_plan_md=..., fix_plan_json=..., fix_plan_status=<resolved>, fix_plan_cost_usd=...)`. **Always called**, even for skip paths (in which case `fix_plan_md = None`, `fix_plan_json = None`, `fix_plan_cost_usd = None`, but `fix_plan_status` is the resolved skip value). Assert `cursor.rowcount == 1` to catch missing parent row. (Resolves round-2 high: skipped fix-plan statuses never persisted locally.)
+     6. If `fix_plan_status == "success"`: `emit_fix_plan(ctx, fix_plan=..., fix_plan_md=...)`.
+     7. `emit_run(ctx, result=challenge, fix_plan_status=<resolved>, run_warnings=<...>)` LAST — only by then are `fix_plan_status` and `over_budget_after_fix` accurate.
+   - **Crash-safety:** if the dispatcher crashes between step 1 and step 7, the local `red_team_runs` row exists with `fix_plan_status="pending"` (or the resolved value if step 5 ran). Phase 6 backfill `--scope=forward` matches `fix_plan_status NOT IN ('absent_pre_v1_2')` and re-emits from the surviving local rows; cloud-side dedupe protects against duplicates. The "pending" sentinel signals an incomplete run; an extra `--scope=incomplete` flag (or just including pending under `forward`) lets the operator resume.
+   - **Forward-emission timestamps** (resolves round-2 high: forward and backfill timestamps not byte-identical): every Phase 4 envelope builder uses `ctx.started_at_iso` as the `timestamp` field, NOT `datetime.now()` at enqueue time. Backfill (Phase 6) uses `red_team_runs.created_at` as the timestamp. Both forward and backfill produce the same timestamp for the same logical row.
+   - **Done when:** integration test asserts the emission order in mock; a test simulates a crash between fix-plan call and emit_run, then recovers via `--scope=forward` backfill; tests prove forward + backfill produce byte-identical envelopes for the same `run_id`.
 
 8. **Preserve challenge-derived final status** (resolves design §10 invariant + rt3):
    - Skill exit code, terminal-printed status, sidecar banner status, and `red_team_runs.final_status` ALL derive from `RedTeamResult` only.
@@ -611,7 +629,15 @@ git diff --stat skill/stark-red-team-{design,plan}/SKILL.md
           --data @/tmp/fixture-event.json
      ```
    - **launchd service label discovered:** run `launchctl list | grep -i stark-insights` to capture the actual label; typical value is `com.evinced.stark-insights` per `$STARK_INSIGHTS_REPO/CLAUDE.md`. Record the discovered label here in the plan before Phase 11 Task 5 runs.
-   - **Done when:** one hand-crafted `tool_usage` event lands successfully via the curl above; service label is documented; tests pass on a clean clone.
+   - **Service / token bootstrap from blank slate:** if `~/.stark-insights/api-token` does not exist OR `launchctl list | grep stark-insights` returns nothing, run the per-stark-insights install procedure FIRST: `bash $STARK_INSIGHTS_REPO/scripts/install.sh` per its CLAUDE.md (creates the launchd service, generates the API token via `scripts/manage-keys.py`, configures the IAP tunnel). Phase 0 in this plan does not duplicate that procedure — it links to it.
+   - **Author the three smoke-test fixture files** before Task 5 runs them:
+     ```
+     $STARK_INSIGHTS_REPO/tests/fixtures/red_team_run.json
+     $STARK_INSIGHTS_REPO/tests/fixtures/red_team_finding.json
+     $STARK_INSIGHTS_REPO/tests/fixtures/red_team_fix_plan.json
+     ```
+     Each is a minimal valid envelope per the §5.2 schemas. Commit them as part of the Track B PR alongside the `PAYLOAD_SCHEMAS` entries — fixtures + schemas land together so the smoke test in Task 5 has its inputs.
+   - **Done when:** one hand-crafted `tool_usage` event lands successfully via the curl above; service label and api-token path are documented; the three fixture files exist; tests pass on a clean clone.
 
 1. **Add the three event types to `PAYLOAD_SCHEMAS`** — `$STARK_INSIGHTS_REPO/src/stark_insights/models.py` (resolves round-1 critical: lifters alone won't ingest):
    - Define payload schemas per design §5.2 — every required key with its expected type tuple. Optional keys include `type(None)` in the tuple.
@@ -920,7 +946,7 @@ sqlite3 ~/.claude/code-review/history/forged-review/forged_review_metrics.db \
      - Reference Task 1's smoke-test timestamps — must be < 24h old at PR open.
      - Reference Phase 10's committed calibration doc with p95 totals.
      - Reference the documented kill-switch path (`STARK_RED_TEAM_FIX_PLAN_KILL=1`) so on-call has a fast disable in their runbook.
-   - CI runs Phase 12.2 enabled-fixture suite.
+   - CI runs the enabled-fixture test suite from design §12.2 (the spec's "enabled-fixture" acceptance section — there is no separate "Phase 12" in this plan; design §12.2 is the canonical reference).
    - **Approval authority:** the same reviewer set who approved the v1.2 base PR (single-author plus one peer). No silent merge — the post-flip PR is short but operationally significant.
    - **Done when:** PR merges, dispatcher logs show fix-plan calls firing on real invocations, and the kill-switch is documented in `skill/stark-red-team-design/SKILL.md` Phase 7 update.
 
@@ -941,7 +967,7 @@ sqlite3 ~/.claude/code-review/history/forged-review/forged_review_metrics.db \
    - **Forward emission timestamp invariant** (related): every envelope built in Phase 4 sets `timestamp = ctx.started_at_iso` (event creation time) so post-outage drains land in the correct historical bucket.
    - **Done when:** test exercises the alert thresholds; documentation in `skill/stark-session/SKILL.md` references the new banner section.
 
-7. **Backfill `--scope=forward` for in-flight failures** (only if dispatcher emit_* calls failed during a service outage):
+8. **Backfill `--scope=forward` for in-flight failures** (only if dispatcher emit_* calls failed during a service outage):
    ```bash
    python3 scripts/red_team_backfill.py --scope forward --limit 100
    ```
@@ -977,7 +1003,7 @@ The implementation must keep the following contracts byte-stable across Track A 
 
 - **`make_dedupe_key` is the single source for forward emission AND backfill.** Diverging formulas would create duplicate cloud events. Phase 4 Task 3 + Phase 6 Task 1 reuse the same helper.
 
-- **`event_schema.json` (Track A) ↔ `_LIFT_RULES` (Track B) contract.** Producer can deploy first; lifter PR can deploy independently. Pre-deployment behavior is "events ingest with `payload_extra` only" — verified by Phase 8 Task 2's pre-deployment test.
+- **`event_schema.json` (Track A) ↔ `PAYLOAD_SCHEMAS` + `_LIFT_RULES` (Track B) contract.** **Track B MUST deploy first** in production. The earlier "producer-first is safe" claim was wrong — `EventEnvelope.model_validate` rejects unknown event types at `POST /events`. Phase 11 Task 1 is the deployment gate; Task 6 (post-flip PR) is hard-blocked on it. For local dev only, calibration runs against a localhost stark-insights instance that has Track B's changes loaded — same gate, smaller blast radius.
 
 - **Locked-field enforcement.** `_RED_TEAM_LOCKED_FIELDS` MUST cover all 5 nested fix-plan paths AND emit `red_team_override_rejected` events with the exact dotted `path` string. Phase 1 Task 2 acceptance covers all 5.
 
