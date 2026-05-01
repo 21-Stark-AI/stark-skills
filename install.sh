@@ -582,6 +582,7 @@ interactive() {
     link_dir "$REPO_DIR/standards" "$CODE_REVIEW_DIR/standards" "Standards templates"
     link_dir "$REPO_DIR/config/settings.json" "$CLAUDE_DIR/settings.json" "Settings"
     link_dir "$REPO_DIR/config/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh" "Status line"
+    link_dir "$REPO_DIR/config/statusline-ctx-trend.ts" "$CLAUDE_DIR/statusline-ctx-trend.ts" "Status line trend script"
 
     provision_infrastructure
 
@@ -751,6 +752,7 @@ install() {
     # 7. User config: ~/.claude/settings.json + statusline → repo/config/
     link_dir "$REPO_DIR/config/settings.json" "$CLAUDE_DIR/settings.json" "Settings"
     link_dir "$REPO_DIR/config/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh" "Status line"
+    link_dir "$REPO_DIR/config/statusline-ctx-trend.ts" "$CLAUDE_DIR/statusline-ctx-trend.ts" "Status line trend script"
     link_dir "$REPO_DIR/config/statusline-setup.py" "$HOME/.local/bin/statusline-setup" "Status line setup CLI"
 
     provision_infrastructure
@@ -830,6 +832,7 @@ uninstall() {
     unlink_dir "$CODE_REVIEW_DIR/standards" "Standards templates"
     unlink_dir "$CLAUDE_DIR/settings.json" "Settings"
     unlink_dir "$CLAUDE_DIR/statusline-command.sh" "Status line"
+    unlink_dir "$CLAUDE_DIR/statusline-ctx-trend.ts" "Status line trend script"
     unlink_dir "$HOME/.local/bin/statusline-setup" "Status line setup CLI"
 
     if [ -f "$SKILL_MANIFEST_PATH" ]; then
@@ -889,6 +892,7 @@ status() {
     check_dir "$CODE_REVIEW_DIR/standards" "Standards templates"
     check_dir "$CLAUDE_DIR/settings.json" "Settings"
     check_dir "$CLAUDE_DIR/statusline-command.sh" "Status line"
+    check_dir "$CLAUDE_DIR/statusline-ctx-trend.ts" "Status line trend script"
     check_dir "$HOME/.local/bin/statusline-setup" "Status line setup CLI"
 
     echo ""

@@ -49,9 +49,13 @@ SEGMENTS = [
     ("session_dur",   "Session Duration",2, "Total elapsed session time",     "\U0001faab 12m"),
     ("five_hour_rl",  "5h Rate Limit",   2, "5-hour rate limit % + reset",   "\U0001f6dd 32% \u23f3 3h12m"),
     ("weekly_rl",     "Weekly Limit",    2, "7-day rate limit % + reset",     "\U0001f4c5 18% \U0001f570\ufe0f 4d2h"),
-    ("tokens",        "Tokens",          2, "Input/output token counts",      "\u2b06 12.4K \u2b07 3.2K"),
-    ("cost",          "Session Cost",    2, "Estimated session cost",         "\U0001f4b0 $1.234"),
-    ("code_churn",    "Code Churn",      2, "Lines added/removed",            "\u270f\ufe0f +42 -17"),
+    ("tokens",        "Tokens (per turn)",   2, "Last API call: fresh + cache-read (hit%) + output", "\u2b06 5.3k \U0001f4d6 178k 97% \u2b07 850"),
+    ("tokens_total",  "Tokens (cumulative)", 2, "Session-wide totals (off by default; re-counts cached input each turn)", "\u03a3\u2b06 5.8M \u03a3\u2b07 12k"),
+    ("ctx_per_turn",  "Context per turn",    2, "Total input processed last turn vs window size", "\U0001f9e0 183k/turn 18%"),
+    ("cost",          "Session Cost",        2, "Session cost from cost.total_cost_usd (cache-aware)", "\U0001f4b0 $1.234"),
+    ("cost_rate",     "$/h Burn Rate",       2, "Session cost per hour of wall-clock",     "$4.94/h"),
+    ("tier_warn",     "1M-tier Warning",     2, "Flag when exceeds_200k_tokens (Opus 2x pricing)", "\u26a0\ufe0f 1M-tier"),
+    ("code_churn",    "Code Churn",          2, "Lines added/removed",                     "\u270f\ufe0f +42 -17"),
 ]
 
 VALID_IDS = {s[0] for s in SEGMENTS}
