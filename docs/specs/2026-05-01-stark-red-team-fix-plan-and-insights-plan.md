@@ -20,32 +20,68 @@ Invariants the implementation MUST preserve:
 
 ## 2. Prerequisites
 
+### 2.1 Phase 0 — Blank-slate bootstrap (resolves round-1 critical: install never installed runtime)
+
+`./install.sh --status` only REPORTS state — it does not create symlinks, the scripts venv, the prompt install paths, or the audit/queue DBs. From a clean machine, every later phase that loads a prompt via `~/.claude/code-review/prompts/...` or queries `~/.stark-insights/queue.db` will fail. Run actual install + DB initialization first:
+
 ```bash
-# Repo state
 cd /Users/aryeh/git/Evinced/stark-skills
+
+# Repo state
 git status --short
+git rev-parse --abbrev-ref HEAD     # work on feat/red-team-fix-plan-and-insights
 
 # Local tools
 python3 --version    # 3.12+
 gh auth status
 sqlite3 --version
+test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY not set; required for Responses API" && exit 1)
 
-# Runtime access
-test -n "$OPENAI_API_KEY"     # for fix-plan and challenge dispatch via Responses API
-ls ~/.stark-insights/queue.db # exists (created on first emit if not)
-ls ~/.claude/code-review/history/forged-review/forged_review_metrics.db  # exists or creatable
+# Actual install (NOT --status). Creates symlinks under ~/.claude/code-review/
+# and ~/.claude/skills/, plus the scripts/.venv used by every dispatcher.
+./install.sh
+./install.sh --status     # NOW it should report green
 
-# stark-insights repo location (Track B)
-test -d /Users/aryeh/git/Evinced/stark-insights || \
-    echo "clone first: git clone <stark-insights-url> /Users/aryeh/git/Evinced/stark-insights"
+# Verify the runtime paths the rest of the plan depends on
+test -x ~/.claude/code-review/scripts/.venv/bin/python3
+test -d ~/.claude/code-review/prompts/red-team
+test -d ~/.claude/skills/stark-red-team-design
+
+# Initialize the audit DB so Phase 3 has a place to migrate
+~/.claude/code-review/scripts/.venv/bin/python3 -c "
+import sys; sys.path.insert(0, '/Users/aryeh/git/Evinced/stark-skills/scripts')
+import red_team_audit as a
+a.init_red_team_tables(a.DEFAULT_DB_PATH)
+print('audit db ready')
+"
+
+# Initialize the insights queue DB (lazy-init on first enqueue but easier to verify upfront)
+~/.claude/code-review/scripts/.venv/bin/python3 -c "
+import sys; sys.path.insert(0, '/Users/aryeh/git/Evinced/stark-skills/scripts')
+import emit_queue as q
+q._get_db().close()
+print('queue db ready')
+"
+ls ~/.stark-insights/queue.db
+ls ~/.claude/code-review/history/forged-review/forged_review_metrics.db
+
+# stark-insights repo (Track B)
+test -d /Users/aryeh/git/Evinced/stark-insights \
+  || git clone https://github.com/Evinced/stark-insights.git /Users/aryeh/git/Evinced/stark-insights
+export STARK_INSIGHTS_REPO=/Users/aryeh/git/Evinced/stark-insights
 
 # Baseline: existing tests pass before edits
 python3 -m pytest scripts/test_stark_red_team.py scripts/test_red_team_audit.py
-./install.sh --status
 ```
 
-**Design gaps to resolve during implementation (flag-only — Phase 8 needs an answer):**
-- Exact stark-insights authenticated event POST mechanism (env var, client, or service-relay path) for the lifter smoke test. **Phase 8 Task 0** is to locate `stark_insights/api/` or equivalent client and document the path before any direct ingestion is attempted.
+### 2.2 Phase 8 prerequisite gate — auth + service registry
+
+**This MUST be answered before Phase 4 producer code merges.** Phase 8 cannot run in parallel without resolving these (round-1 critical: lifters alone won't ingest unknown event types):
+
+- **stark-insights authenticated event POST path:** locate the existing API client (`$STARK_INSIGHTS_REPO/src/stark_insights/api/events.py` confirms the endpoint is `POST /events`; auth lives in `~/.stark-insights/api-token` per the existing service token convention). Document one successful authenticated POST against a non-prod / staging stark-insights instance.
+- **`PAYLOAD_SCHEMAS` registry update:** stark-insights `EventEnvelope.model_validate` REJECTS unknown event types with `ValueError("Unknown event type: ...")` — verified at `src/stark_insights/models.py`. The new types (`red_team_run`, `red_team_finding`, `red_team_fix_plan`) MUST be added to `PAYLOAD_SCHEMAS` (Phase 8 Task 1) BEFORE producer events drain. There is NO producer-first deployment safety net; events without registered types fail at the API and dead-letter after 5 retries.
+- **`EVENT_PRIORITY` map** (`src/stark_insights/db/buffer.py`): add the three new types with explicit priorities (e.g., `red_team_run: 4`, `red_team_finding: 4`, `red_team_fix_plan: 4`) so they're not silently bucketed at `DEFAULT_EVENT_PRIORITY=2` for buffer eviction.
+- **launchd service label:** the actual installed service label (not `com.evinced.stark-insights`-by-assumption — verify via `launchctl list | grep stark`). Document the discovered label for Phase 11 Task 5.
 
 ## 3. Phases
 
@@ -59,10 +95,22 @@ python3 -m pytest scripts/test_stark_red_team.py scripts/test_red_team_audit.py
 
 #### Tasks
 
-1. **Add fix-plan config defaults** — `global/config.json`:
+1. **Add fix-plan config defaults** — `global/config.json` AND `scripts/config_loader.py:DEFAULT_RED_TEAM`:
    - Bump `red_team.per_run_budget_usd` from `15.00` to `30.00`.
-   - Add the `red_team.fix_plan` section per design §7 (with `enabled: false`, `min_moves: 2`, `max_moves: 6`, `reasoning_effort: "xhigh"`, `timeout_s: 1200`, `max_input_chars: 200000`).
-   - **Done when:** loading old and new config both produce a complete `red_team.fix_plan` section after default-merge.
+   - Add the COMPLETE `red_team.fix_plan` section. **All seven keys are required** — `model` is consumed in Phase 2 Task 5 and Phase 5 Task 2; omitting it raises `KeyError` on the first enabled run:
+     ```json
+     "fix_plan": {
+       "enabled": false,
+       "model": "gpt-5.5-pro",
+       "reasoning_effort": "xhigh",
+       "timeout_s": 1200,
+       "min_moves": 2,
+       "max_moves": 6,
+       "max_input_chars": 200000
+     }
+     ```
+   - The default-merge in `config_loader.get_red_team_config()` MUST include all seven keys so older configs still resolve `cfg["fix_plan"]["model"]` correctly.
+   - **Done when:** unit test loads a pre-v1.2 config (no `fix_plan` section), calls `get_red_team_config()`, and asserts `cfg["fix_plan"]["model"] == "gpt-5.5-pro"` and all seven keys present with documented defaults.
 
 2. **Promote locked fields to dotted-path tuples** — `scripts/config_loader.py`:
    - Change `_RED_TEAM_LOCKED_FIELDS: frozenset[str]` to `frozenset[tuple[str, ...]]` per design §7.1.
@@ -117,10 +165,16 @@ print('ok')
 
 1. **Add `RedTeamRunContext`, `RedTeamFixPlan`, `FixPlanMove` dataclasses** — `scripts/stark_red_team.py`:
    - Match the field lists in design §3.3 and §3.5 exactly. `RedTeamRunContext` is `frozen=True`.
-   - **Done when:** dataclasses import and round-trip via `asdict`.
+   - **Add `is_human_review` helper** (resolves multiple round-1 highs: gating filter assumes `f.is_human_review` field that doesn't exist on `RedTeamFinding`):
+     ```python
+     def is_human_review(f: RedTeamFinding) -> bool:
+         return f.counter_proposal == REQUEST_HUMAN_REVIEW
+     ```
+     EVERY consumer (Phase 5 gating, Phase 4 emit_finding, Phase 6 backfill) uses this helper, NOT a non-existent attribute. Do NOT add a `is_human_review` field to `RedTeamFinding` — that would change the existing v1 dataclass shape and break backward compatibility (design §1 non-goal: "RedTeamResult schema unchanged").
+   - **Done when:** dataclasses import and round-trip via `asdict`; `is_human_review` helper has unit-test coverage for both branches.
 
 2. **Implement `serialize_findings_envelope(findings, max_chars) -> (envelope_json, omitted_ids, fits_safely)`** — design §3.2.1:
-   - Sort findings: severity desc, then `is_human_review` asc, then `id`.
+   - Sort findings: severity desc, then `is_human_review(f)` asc (using the helper), then `id`.
    - Greedy-add; when over budget, omit and record ID.
    - Output the documented `{ "truncated": bool, "omitted_finding_ids": [...], "findings": [...] }` shape.
    - `fits_safely = no blocking finding omitted`.
@@ -145,7 +199,7 @@ print('ok')
    - **Done when:** unit tests cover move counts `0, 1, 2, 6, 7, 12, 13`; invented-ID drop pushing below min → hard error; field-cap truncation; orphan detection; duplicate move IDs.
 
 5. **Implement `run_red_team_fix_plan(ctx, *, artifact, source_spec, challenge_findings, synthesis, challenge_cost_usd) -> RedTeamFixPlan`**:
-   - Filter human-review findings out of `challenge_findings` (per design §3.1).
+   - Filter human-review findings out of `challenge_findings` (per design §3.1) using `[f for f in challenge_findings if not is_human_review(f)]`.
    - Call `serialize_findings_envelope(filtered, max_input_chars)` — if `fits_safely is False`, return early with `error="findings JSON cannot be safely truncated"` so the dispatcher maps this to `skipped_input_too_large`. (Document that this is the decision point: dispatcher gate calls a thin preflight helper that just runs `serialize_findings_envelope`; if `fits_safely`, dispatcher then calls `run_red_team_fix_plan` which re-uses the envelope. Avoids double-serialization but keeps the gate decision in the dispatcher.)
    - Validate `model in RESPONSES_API_MODELS` (xhigh requires it); if not, return `error`.
    - Dispatch via `dispatch_responses_api(prompt, model=ctx.cfg_red_team["fix_plan"]["model"], timeout_s=ctx.cfg_red_team["fix_plan"]["timeout_s"], reasoning_effort=ctx.cfg_red_team["fix_plan"]["reasoning_effort"], env=ctx.env, max_output_tokens=_RESPONSES_API_DEFAULT_MAX_OUTPUT_TOKENS)`.
@@ -317,9 +371,14 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
    - Pass the same `ctx` to: challenge call, fix-plan call, audit row writes, all three insights emit functions.
    - **Done when:** integration test asserts byte-identical `(run_id, stage, repo, artifact_relative_path, pr_number, model_rates)` across the challenge transport call, fix-plan transport call, `red_team_runs` row write, and the three emitted envelopes (resolves design §3.5 + rt2).
 
-2. **Add fix-plan gating** — implement the design §3.1 sequence:
+2. **Add fix-plan gating** — implement the design §3.1 sequence (with the round-1 fixes for `is_human_review` helper, `fix_plan.model` already-present default, and the runtime kill switch):
    ```python
-   if not ctx.cfg_red_team["fix_plan"]["enabled"] and not args.enable_fix_plan_for_calibration:
+   import os
+   from stark_red_team import is_human_review
+
+   if os.environ.get("STARK_RED_TEAM_FIX_PLAN_KILL", "").lower() in ("1", "true", "yes"):
+       fix_plan_status = "skipped_kill_switch"   # emergency override (see §6 Rollback)
+   elif not ctx.cfg_red_team["fix_plan"]["enabled"] and not args.enable_fix_plan_for_calibration:
        fix_plan_status = "skipped_disabled"
    elif challenge.error is not None:
        fix_plan_status = "skipped_challenge_error"
@@ -331,7 +390,7 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
        fix_plan_status = "skipped_budget_exhausted"
    else:
        envelope_str, fits_safely, _omitted = preflight_findings_envelope(
-           [f for f in challenge.findings if not f.is_human_review],
+           [f for f in challenge.findings if not is_human_review(f)],
            ctx.cfg_red_team["fix_plan"]["max_input_chars"],
        )
        if not fits_safely:
@@ -341,7 +400,8 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
            fix_plan_status = "success" if fix_plan.error is None else "error"
    ```
    - Add CLI-only flag `--enable-fix-plan-for-calibration` that bypasses ONLY the `enabled: false` check. Emit `red_team.fix_plan.calibration_override` to stderr once when active. NOT exposed through the skill argument parsing — dispatcher CLI only.
-   - **Done when:** default config always lands on `skipped_disabled`; calibration flag enables real exercise; each skip status reaches the documented branch.
+   - **Kill-switch env var `STARK_RED_TEAM_FIX_PLAN_KILL`** (resolves round-1 high: locked `enabled` has no fast incident-response path). Takes precedence over `enabled: true`; not gated by `_RED_TEAM_LOCKED_FIELDS` (it's an env var, not a config key). When set, gate yields `skipped_kill_switch`; emits `red_team.fix_plan.kill_switch_active` warning to stderr once per process. Document in Phase 7 SKILL.md and §6 Rollback as the in-band emergency disable.
+   - **Done when:** default config always lands on `skipped_disabled`; calibration flag enables real exercise; each skip status (including the new `skipped_kill_switch`) reaches the documented branch and is asserted by tests; tests prove the env-var override fires regardless of `enabled: true` in config.
 
 3. **Compute and append `over_budget_after_fix` warning** (resolves gemini→codex review's missing post-call check):
    - After `run_red_team_fix_plan` returns and before emit_run, compute:
@@ -405,11 +465,16 @@ python3 -m pytest scripts/test_red_team_insights.py scripts/test_emit_queue.py -
    ```
    - **Done when:** test for clean / skipped / error / success commit message bodies all match the documented format.
 
-7. **Wire emit_* timing precisely** (resolves claude→codex review concern):
-   - `emit_finding` for each challenge finding fires AFTER challenge returns (does not need to wait for fix-plan).
-   - `emit_run` fires AFTER the fix-plan path resolves (success / skip / error finalized) — only by then are `fix_plan_status` and `run_warnings` accurate.
-   - `emit_fix_plan` fires ONLY when `fix_plan_status == "success"`, after `record_fix_plan` is called locally.
-   - **Done when:** test asserts `emit_run` is called after `run_red_team_fix_plan` returns, with the resolved `fix_plan_status` and warnings.
+7. **Wire emit_* timing precisely — emit AFTER local audit writes commit** (resolves round-1 high: insights emission must be sequenced after durable audit writes):
+   - **Order of operations** (top-to-bottom, no skipping):
+     1. `record_red_team_run(...)` inserts the parent `red_team_runs` row with `final_status` from challenge. Commits before any emission.
+     2. `emit_finding(ctx, finding=f, round_num=1)` fires for each challenge finding (parent row exists, so subsequent `record_fix_plan` UPDATE is keyed correctly).
+     3. Run the fix-plan gate (Task 2). If fix call fires:
+        a. `record_fix_plan(run_id, fix_plan_md=..., fix_plan_json=..., fix_plan_status='success', fix_plan_cost_usd=...)`. Assert `cursor.rowcount == 1` to catch missing parent row.
+        b. `emit_fix_plan(ctx, fix_plan=..., fix_plan_md=...)`.
+     4. `emit_run(ctx, result=challenge, fix_plan_status=<resolved>, run_warnings=<...>)` LAST — only by then are `fix_plan_status` and `over_budget_after_fix` accurate.
+   - **Crash-safety:** if the dispatcher crashes between step 1 and step 4, the local `red_team_runs` row exists with NULL fix_plan fields, and `red_team_finding` events are queued but the `red_team_run` event isn't. Phase 6 backfill `--scope=forward` reconciles by re-emitting from the surviving local rows; cloud-side dedupe protects against duplicates.
+   - **Done when:** integration test asserts the emission order in mock; a test that simulates a crash between fix-plan call and emit_run leaves recoverable state.
 
 8. **Preserve challenge-derived final status** (resolves design §10 invariant + rt3):
    - Skill exit code, terminal-printed status, sidecar banner status, and `red_team_runs.final_status` ALL derive from `RedTeamResult` only.
@@ -448,10 +513,12 @@ python3 -m pytest scripts/test_red_team_fix_plan.py \
    python3 scripts/red_team_backfill.py [--dry-run] [--limit N] [--db PATH] [--scope all|legacy|forward]
    ```
    - **Run migration first** — call `red_team_audit.init_red_team_tables(db_path)` BEFORE any SELECT. Resolves the "no such column: repo" failure mode for users who run backfill against a pristine pre-v1.2 DB.
-   - Default `--scope=legacy`. Scope semantics:
-     - `legacy`: `WHERE fix_plan_status IS NULL` (pre-v1.2 rows).
-     - `forward`: `WHERE fix_plan_status IS NOT NULL` (v1.2 dispatcher wrote it). Reads `fix_plan_json`, reconstructs `red_team_fix_plan` events for `fix_plan_status='success'` rows.
-     - `all`: no filter; safe due to dedupe.
+   - Default `--scope=legacy`. Scope semantics — explicit per-type emission rules (resolves round-1 high: forward-scope ambiguity on which event types are emitted per row):
+     - `legacy`: `WHERE fix_plan_status IS NULL` (pre-v1.2 rows). Emits 1 `red_team_run` (with `fix_plan_status="absent_pre_v1_2"`) + N `red_team_finding`. NEVER emits `red_team_fix_plan` (no historical data).
+     - `forward`: `WHERE fix_plan_status IS NOT NULL` (v1.2 dispatcher wrote it; used to recover from forward-emission failure during a service outage). Per row:
+       - Always emits 1 `red_team_run` + N `red_team_finding` (re-emission is idempotent via cloud `UNIQUE(dedupe_key)`).
+       - Emits 1 `red_team_fix_plan` ONLY when `fix_plan_status = 'success' AND fix_plan_json IS NOT NULL`. Rows with `fix_plan_status IN ('error', 'skipped_*', 'absent_pre_v1_2')` produce zero `red_team_fix_plan` events.
+     - `all`: no filter; emits per the same per-status rules above. Safe due to dedupe.
    - For legacy rows: emit `red_team_run.payload.fix_plan_status = "absent_pre_v1_2"` (a sentinel distinct from `"skipped_*"` so dashboards can tell the difference).
    - `repo`: read from row; NULL → `"unknown"` in payload. `artifact_relative_path`: read row; NULL → `null` in payload.
    - Envelope `timestamp` = `red_team_runs.created_at` (so historical events land in their original time bucket).
@@ -497,7 +564,7 @@ python3 scripts/red_team_backfill.py --dry-run --limit 5 --scope legacy
 
 #### Tasks
 
-1. **`skill/stark-red-team-design/SKILL.md`** — document the new `## Proposed Fix Plan` section in §Phase 3 rendering. Note insights audit emission. State the `enabled: false` default explicitly. Bump `revision` and `revision_date` fields.
+1. **`skill/stark-red-team-design/SKILL.md`** — document the new `## Proposed Fix Plan` section in §Phase 3 rendering. Note insights audit emission (events of types `red_team_run`, `red_team_finding`, `red_team_fix_plan`). State the `enabled: false` default explicitly. **Document the kill-switch env var `STARK_RED_TEAM_FIX_PLAN_KILL`** in a new "Operational controls" subsection so operators can find it during an incident without source-diving. Bump `revision` and `revision_date` fields.
 
 2. **`skill/stark-red-team-plan/SKILL.md`** — same.
 
@@ -520,74 +587,141 @@ git diff --stat skill/stark-red-team-{design,plan}/SKILL.md
 
 ---
 
-### Phase 8: stark-insights Lifter Support  ⟂ parallel with Phases 1–7
+### Phase 8: stark-insights Type Registration + Lifter Support  ⟂ parallel with Phases 1–7
 
-**Goal:** Add lifted-column mappings for the new event types in the `stark-insights` repo. No schema migration on `events`.
+**Goal:** Register the three new event types in stark-insights' validation registry AND add lifter rules. **MUST deploy BEFORE Phase 4 producer events drain to cloud** — `EventEnvelope.model_validate` (verified at `src/stark_insights/models.py`) raises `ValueError("Unknown event type: ...")` for any type not in `PAYLOAD_SCHEMAS`. The "producer-first is safe" claim from the original synthesis was wrong — the API rejects unknown types.
 
-**Dependencies:** Phase 4 payload contracts locked (the `__LIFT_RULES__` content here must match §5.2 / §5.3 exactly).
-
-**Cross-repo:** This is a **separate PR in `stark-insights`**, not in `stark-skills`. Producer-first deployment is supported: events written before the lifter PR deploys land with `payload_extra` only (lifted columns NULL). This means Phase 8 can ship in parallel with Track A.
+**Dependencies:** Phase 4 payload contracts locked. Phase 8 can DEVELOP in parallel with Phases 1–7, but its PR MUST merge and deploy BEFORE any forward-emission events from a calibration-override or post-flip dispatcher attempt to drain. (Phase 11 Task 6 hard-gates on Phase 8 deployment.)
 
 **Estimated effort:** M
 
 #### Tasks
 
-0. **Locate the authenticated event ingestion path** (resolves claude→codex review's auth gap):
-   - Investigate `$STARK_INSIGHTS_REPO/src/stark_insights/api/`, `src/stark_insights/clients/`, and any service test harness.
-   - Identify the env var or Bearer token mechanism actually used by the running service (`/Users/aryeh/.stark-insights/api-token` is one candidate — but confirm the consumer).
-   - Document findings in this plan's body or a sidecar before continuing — Phase 8 task 3 (smoke test) cannot complete without this answer.
-   - **Done when:** authenticated event POST is documented and one fixture event lands with the path identified.
-
-1. **Add lifter rules** — `$STARK_INSIGHTS_REPO/src/stark_insights/lifting.py`:
-   - Three entries to `_LIFT_RULES` per design §5.3 (verbatim):
-     ```python
-     "red_team_run": [
-         ("model", "agent_name", None, True),
-         ("stage", "domain", None, True),
-         ("worst_severity", "severity", None, True),
-         ("cost_usd", "score_value", None, False),
-         ("passed", "passed", None, True),
-         ("repo", "repo", None, True),
-         ("pr_number", "pr_number", None, True),
-     ],
-     "red_team_finding": [
-         ("persona", "agent_name", None, True),
-         ("stage", "domain", None, True),
-         ("severity", "severity", None, True),
-         ("repo", "repo", None, True),
-         ("pr_number", "pr_number", None, True),
-     ],
-     "red_team_fix_plan": [
-         ("model", "agent_name", None, True),
-         ("stage", "domain", None, True),
-         ("cost_usd", "score_value", None, False),
-         ("repo", "repo", None, True),
-         ("pr_number", "pr_number", None, True),
-     ],
+0. **Bootstrap stark-insights local dev** (resolves round-1 critical: blank-slate Track B has no install steps):
+   - Clone if missing: `git clone https://github.com/Evinced/stark-insights.git $STARK_INSIGHTS_REPO`.
+   - `cd "$STARK_INSIGHTS_REPO"; uv sync --extra dev` (or `python3 -m venv .venv && pip install -e ".[dev]"`).
+   - `uv run pytest tests/test_lifting.py -q` — establish baseline; should pass.
+   - Verify Cloud SQL access path: `bash scripts/tunnel.sh status` OR the bastion SSH path from `$STARK_INSIGHTS_REPO/CLAUDE.md` §"Cloud SQL access via bastion".
+   - **Authenticated ingestion identified:** the running service exposes `POST /events` with Bearer auth. Per `~/.stark-insights/api-token` and `src/stark_insights/api/events.py:53`, the request shape is:
+     ```bash
+     TOKEN=$(cat ~/.stark-insights/api-token)
+     curl -sS -X POST http://127.0.0.1:7420/events \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          --data @/tmp/fixture-event.json
      ```
+   - **launchd service label discovered:** run `launchctl list | grep -i stark-insights` to capture the actual label; typical value is `com.evinced.stark-insights` per `$STARK_INSIGHTS_REPO/CLAUDE.md`. Record the discovered label here in the plan before Phase 11 Task 5 runs.
+   - **Done when:** one hand-crafted `tool_usage` event lands successfully via the curl above; service label is documented; tests pass on a clean clone.
 
-2. **Add lifter tests** — `$STARK_INSIGHTS_REPO/tests/test_lifting.py`:
-   - Lifted column extraction for each event type.
-   - `payload_extra` preservation: every non-lifted field still appears in `payload_extra`.
-   - Missing-key tolerance: payloads missing optional keys don't raise.
-   - **NULL-payload-value handling**: `worst_severity: null` → `severity` lifted column is SQL NULL, NOT the string `"None"`. (Resolves design rt4 + claude→codex review.)
-   - Pre-deployment behavior: events of the new types written BEFORE this lifter PR deploys ingest with all fields in `payload_extra`, lifted columns NULL — verified with a test that uses the un-patched `_LIFT_RULES`.
+1. **Add the three event types to `PAYLOAD_SCHEMAS`** — `$STARK_INSIGHTS_REPO/src/stark_insights/models.py` (resolves round-1 critical: lifters alone won't ingest):
+   - Define payload schemas per design §5.2 — every required key with its expected type tuple. Optional keys include `type(None)` in the tuple.
+   - Example shape (mirror existing entries for style; full list in design §5.2):
+     ```python
+     PAYLOAD_SCHEMAS["red_team_run"] = {
+         "run_id": (str,),
+         "stage": (str,),
+         "model": (str,),
+         "caller": (str,),
+         "final_status": (str,),
+         "worst_severity": (str, type(None)),
+         "passed": (bool,),
+         "rounds_used": (int,),
+         "total_findings": (int,),
+         "blocking_count": (int,),
+         "human_review_count": (int,),
+         "critical_count": (int,),
+         "high_count": (int,),
+         "medium_count": (int,),
+         "duration_s": ((int, float),),
+         "cost_usd": ((int, float),),
+         "repo": (str,),
+         "artifact_relative_path": (str, type(None)),
+         "pr_number": (int, type(None)),
+         "fix_plan_status": (str,),
+         "warnings": (list,),
+     }
+     PAYLOAD_SCHEMAS["red_team_finding"] = {...per §5.2...}
+     PAYLOAD_SCHEMAS["red_team_fix_plan"] = {...per §5.2...}
+     ```
+   - **Done when:** `EventEnvelope.model_validate({"type": "red_team_run", "payload": <example-from-§5.2>, ...})` succeeds; missing required keys raises a clear `ValueError`.
 
-3. **Smoke-test authenticated ingestion** — using the path identified in Task 0:
-   - POST one fixture event of each new type via the documented client/auth.
-   - Query the cloud `events` table for the resulting rows; verify lifted columns populated per §5.3.
-   - **Done when:** all 3 fixture events appear with the expected lifted columns AND `payload_extra` contains the unlifted fields.
+2. **Add `EVENT_PRIORITY` entries** — `$STARK_INSIGHTS_REPO/src/stark_insights/db/buffer.py`:
+   - Set explicit priority for each new type so they're not silently bucketed at `DEFAULT_EVENT_PRIORITY=2` for buffer eviction:
+     ```python
+     EVENT_PRIORITY: dict[str, int] = {
+         "tool_usage": 0, "prompt": 1, "code_change": 2, "bug_fix": 3,
+         "review_finding": 4, "correction": 5,
+         "red_team_run": 4,        # parallel to review_finding — high-value analytics signal
+         "red_team_finding": 4,
+         "red_team_fix_plan": 5,   # most expensive call; preserve over generic findings
+     }
+     ```
+   - **Done when:** unit test asserts `red_team_*` types are evicted last under buffer pressure (or at least not before `tool_usage` / `prompt`).
+
+3. **Add lifter rules** — `$STARK_INSIGHTS_REPO/src/stark_insights/lifting.py` per design §5.3 (verbatim):
+   ```python
+   "red_team_run": [
+       ("model", "agent_name", None, True),
+       ("stage", "domain", None, True),
+       ("worst_severity", "severity", None, True),
+       ("cost_usd", "score_value", None, False),
+       ("passed", "passed", None, True),
+       ("repo", "repo", None, True),
+       ("pr_number", "pr_number", None, True),
+   ],
+   "red_team_finding": [
+       ("persona", "agent_name", None, True),
+       ("stage", "domain", None, True),
+       ("severity", "severity", None, True),
+       ("repo", "repo", None, True),
+       ("pr_number", "pr_number", None, True),
+   ],
+   "red_team_fix_plan": [
+       ("model", "agent_name", None, True),
+       ("stage", "domain", None, True),
+       ("cost_usd", "score_value", None, False),
+       ("repo", "repo", None, True),
+       ("pr_number", "pr_number", None, True),
+   ],
+   ```
+
+4. **Add tests** — `$STARK_INSIGHTS_REPO/tests/test_lifting.py` AND `tests/test_models.py` (or equivalent):
+   - **Type-registration tests:** `EventEnvelope.model_validate` accepts a valid envelope of each new type; rejects missing required keys with `ValueError`; tolerates optional NULLs.
+   - **Lifter tests** per type:
+     - Lifted column extraction.
+     - `payload_extra` preservation: every non-lifted field still appears in `payload_extra`.
+     - Missing-key tolerance: payloads missing optional keys don't raise.
+     - **NULL-payload-value handling:** `worst_severity: null` → `severity` lifted column is SQL NULL, NOT the string `"None"`.
+   - **End-to-end ingestion test:** POST a fixture event for each type via the API path from Task 0; assert the cloud `events` row has `type`, lifted columns, and `payload_extra` populated correctly.
+
+5. **Smoke-test authenticated ingestion** (uses Task 0's documented path):
+   - POST one fixture event of each type:
+     ```bash
+     for t in red_team_run red_team_finding red_team_fix_plan; do
+         curl -sS -X POST http://127.0.0.1:7420/events \
+              -H "Authorization: Bearer $(cat ~/.stark-insights/api-token)" \
+              -H "Content-Type: application/json" \
+              --data @"$REPO/tests/fixtures/${t}.json"
+     done
+     # Verify lifted columns populated; query via the bastion or local sync inspection.
+     ```
+   - **Done when:** all three fixture events land with lifted columns populated AND `payload_extra` retains unlifted fields.
 
 #### Risks
 
-- Producer deploys before lifter (acceptable; data still in `payload_extra`).
-- Auth env var mismatch: Task 0 is the gate; do not skip it.
+- **Producer-first deployment is NOT safe** in this design — fixed by the hard prerequisite gate. If Track B's PR is delayed, Track A's calibration override and post-flip flips MUST be held until Track B deploys, otherwise events dead-letter.
+- Service label drift: documented via Task 0 `launchctl list` capture; do not hard-code.
 
 #### Verification
 
 ```bash
 cd "$STARK_INSIGHTS_REPO"
-python3 -m pytest tests/test_lifting.py -v
+uv run pytest tests/test_lifting.py tests/test_models.py -v
+TOKEN=$(cat ~/.stark-insights/api-token)
+curl -sS -X POST http://127.0.0.1:7420/events \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     --data '{"type":"red_team_run","timestamp":"2026-05-01T00:00:00Z","cli":"claude","source":"skill","schema_version":1,"payload":<minimal-valid>}'
+# Expect 201 Created.
 ```
 
 ---
@@ -596,7 +730,7 @@ python3 -m pytest tests/test_lifting.py -v
 
 **Goal:** Prove v1.2 ships safely with `fix_plan.enabled: false` and no second LLM call by default.
 
-**Dependencies:** Phases 1–7 merged with `enabled: false`.
+**Dependencies:** Phases 1–7 implemented on the v1.2 branch. **Runs PRE-merge** to gate the v1.2 PR (resolves round-1 high: Phase 9 vs Phase 10 ordering contradiction). The v1.2 PR description must reference both Phase 9 (disabled-default) and Phase 10 (calibration) results before merge.
 
 **Estimated effort:** M
 
@@ -621,10 +755,18 @@ python3 -m pytest tests/test_lifting.py -v
    - Local SQLite row has `fix_plan_status = 'skipped_disabled'`, all other fix_plan_* columns NULL.
    - `~/.stark-insights/queue.db` has 1 `red_team_run` event (with `fix_plan_status: "skipped_disabled"`) and N `red_team_finding` events; NO `red_team_fix_plan` event.
 
-3. **Verify queued events**:
+3. **Verify queued events** (resolves round-1 high: `pending` table has no `type` column — type lives inside `event_json`):
    ```bash
-   sqlite3 ~/.stark-insights/queue.db \
-     "SELECT type, json_extract(event_json, '$.payload.fix_plan_status') FROM pending WHERE type LIKE 'red_team_%' ORDER BY id DESC LIMIT 10;"
+   sqlite3 ~/.stark-insights/queue.db <<'SQL'
+     SELECT
+       json_extract(event_json, '$.type')                     AS event_type,
+       json_extract(event_json, '$.payload.fix_plan_status')  AS fix_plan_status,
+       json_extract(event_json, '$.payload.run_id')           AS run_id
+     FROM pending
+     WHERE json_extract(event_json, '$.type') LIKE 'red_team_%'
+     ORDER BY id DESC
+     LIMIT 10;
+   SQL
    ```
 
 #### Risks
@@ -656,10 +798,13 @@ git status
    - Large: ~1500-line spec
    - Each must produce ≥ 1 blocking finding deterministically. Verify by running the challenge call alone first.
 
-2. **Add a calibration harness script** (resolves claude→codex review's "running 30 times by hand and grepping logs is fragile"):
-   - `scripts/red_team_calibration.py [--fixtures DIR] [--runs N] [--out DOC]`
-   - Reads fixture list, dispatches `red_team_design_dispatch.py --enable-fix-plan-for-calibration` N times per fixture, collects results from `red_team_runs.fix_plan_json` (since the JSON already contains tokens, duration, cost), aggregates p50/p95/max for cost/duration/move_count/coverage_rate, writes the calibration doc.
-   - **Done when:** running the harness on the fixture set produces a complete calibration doc without manual aggregation.
+2. **Add a calibration harness script** with cost ceilings (resolves round-1 high: calibration spends real money with no abort condition):
+   - `scripts/red_team_calibration.py [--fixtures DIR] [--runs N] [--out DOC] [--max-total-cost-usd N] [--abort-on-per-run-cost-usd N]`
+   - Defaults: `--max-total-cost-usd 200.00` (hard cap on cumulative OpenAI spend across the run), `--abort-on-per-run-cost-usd 45.00` (1.5× the configured `per_run_budget_usd` of $30 — tripping it suggests the budget itself is wrong).
+   - Behavior: dispatches `red_team_design_dispatch.py --enable-fix-plan-for-calibration` N times per fixture, reads results from `red_team_runs.fix_plan_json`. After EACH run, accumulate total cost; if total ≥ `--max-total-cost-usd` OR any single run's `fix_plan.cost_usd` ≥ `--abort-on-per-run-cost-usd`, ABORT the harness with a clear message and partial-aggregate output.
+   - Print intermediate p50 / p95 of cost / duration / move_count after every 5 runs so the operator can `Ctrl-C` with informed judgment.
+   - Aggregate p50/p95/max for cost/duration/move_count/coverage_rate at the end; write the calibration doc.
+   - **Done when:** running the harness on the fixture set produces a complete calibration doc without manual aggregation; abort path is exercised by a unit test that mocks a $50 single-run cost.
 
 3. **Run calibration** — 10 runs per fixture × 3 fixtures = 30 runs minimum:
    ```bash
@@ -702,16 +847,27 @@ sqlite3 ~/.claude/code-review/history/forged-review/forged_review_metrics.db \
 
 **Goal:** Roll out cloud analytics safely, backfill historical data idempotently, then enable fix-plan in a separate PR.
 
-**Dependencies:** Phase 8 deployed, Phase 10 calibration doc approved.
+**Dependencies:** Phase 8 deployed AND smoke-tested in production. Phase 10 calibration doc approved.
 
 **Estimated effort:** M
 
 #### Tasks
 
-1. **Deploy the Phase 8 stark-insights lifter PR** (if not already done in parallel):
-   - Merge and deploy.
-   - Smoke-test one event of each new type via the Task-0-identified auth path.
-   - **Done when:** lifted columns populate for new rows.
+1. **Deploy the Phase 8 stark-insights PR** — HARD gate before any other Phase 11 task:
+   - Merge `PAYLOAD_SCHEMAS` + `EVENT_PRIORITY` + `_LIFT_RULES` updates.
+   - Deploy: restart the launchd service (`launchctl unload && load <plist>` per the actual label discovered in Phase 8 Task 0).
+   - Smoke-test ONE event of each new type via the documented auth path:
+     ```bash
+     TOKEN=$(cat ~/.stark-insights/api-token)
+     for t in red_team_run red_team_finding red_team_fix_plan; do
+         curl -sS -w "%{http_code}\n" -X POST http://127.0.0.1:7420/events \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              --data @"$STARK_INSIGHTS_REPO/tests/fixtures/${t}.json"
+     done
+     # Each must return 201. Capture the timestamp; PR description in Task 6 references it.
+     ```
+   - Verify cloud rows have lifted columns populated (query via bastion).
+   - **Done when:** all 3 fixture POSTs return 201 AND lifted columns visible in cloud `events`. Capture the smoke-test timestamp — Task 6 PR description must reference a smoke-test < 24h old.
 
 2. **Run dry-run backfill**:
    ```bash
@@ -736,17 +892,54 @@ sqlite3 ~/.claude/code-review/history/forged-review/forged_review_metrics.db \
    ```
    - **Done when:** zero rows returned (every expected key appears exactly once).
 
-5. **Verify queue drain resilience** (resolves design rt-failover):
-   - Stop stark-insights service (`launchctl stop com.evinced.stark-insights`).
-   - Run one calibration-override dispatcher invocation.
-   - Confirm events sit in `~/.stark-insights/queue.db`.
-   - Restart service (`launchctl start com.evinced.stark-insights`).
-   - On next 1-min tick, assert pending rows clear (or move to dead-letter on failure).
+5. **Verify queue drain resilience** — uses the Phase 8 Task-0 discovered service label, NOT the assumed one (resolves round-1 high: launchctl service name unverified):
+   ```bash
+   SERVICE_LABEL=$(launchctl list | awk '/stark-insights/ {print $3}' | head -1)
+   test -n "$SERVICE_LABEL" || { echo "no stark-insights launchd service found"; exit 1; }
+   echo "Discovered service label: $SERVICE_LABEL"
 
-6. **Open the post-flip PR**:
+   launchctl stop "$SERVICE_LABEL"
+   # Run one calibration-override dispatcher invocation; verify events queue locally
+   python3 scripts/red_team_design_dispatch.py docs/calibration/fixtures/medium.md \
+       --enable-fix-plan-for-calibration
+   sqlite3 ~/.stark-insights/queue.db \
+       "SELECT COUNT(*) FROM pending WHERE json_extract(event_json,'$.type') LIKE 'red_team_%';"
+   # Expect > 0
+
+   launchctl start "$SERVICE_LABEL"
+   # Wait one drain cycle (60s); pending should clear (or move to dead_letter on failure)
+   sleep 75
+   sqlite3 ~/.stark-insights/queue.db \
+       "SELECT (SELECT COUNT(*) FROM pending) AS pending,
+               (SELECT COUNT(*) FROM dead_letter) AS dead;"
+   ```
+
+6. **Open the post-flip PR** with explicit gate criteria:
    - Single-line change: `"enabled": false` → `"enabled": true` in `global/config.json`.
+   - **Hard gate (PR description requirements):**
+     - Reference Task 1's smoke-test timestamps — must be < 24h old at PR open.
+     - Reference Phase 10's committed calibration doc with p95 totals.
+     - Reference the documented kill-switch path (`STARK_RED_TEAM_FIX_PLAN_KILL=1`) so on-call has a fast disable in their runbook.
    - CI runs Phase 12.2 enabled-fixture suite.
-   - **Done when:** PR merges, dispatcher logs show fix-plan calls firing on real invocations.
+   - **Approval authority:** the same reviewer set who approved the v1.2 base PR (single-author plus one peer). No silent merge — the post-flip PR is short but operationally significant.
+   - **Done when:** PR merges, dispatcher logs show fix-plan calls firing on real invocations, and the kill-switch is documented in `skill/stark-red-team-design/SKILL.md` Phase 7 update.
+
+7. **Add insights queue health check** (resolves round-1 high: queue depth / dead-letter has no alert):
+   - Wire a periodic check (cron, launchd `StartInterval`, or stark-session start banner) that queries:
+     ```sql
+     -- Pending depth + oldest age
+     SELECT COUNT(*) AS pending,
+            COALESCE(MAX(julianday('now') - julianday(created_at)) * 24, 0) AS oldest_pending_hours
+       FROM pending;
+     -- Dead-letter accumulation
+     SELECT COUNT(*) FROM dead_letter;
+     ```
+   - Surface a stderr warning (or session-start banner via `stark-session`) when:
+     - `pending > 100` OR
+     - `oldest_pending_hours > 1` OR
+     - `dead_letter` row count grows since last check.
+   - **Forward emission timestamp invariant** (related): every envelope built in Phase 4 sets `timestamp = ctx.started_at_iso` (event creation time) so post-outage drains land in the correct historical bucket.
+   - **Done when:** test exercises the alert thresholds; documentation in `skill/stark-session/SKILL.md` references the new banner section.
 
 7. **Backfill `--scope=forward` for in-flight failures** (only if dispatcher emit_* calls failed during a service outage):
    ```bash
@@ -791,13 +984,21 @@ The implementation must keep the following contracts byte-stable across Track A 
 ## 5. Testing Strategy
 
 **Unit (per-phase, gated on phase merge):**
-- Phase 1: config defaults merged, locked-field recursion, event-type registration.
-- Phase 2: envelope serializer (50-finding fixture), validator (move counts 0/1/2/6/7/12/13), invented-ID drop demoting to `min_moves` violation, prompt assembly, RESPONSES_API_MODELS check, `max_output_tokens=32768` parameter wiring.
-- Phase 3: SQLite migration on fresh / v1.0 / v1.1 / v1.2 / partial DBs; record_red_team_run / record_fix_plan round-trip.
+- Phase 1: config defaults merged (all 7 `fix_plan` keys including `model`), locked-field recursion (5 nested paths drop with audit event), event-type registration.
+- Phase 2: envelope serializer (50-finding fixture), validator (move counts 0/1/2/6/7/12/13), invented-ID drop demoting to `min_moves` violation, prompt assembly, RESPONSES_API_MODELS check, `max_output_tokens=32768` parameter wiring, **`is_human_review` helper for both branches**.
+- Phase 3: SQLite migration on fresh / v1.0 / v1.1 / v1.2 / partial DBs; record_red_team_run / record_fix_plan round-trip; `record_fix_plan` asserts `cursor.rowcount == 1` to catch missing parent row.
 - Phase 4: envelope shape per §5.2, dedupe-key stability, exception isolation, `worst_severity: null` → NULL severity column, `red_team_fix_plan` not emitted on non-success.
-- Phase 5: gate-state machine (each skip status), context byte-identity, `over_budget_after_fix` warning propagation to BOTH event payloads, sidecar untrusted-content escapes, PR-comment 65 KB cascade, commit message variants, exit code from challenge only.
-- Phase 6: dry-run, scope filtering, malformed-row tolerance, forward fix-plan reconstruction, migration-before-select, idempotency, kill-mid-drain resume, manifest writeback.
-- Phase 8: lifter rules per type, NULL-payload handling, pre-deployment fallback to `payload_extra`-only.
+- Phase 5: gate-state machine (each skip status, **including `skipped_kill_switch` with env var set and `enabled: true`**), context byte-identity, `over_budget_after_fix` warning propagation to BOTH event payloads, sidecar untrusted-content escapes, PR-comment 65 KB cascade, commit message variants, exit code from challenge only, **emit-after-write ordering invariant**.
+- Phase 6: dry-run, scope filtering (legacy / forward / all per-type emission rules), malformed-row tolerance, forward fix-plan reconstruction (only when `fix_plan_status='success' AND fix_plan_json IS NOT NULL`), migration-before-select, idempotency, kill-mid-drain resume, manifest writeback.
+- Phase 8: **type registration in `PAYLOAD_SCHEMAS` (resolves round-1 critical)**, `EVENT_PRIORITY` entries, lifter rules per type, NULL-payload handling, end-to-end POST through `EventEnvelope.model_validate`.
+
+**New tests added in round-1 review pass:**
+- `test_is_human_review_helper` — derivation correctness.
+- `test_payload_schemas_red_team_run` — invalid envelope raises clear `ValueError`; valid envelope passes.
+- `test_kill_switch_overrides_enabled` — `STARK_RED_TEAM_FIX_PLAN_KILL=1` lands on `skipped_kill_switch` even when `enabled: true` and `--enable-fix-plan-for-calibration` set.
+- `test_emit_after_write_ordering` — mock asserts insert/update/enqueue order.
+- `test_calibration_harness_aborts_on_per_run_cap` — fixture with $50 cost triggers harness abort.
+- `test_pending_query_uses_json_extract` — Phase 9 verification SQL works against the actual `pending` schema.
 
 **Integration (post-Phase 7):**
 - Disabled-default dispatcher invocations land with `skipped_disabled`.
@@ -833,11 +1034,12 @@ The implementation must keep the following contracts byte-stable across Track A 
 | 6 | Stop using `scripts/red_team_backfill.py`. Already-emitted events are idempotent on re-run; no deletion required. Manifest from Task 4 enables targeted rollback if explicitly needed. |
 | 8 | Revert lifter rules only. Existing events still ingest with fields in `payload_extra`. |
 | 10 | Calibration doc has no runtime effect; supersede if results invalidated by upstream changes. |
-| 11 | The `enabled: false → true` flip is reversible by reverting the post-flip PR. In-flight runs that already paid for fix-plan are kept (audit data). Backfill manifest scoped rollback is available but rarely needed because cloud `UNIQUE(dedupe_key)` makes re-runs no-ops. |
+| 11 | **Two-layer rollback.** (a) Fast incident response (seconds): set `STARK_RED_TEAM_FIX_PLAN_KILL=1` in the operator's environment — dispatcher hits this BEFORE the locked `enabled` check, lands on `skipped_kill_switch`, no LLM call. Document in operator runbooks so on-call doesn't need to ship code. (b) Permanent rollback (PR cycle): revert the post-flip PR. In-flight runs that already paid for fix-plan are kept (audit data). Backfill manifest scoped rollback available but rarely needed because cloud `UNIQUE(dedupe_key)` makes re-runs no-ops. |
 
-**Ambiguities flagged for stakeholder decision:**
-- Phase 8 Task 0 — exact stark-insights authenticated event POST mechanism. Must be answered before Phase 8's smoke test.
-- Whether the post-flip PR should be auto-revertable via a feature flag in the dispatcher (additional layer of "kill switch") vs. config-only revert. Default position: config-only is sufficient because `fix_plan.enabled` is locked at the global level.
+**Ambiguities resolved (rationale):**
+
+- *Phase 8 auth path* — resolved in Phase 8 Task 0: existing `~/.stark-insights/api-token` Bearer auth via `POST /events`. Documented inline.
+- *Kill-switch mechanism* — env var `STARK_RED_TEAM_FIX_PLAN_KILL`. NOT in `_RED_TEAM_LOCKED_FIELDS` (locks apply to config keys; env vars are operator-controlled per machine). The lock on `enabled` prevents repo-level downgrade of the substance review; the env var preserves operator-level emergency disable. Distinct concerns, both addressed.
 
 ## 7. Synthesis Decisions Log
 
