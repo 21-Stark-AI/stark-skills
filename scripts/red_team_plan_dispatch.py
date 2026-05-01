@@ -201,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     source_spec_path = Path(args.source_spec).resolve() if args.source_spec else None
 
     # FU-rt8 — Accept any human-review halts before dispatching.
+    #
+    # PR-#430 round-3 fix #6: confirmation/match output goes to stderr so the
+    # ``--accept ... --json`` combination still emits a single parseable JSON
+    # object on stdout.
     if args.accept_red_team_human_review:
         from red_team_accept import accept_one
         for key in args.accept_red_team_human_review:
@@ -209,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                 note=None,
                 accepted_by=None,
                 confirm=not args.no_confirm,
+                out=sys.stderr,
             )
             if rc != 0:
                 return rc

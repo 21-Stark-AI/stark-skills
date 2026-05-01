@@ -202,6 +202,10 @@ def main(argv: list[str] | None = None) -> int:
     # FU-rt8 — Accept any human-review halts before dispatching. Failed
     # accepts (unknown key, non-human-review key) abort the run so the
     # operator sees the error before paying for an LLM call.
+    #
+    # PR-#430 round-3 fix #5: route confirmation/match output to stderr so
+    # ``--accept-red-team-human-review ... --json`` still produces a single
+    # parseable JSON object on stdout.
     if args.accept_red_team_human_review:
         from red_team_accept import accept_one
         for key in args.accept_red_team_human_review:
@@ -210,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                 note=None,
                 accepted_by=None,
                 confirm=not args.no_confirm,
+                out=sys.stderr,
             )
             if rc != 0:
                 return rc

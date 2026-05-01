@@ -75,7 +75,18 @@ def accept_one(
     print(_format_finding(meta), file=out)
     print("", file=out)
 
-    if confirm and sys.stdin.isatty():
+    if confirm:
+        if not sys.stdin.isatty():
+            # PR-#430 round-3 fix #22: a non-TTY caller previously fell through
+            # silently because the prompt was guarded only by ``isatty()``.
+            # Scripted callers must opt into ``--no-confirm`` explicitly so a
+            # cron / piped invocation can't acknowledge halts by accident.
+            print(
+                "red_team_accept: stdin is not a TTY — pass --no-confirm to "
+                "accept non-interactively",
+                file=sys.stderr,
+            )
+            return 2
         ans = input("Accept this finding? [y/N] ").strip().lower()
         if ans not in {"y", "yes"}:
             print("red_team_accept: cancelled", file=out)

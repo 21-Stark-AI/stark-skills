@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<design-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: 1ea435c3690c11c564c6ed2b36feaf299c60e359
-revision_date: 2026-05-01T13:25:45Z
+revision: 56370a3a5169ad65b514a424a1ba551e1012ed86
+revision_date: 2026-05-01T16:02:54Z
 ---
 
 # stark-red-team-design
@@ -211,10 +211,11 @@ updatable comment per run"):
 
 ```bash
 body=$(echo "$output" | "$PYTHON" -c "import sys, json; print(json.load(sys.stdin)['pr_comment_body'], end='')")
-run_id=$(echo "$output" | "$PYTHON" -c "import sys, json; print(json.load(sys.stdin)['run_id'])")
-marker="<!-- stark-red-team: run_id=$run_id -->"
+marker=$(echo "$output" | "$PYTHON" -c "import sys, json; print(json.load(sys.stdin)['pr_comment_marker'])")
 
-# Look up an existing bot comment carrying the same run marker.
+# Look up an existing bot comment carrying the same (stage, artifact) marker.
+# Keyed on stage + artifact path (NOT run_id) so a fresh dispatcher run still
+# matches the prior comment and "edit-or-create" actually edits.
 existing_id=$(
   gh api "repos/$REPO/issues/$pr_number/comments" --paginate \
     --jq ".[] | select(.body | contains(\"$marker\")) | .id" \

@@ -110,17 +110,21 @@ def compute_concern_hash(
     risk_key: str | None,
     affected_component: str | None,
     concern: str,
+    failure_mode: str | None = None,
 ) -> str:
     """SHA-256 fingerprint of a finding's stable identity (FU-rt5 + FU-rt7).
 
     Two paths, picked based on structured-identity availability:
 
     1. **Structured-identity path:** when ``risk_key`` is set, the hash is
-       ``persona|risk_key|affected_component`` — concern prose is deliberately
-       NOT in the hash. The same risk re-surfaced in different wording
-       produces the same fingerprint, which is what FU-rt5's "structured
-       fields are the identity" promises and what makes cross-run
-       acceptance work even when the model rewords.
+       ``persona|risk_key|affected_component|failure_mode`` — concern prose
+       is deliberately NOT in the hash. The same risk re-surfaced in different
+       wording produces the same fingerprint, which is what FU-rt5's
+       "structured fields are the identity" promises and what makes cross-run
+       acceptance work even when the model rewords. ``failure_mode`` is
+       included so two findings on the same component but different failure
+       categories (data-loss vs compliance, say) do not collide on the
+       accept key (PR-#430 round-3 review finding #10).
     2. **Back-compat path:** when ``risk_key`` is absent (legacy pre-FU-rt5
        producers), fall back to ``persona|normalized_concern``. Without
        structured fields, the prose is the only signal we have; collapsing
@@ -135,6 +139,7 @@ def compute_concern_hash(
             persona or "",
             risk_key,
             affected_component or "",
+            failure_mode or "",
         ])
     else:
         canonical = "|".join([
@@ -184,17 +189,36 @@ def compute_accept_key(
     ``round_num``, and ``finding_id`` so the same risk surfaced under a
     fresh run / new finding-id slot still matches an operator's prior
     acceptance. ``concern_hash`` already carries the structured identity
-    (persona + risk_key + affected_component, see :func:`compute_concern_hash`),
-    so a finding that has the same hash IS the same concern by FU-rt5's
-    definition.
+    (persona + risk_key + affected_component + failure_mode, see
+    :func:`compute_concern_hash`), so a finding that has the same hash IS
+    the same concern by FU-rt5's definition.
 
     PR-#430 review fix #10: repo prefix added so accepting a concern in
     one repository cannot silently suppress a matching halt in a different
     repository (the audit DB is shared across the operator's full
-    workspace). ``repo=None`` falls back to a literal ``unknown`` prefix
-    so legacy callers pre-fix still produce a deterministic value.
+    workspace).
+
+    PR-#430 round-3 review fix #21: when ``repo`` is unresolved (``None``,
+    empty, or the legacy ``"unknown"`` sentinel produced by
+    :func:`build_run_context` on git failure), derive a per-cwd fallback
+    prefix instead of a single literal ``"unknown"``. The single literal
+    collapsed every unresolved-repo run on every machine into one shared
+    accept namespace — an accept from operator A's broken-git checkout
+    could then suppress a halt in operator B's checkout. The cwd-hash
+    fallback keeps unresolved-repo runs from a single working tree
+    consistent (so accepting from there still works) while preventing
+    cross-machine / cross-checkout collision. Repo-resolved callers are
+    unaffected.
     """
-    return f"{repo or 'unknown'}:{stage}:{persona}:{concern_hash}"
+    if repo and repo != "unknown":
+        prefix = repo
+    else:
+        try:
+            cwd_hash = hashlib.sha256(os.getcwd().encode("utf-8")).hexdigest()[:12]
+        except OSError:
+            cwd_hash = "unresolved"
+        prefix = f"local:{cwd_hash}"
+    return f"{prefix}:{stage}:{persona}:{concern_hash}"
 
 
 @dataclass
@@ -795,6 +819,7 @@ def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding
             risk_key=risk_key,
             affected_component=affected_component,
             concern=raw["concern"],
+            failure_mode=failure_mode,
         )
 
         if counter_proposal == REQUEST_HUMAN_REVIEW:

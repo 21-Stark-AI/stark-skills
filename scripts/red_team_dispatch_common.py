@@ -1048,6 +1048,25 @@ def _run_iterative(
     total_input_tokens = 0
     total_output_tokens = 0
 
+    # PR-#430 round-3 review fix #4: track every distinct human-review
+    # concern (by ``concern_hash``) seen across the iterative loop. Each
+    # round runs against the SAME artifact, so a concern flagged in round
+    # 1 and absent from a flicker rerun is model nondeterminism, not the
+    # operator silently fixing it. Without this set, a flicker scenario
+    # like blocking=1 + hr=1 → flicker → rerun primary clean would erase
+    # the round-1 HR halt entirely; the operator never learns the model
+    # asked for human review and FU-rt8 has nothing to accept.
+    hr_findings_seen: dict[str, rt.RedTeamFinding] = {}
+
+    def _record_hr(r: rt.RedTeamResult | None) -> None:
+        if r is None:
+            return
+        for f in r.findings:
+            if not rt.is_human_review(f):
+                continue
+            key = f.concern_hash or f"unhashed:{f.persona}:{f.id}"
+            hr_findings_seen.setdefault(key, f)
+
     def _accumulate(r: rt.RedTeamResult | None) -> None:
         nonlocal total_cost_usd, total_duration_s, total_input_tokens, total_output_tokens
         if r is None:
@@ -1056,6 +1075,7 @@ def _run_iterative(
         total_duration_s += r.duration_s
         total_input_tokens += r.input_tokens
         total_output_tokens += r.output_tokens
+        _record_hr(r)
 
     def _finalize(
         primary: rt.RedTeamResult,
@@ -1071,6 +1091,12 @@ def _run_iterative(
         the error field is set so ``derive_status`` returns ``error``
         (not ``halted``) — the gate cannot vouch for a finding's
         stability if verification didn't agree.
+
+        PR-#430 round-3 review fix #4: any human-review concern that
+        appeared in an earlier round but is missing from this primary is
+        added back. Each round runs against the same artifact, so HR
+        findings from prior rounds are not "fixed by the operator"; they
+        are model output the framework should not silently swallow.
         """
         result_error = primary.error
         if not result_error and terminal_transition in {
@@ -1083,13 +1109,26 @@ def _run_iterative(
                 f"exited via {terminal_transition}. The primary findings "
                 "(see raw_output) were never verified by a second call."
             )
+
+        present: set[str] = set()
+        for f in primary.findings:
+            if rt.is_human_review(f):
+                present.add(f.concern_hash or f"unhashed:{f.persona}:{f.id}")
+        merged_findings = list(primary.findings)
+        recovered_hr = 0
+        for key, finding in hr_findings_seen.items():
+            if key in present:
+                continue
+            merged_findings.append(finding)
+            recovered_hr += 1
+
         return rt.RedTeamResult(
             stage=primary.stage,
             round_num=primary.round_num,
             synthesis=primary.synthesis,
-            findings=primary.findings,
+            findings=merged_findings,
             blocking_count=primary.blocking_count,
-            human_review_count=primary.human_review_count,
+            human_review_count=primary.human_review_count + recovered_hr,
             raw_output=primary.raw_output,
             duration_s=total_duration_s,
             cost_usd=total_cost_usd,
@@ -1383,4 +1422,11 @@ def execute_dispatch(
         # this directly via `gh pr review --comment --body "$pr_comment_body"`
         # instead of feeding the (flat) sidecar markdown through truncation.
         "pr_comment_body": truncate_pr_comment(pr_comment_body),
+        # The exact HTML-comment marker on the first line of pr_comment_body.
+        # Skills look it up via this key instead of reconstructing the format,
+        # so a future marker scheme change touches one renderer, not every
+        # SKILL.md (PR-#430 round-3 review fix #1/#7/#8/#11/#12).
+        "pr_comment_marker": pr_comment_marker(
+            stage, ctx.artifact_relative_path or str(artifact_path.name)
+        ),
     }

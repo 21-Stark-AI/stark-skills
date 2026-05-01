@@ -113,8 +113,8 @@ def build_finding_envelope(
     finding_id: str,
     persona: str,
     severity: str,
-    concern: str,
-    consequence: str,
+    concern: str | None,
+    consequence: str | None,
     counter_proposal: str,
     trade_off: str | None,
     reason_for_uncertainty: str | None,
@@ -125,6 +125,12 @@ def build_finding_envelope(
     risk_key: str | None = None,
     affected_component: str | None = None,
     failure_mode: str | None = None,
+    retention_mode: str = "full",
+    concern_excerpt_hash: str | None = None,
+    consequence_excerpt_hash: str | None = None,
+    counter_proposal_excerpt_hash: str | None = None,
+    trade_off_excerpt_hash: str | None = None,
+    reason_for_uncertainty_excerpt_hash: str | None = None,
 ) -> dict[str, Any]:
     repo_label = repo or "unknown"
     payload = {
@@ -145,11 +151,26 @@ def build_finding_envelope(
         "risk_key": risk_key,
         "affected_component": affected_component,
         "failure_mode": failure_mode,
+        # FU-rt6 retention — when ``retention_mode == "excerpt"`` (default),
+        # the free-text fields below carry a redacted excerpt rather than
+        # the verbatim model output, and the SHA-256 of the original text
+        # rides alongside in ``*_excerpt_hash`` so two reruns of the same
+        # concern still match by hash without re-disclosing the text.
+        # PR-#430 round-3 review fix #20: the durable metrics queue used to
+        # ignore retention and embed the original full text regardless,
+        # which silently bypassed the excerpt default and turned the
+        # metrics surface into a sensitive-document store.
+        "retention_mode": retention_mode,
         "concern": concern,
         "consequence": consequence,
         "counter_proposal": counter_proposal,
         "trade_off": trade_off,
         "reason_for_uncertainty": reason_for_uncertainty,
+        "concern_excerpt_hash": concern_excerpt_hash,
+        "consequence_excerpt_hash": consequence_excerpt_hash,
+        "counter_proposal_excerpt_hash": counter_proposal_excerpt_hash,
+        "trade_off_excerpt_hash": trade_off_excerpt_hash,
+        "reason_for_uncertainty_excerpt_hash": reason_for_uncertainty_excerpt_hash,
         "is_human_review": is_human_review,
         "repo": repo_label,
         "pr_number": pr_number,
@@ -278,8 +299,35 @@ def emit_finding(
     finding: rt.RedTeamFinding,
     round_num: int,
 ) -> None:
-    """Best-effort enqueue of one ``red_team_finding`` event."""
+    """Best-effort enqueue of one ``red_team_finding`` event.
+
+    PR-#430 round-3 review fix #20: free-text fields go through the same
+    FU-rt6 retention policy used for SQLite audit rows. Default is excerpt
+    mode, so the durable metrics queue no longer stores verbatim model
+    output for concern / consequence / counter_proposal / trade_off /
+    reason_for_uncertainty. ``retain_full_text=true`` opts back into full
+    text everywhere — audit DB and metrics queue stay aligned.
+    """
     try:
+        import red_team_audit_text
+
+        policy = red_team_audit_text.policy_from_config(
+            (ctx.cfg_red_team or {}).get("audit")
+        )
+        retained = {
+            "concern": red_team_audit_text.apply_to_field(finding.concern, policy),
+            "consequence": red_team_audit_text.apply_to_field(
+                finding.consequence, policy
+            ),
+            "counter_proposal": red_team_audit_text.apply_to_field(
+                finding.counter_proposal, policy
+            ),
+            "trade_off": red_team_audit_text.apply_to_field(finding.trade_off, policy),
+            "reason_for_uncertainty": red_team_audit_text.apply_to_field(
+                finding.reason_for_uncertainty, policy
+            ),
+        }
+
         stable_key = rt.compute_stable_key(
             run_id=ctx.run_id,
             stage=ctx.stage,
@@ -297,11 +345,13 @@ def emit_finding(
             finding_id=finding.id,
             persona=finding.persona,
             severity=finding.severity,
-            concern=finding.concern,
-            consequence=finding.consequence,
-            counter_proposal=finding.counter_proposal,
-            trade_off=finding.trade_off,
-            reason_for_uncertainty=finding.reason_for_uncertainty,
+            concern=retained["concern"].stored,
+            consequence=retained["consequence"].stored,
+            counter_proposal=(
+                retained["counter_proposal"].stored or finding.counter_proposal
+            ),
+            trade_off=retained["trade_off"].stored,
+            reason_for_uncertainty=retained["reason_for_uncertainty"].stored,
             is_human_review=rt.is_human_review(finding),
             timestamp_iso=ctx.started_at_iso,
             stable_key=stable_key,
@@ -309,6 +359,12 @@ def emit_finding(
             risk_key=finding.risk_key,
             affected_component=finding.affected_component,
             failure_mode=finding.failure_mode,
+            retention_mode=policy.mode,
+            concern_excerpt_hash=retained["concern"].hash,
+            consequence_excerpt_hash=retained["consequence"].hash,
+            counter_proposal_excerpt_hash=retained["counter_proposal"].hash,
+            trade_off_excerpt_hash=retained["trade_off"].hash,
+            reason_for_uncertainty_excerpt_hash=retained["reason_for_uncertainty"].hash,
         )
         _enqueue(envelope, "red_team_finding")
     except Exception as exc:  # pragma: no cover - defensive fail-open wrapper
