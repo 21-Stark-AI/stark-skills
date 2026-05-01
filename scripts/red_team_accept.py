@@ -92,19 +92,25 @@ def accept_one(
             print("red_team_accept: cancelled", file=out)
             return 1
 
-    red_team_human_review.accept_finding(
-        stable_key,
-        run_id=meta["run_id"],
-        stage=meta["stage"],
-        round_num=meta["round_num"],
-        persona=meta["persona"],
-        finding_id=meta["finding_id"],
-        concern_hash=meta["concern_hash"],
-        concern_excerpt=meta.get("concern_excerpt"),
-        repo=meta.get("repo"),
-        accepted_by=accepted_by,
-        note=note,
-    )
+    try:
+        red_team_human_review.accept_finding(
+            stable_key,
+            run_id=meta["run_id"],
+            stage=meta["stage"],
+            round_num=meta["round_num"],
+            persona=meta["persona"],
+            finding_id=meta["finding_id"],
+            concern_hash=meta["concern_hash"],
+            concern_excerpt=meta.get("concern_excerpt"),
+            repo=meta.get("repo"),
+            accepted_by=accepted_by,
+            note=note,
+        )
+    except ValueError as exc:
+        # ``compute_accept_key`` refuses unresolved / "unknown" repos so an
+        # accept can never collide with a different repo's halt namespace.
+        print(f"red_team_accept: {exc}", file=sys.stderr)
+        return 2
     print(f"red_team_accept: accepted {stable_key}", file=out)
     return 0
 

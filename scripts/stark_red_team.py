@@ -198,27 +198,27 @@ def compute_accept_key(
     repository (the audit DB is shared across the operator's full
     workspace).
 
-    PR-#430 round-3 review fix #21: when ``repo`` is unresolved (``None``,
-    empty, or the legacy ``"unknown"`` sentinel produced by
-    :func:`build_run_context` on git failure), derive a per-cwd fallback
-    prefix instead of a single literal ``"unknown"``. The single literal
-    collapsed every unresolved-repo run on every machine into one shared
-    accept namespace — an accept from operator A's broken-git checkout
-    could then suppress a halt in operator B's checkout. The cwd-hash
-    fallback keeps unresolved-repo runs from a single working tree
-    consistent (so accepting from there still works) while preventing
-    cross-machine / cross-checkout collision. Repo-resolved callers are
-    unaffected.
+    PR-#430 round-3 review fix #21: refuse to construct an accept key when
+    ``repo`` is unresolved (``None``, empty, or the legacy ``"unknown"``
+    sentinel produced by :func:`build_run_context` on git failure). The
+    earlier fallback to a single literal ``"unknown"`` prefix collapsed
+    every unresolved-repo run on every machine into one shared accept
+    namespace — an accept from operator A's broken-git checkout could then
+    suppress a halt in operator B's checkout. A round-2 cwd-hash fallback
+    swapped the cross-machine collision for ambient ``os.getcwd()``
+    dependency, which made the key non-deterministic across the same
+    operator's terminals (round-3 review). Failing closed instead lets
+    the operator fix repo resolution explicitly before any accept is
+    persisted.
     """
-    if repo and repo != "unknown":
-        prefix = repo
-    else:
-        try:
-            cwd_hash = hashlib.sha256(os.getcwd().encode("utf-8")).hexdigest()[:12]
-        except OSError:
-            cwd_hash = "unresolved"
-        prefix = f"local:{cwd_hash}"
-    return f"{prefix}:{stage}:{persona}:{concern_hash}"
+    if not repo or repo == "unknown":
+        raise ValueError(
+            "compute_accept_key requires a resolved repository identifier; "
+            f"got {repo!r}. Accept keys are repo-scoped to prevent cross-repo "
+            "collisions; fix repo detection (e.g., run inside the target git "
+            "checkout, or pass --repo) before accepting human-review halts."
+        )
+    return f"{repo}:{stage}:{persona}:{concern_hash}"
 
 
 @dataclass

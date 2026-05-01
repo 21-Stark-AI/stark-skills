@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<design-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: fb51083d1b6e37c5f39ab46687be6e7d9904ba27
-revision_date: 2026-05-01T16:03:29Z
+revision: b1ebb989cde8f5fa8ae9a606a9973b738c664c10
+revision_date: 2026-05-01T16:17:03Z
 ---
 
 # stark-red-team-design
@@ -228,8 +228,12 @@ if [ -n "$existing_id" ]; then
   gh api -X PATCH "repos/$REPO/issues/comments/$existing_id" \
     -f body="$body" >/dev/null
 else
-  $PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number \
-    --comment --body "$body"
+  # Issue comment (NOT a PR review). Reviews live in /pulls/N/reviews and
+  # would never show up in the issues-comments API used for the lookup
+  # above, so a `pr review --comment` create branch silently broke the
+  # FU-rt9 "one updatable comment per run" invariant on every rerun.
+  $PYTHON $SCRIPTS/github_app.py --app stark-claude pr comment "$pr_number" \
+    --body "$body"
 fi
 ```
 

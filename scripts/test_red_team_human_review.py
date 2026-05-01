@@ -64,14 +64,28 @@ def test_accept_finding_persists_one_row(tmp_path):
         finding_id="rt3",
         concern_hash="abc",
         concern_excerpt="Schema migration may break readers",
+        repo="evinced/stark-skills",
         accepted_by="alice",
         db_path=db,
     )
     # Lookup by accept_key (cross-run identity) — the canonical path.
-    accept_key = rt.compute_accept_key(stage="design", persona="data", concern_hash="abc")
+    accept_key = rt.compute_accept_key(
+        stage="design", persona="data", concern_hash="abc",
+        repo="evinced/stark-skills",
+    )
     assert hr.is_accepted(accept_key, db_path=db) is True
     # Per-occurrence lookup by stable_key still works for audit-trail tooling.
     assert hr.is_accepted(stable_key="run1:design:1:data:rt3:abc", db_path=db) is True
+
+
+def test_compute_accept_key_rejects_unresolved_repo():
+    """PR-#430 round-3 fix #21: refuse to build an accept key without a repo."""
+    import pytest
+    for bad in (None, "", "unknown"):
+        with pytest.raises(ValueError, match="resolved repository"):
+            rt.compute_accept_key(
+                stage="design", persona="data", concern_hash="abc", repo=bad,
+            )
 
 
 def test_accept_finding_is_idempotent(tmp_path):
@@ -87,6 +101,7 @@ def test_accept_finding_is_idempotent(tmp_path):
         finding_id="rt3",
         concern_hash="abc",
         concern_excerpt="x",
+        repo="evinced/stark-skills",
         accepted_by="alice",
         db_path=db,
     )
@@ -99,6 +114,7 @@ def test_accept_finding_is_idempotent(tmp_path):
         finding_id="rt3",
         concern_hash="abc",
         concern_excerpt="x",
+        repo="evinced/stark-skills",
         accepted_by="bob",
         db_path=db,
     )
