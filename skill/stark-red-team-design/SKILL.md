@@ -4,12 +4,12 @@ description: >-
   Adversarial red-team review of a design doc. 5 personas (security-trust,
   reliability-distsys, data, product-dx, cost-ops) attack the design and emit
   blocking concerns + counter-proposals. Default model: gpt-5.5-pro. Single
-  round, challenge-only — no auto-fix.
+  round, challenge-first; proposed fix plan is disabled by default.
 argument-hint: "<design-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: 19b0b215c4178f7f6dc8f391c7b78a7823fd1b92
-revision_date: 2026-04-29T07:33:01Z
+revision: 3cc43756563410ba36234eb63f1196061ea60638
+revision_date: 2026-05-01T08:12:39Z
 ---
 
 # stark-red-team-design
@@ -18,10 +18,11 @@ Adversarial committee challenge of a design document. 5 personas attack the
 design from their viewpoints and emit findings with counter-proposals,
 trade-offs, and (optionally) human-review requests.
 
-This is a **challenge-only** skill — no fix loop. The output is a sidecar
-`<design>.red-team.md` plus (if a PR is detected) a comment on the PR. Acting
-on the findings is the user's call (or a follow-up `/stark-review-design`
-pass).
+This is a **challenge-first** skill. The challenge result is always the source
+of truth for the terminal status, sidecar status, PR comment status, and exit
+code. In v1.2 the dispatcher can also render a `## Proposed Fix Plan` section,
+but `red_team.fix_plan.enabled` ships as `false` and stays disabled by default
+until a post-calibration rollout flips it globally.
 
 Answers the question: **"What does this design lock us into that we'll
 regret in 6 months?"**
@@ -120,10 +121,15 @@ The dispatcher:
 
 1. Loads `red_team.*` config (model, personas, timeout, budget, severity floor).
 2. Calls `stark_red_team.run_red_team(stage="design", ...)` once.
-3. Writes a `<stem>.red-team.md` sidecar (unless `--no-sidecar`).
-4. Writes a `caller="manual"` audit row to the red-team SQLite (unless
+3. Resolves fix-plan status. By default this is `skipped_disabled` because
+   `red_team.fix_plan.enabled` is `false`.
+4. Writes a `<stem>.red-team.md` sidecar (unless `--no-sidecar`).
+5. Writes a `caller="manual"` audit row to the red-team SQLite (unless
    `--no-audit`).
-5. Emits a single JSON object on stdout.
+6. Emits best-effort insights audit events: `red_team_run`,
+   `red_team_finding`, and, only when a fix plan succeeds,
+   `red_team_fix_plan`.
+7. Emits a single JSON object on stdout.
 
 ### 2.2 Parse JSON
 
@@ -131,6 +137,9 @@ Required fields:
 - `status`: one of `clean`, `halted`, `halted_human_review`, `error`
 - `total_findings`, `blocking_count`, `human_review_count`
 - `cost_usd`, `duration_s`, `model`, `run_id`
+- `fix_plan_status`: `skipped_disabled` by default, or another
+  `success` / `error` / `skipped_*` state when calibration or rollout enables
+  fix-plan execution
 - `sidecar_path` (or null if `--dry-run`)
 - `findings[]`: each finding has `id`, `persona`, `severity`, `concern`,
   `consequence`, `counter_proposal`, `trade_off`, `reason_for_uncertainty`
@@ -161,11 +170,21 @@ Print the consolidated summary to the terminal:
 | # | Severity | Persona | ID | Concern |
 |---|----------|---------|----|---------|
 ...
+
+## Proposed Fix Plan
+**Status:** skipped — skipped_disabled
 ```
 
 For each finding, include the counter-proposal and trade-off. If
 `counter_proposal == "REQUEST_HUMAN_REVIEW"`, render the
 `reason_for_uncertainty` instead.
+
+The `## Proposed Fix Plan` section is always present so downstream tooling has
+a stable anchor. With the v1.2 default it says `skipped_disabled`. If global
+calibration later enables fix-plan execution and the challenge has blocking
+findings, the section contains the proposed moves, warnings, unaddressed
+finding IDs, and retry guidance on errors. Fix-plan success or failure never
+changes the challenge-derived status or exit code.
 
 ## Phase 4: Persist
 
@@ -173,6 +192,10 @@ For each finding, include the counter-proposal and trade-off. If
 
 Already written by the dispatcher to `<design-stem>.red-team.md`.
 If `--dry-run`, skip.
+
+The sidecar includes the challenge findings plus the `## Proposed Fix Plan`
+section. With the default `red_team.fix_plan.enabled: false`, that section is
+rendered as skipped and no second LLM call is made.
 
 ### 4.2 PR comment (skipped if `--dry-run`, `--no-pr-comment`, or no PR)
 
@@ -185,7 +208,14 @@ $PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number \
 
 If posting fails, warn and continue.
 
-### 4.3 Commit sidecar
+### 4.3 Insights audit
+
+Unless audit is disabled, the dispatcher enqueues best-effort local insights
+events for downstream audit: one `red_team_run`, one `red_team_finding` per
+finding, and one `red_team_fix_plan` only when the proposed fix-plan call
+succeeds. These events do not control the skill's status.
+
+### 4.4 Commit sidecar
 
 Skip if `--dry-run` or no sidecar was written. Otherwise commit only the
 sidecar so the findings are durable alongside the design — even if the user
@@ -232,6 +262,17 @@ Do not push. The user controls when the branch goes up.
 
 The skill does **not** halt the calling pipeline — exit codes are advisory.
 Manual invocation is informational.
+
+## Operational controls
+
+- **Disabled by default.** `red_team.fix_plan.enabled` is `false` in v1.2, so
+  normal skill runs render `## Proposed Fix Plan` as `skipped_disabled` and do
+  not make the second `gpt-5.5-pro` call.
+- **Fix-plan kill switch.** Set `STARK_RED_TEAM_FIX_PLAN_KILL=1` (also accepts
+  `true` or `yes`) in the operator environment to force
+  `fix_plan_status=skipped_kill_switch`, even after a future global enable
+  flip or during dispatcher calibration. The challenge run still executes and
+  remains the source of truth.
 
 ## Notes
 
