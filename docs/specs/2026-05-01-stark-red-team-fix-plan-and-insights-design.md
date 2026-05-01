@@ -47,10 +47,10 @@ This is **still a challenge-only skill** — the fix plan is advisory output, no
                        │       + "## Proposed Fix Plan" section (NEW)  │
                        │
                        ├─► local SQLite audit (red_team_audit.py)      │
-                       │       red_team_runs                           │
-                       │           + fix_plan_md TEXT NULL (NEW col)   │
-                       │           + fix_plan_cost_usd REAL NULL (NEW) │
-                       │           + fix_plan_status TEXT NULL (NEW)   │
+                       │       red_team_runs (six new NULL columns):   │
+                       │           + repo, artifact_relative_path      │
+                       │           + fix_plan_status, fix_plan_md,     │
+                       │             fix_plan_json, fix_plan_cost_usd  │
                        │       red_team_findings                       │
                        │       red_team_persona_stats                  │
                        │
@@ -92,16 +92,17 @@ This is **still a challenge-only skill** — the fix plan is advisory output, no
 
 ### 3.1 Gating
 
-The fix call fires iff:
+The fix call fires iff (in order):
 
 ```python
-cfg["fix_plan"]["enabled"]
-and challenge.error is None
-and challenge.blocking_count > 0
-and challenge.cost_usd < per_run_budget_usd
+cfg["fix_plan"]["enabled"]                          # 1. kill switch on
+and challenge.error is None                         # 2. no upstream error
+and challenge.blocking_count > 0                    # 3. work to do
+and challenge.cost_usd < per_run_budget_usd         # 4. budget remaining
+and findings_serialization_fits(...)                # 5. input not over-truncated (§3.2)
 ```
 
-Pre-call budget gating is intentionally simple: skip if the challenge call ALREADY consumed the budget. We do not estimate the fix call's cost pre-flight — empirical estimates are noisy and the fix call's `max_output_tokens` cap (32 768, inherited from `_RESPONSES_API_DEFAULT_MAX_OUTPUT_TOKENS`) plus `timeout_s` already bound the runaway case. The §11.1 cost projection plus the $30 budget gives ~6× headroom in normal operation; tighter gating would only matter if the challenge already cost ~$25, which itself signals an upstream problem worth surfacing rather than masking with a fix-call skip.
+**Budget policy (single, authoritative).** Pre-call gating is **only** a check that the challenge has not already consumed the budget — `challenge.cost_usd < per_run_budget_usd`. We do **not** estimate the fix call's cost pre-flight; the `max_output_tokens` cap (32 768) and `timeout_s` bound the runaway case, and the §11.1 worst-case computation plus the $30 budget already accounts for the typical case. **Post-call**, after `fix_plan.cost_usd` is known, the dispatcher computes `total_cost_usd = challenge.cost_usd + fix_plan.cost_usd` and, if it exceeds `per_run_budget_usd`, emits a structured `over_budget_after_fix` warning (recorded in the `warnings` field of the `red_team_run` event payload — see §10) and prints to stderr. This does NOT halt the skill — by the time we know, the cost has been incurred — but the warning is a calibration signal: persistent `over_budget_after_fix` events should drive a budget bump in a follow-up PR, not a runtime halt. §11.2 acceptance covers tests at challenge cost just below, at, and above the budget.
 
 Skipped (with a sidecar note explaining why) when:
 
@@ -112,26 +113,52 @@ Skipped (with a sidecar note explaining why) when:
 | Status is `halted_human_review` AND blocking_count == 0 | `skipped_human_review_only` |
 | Already over budget after challenge | `skipped_budget_exhausted` |
 | `red_team.fix_plan.enabled` is `false` (kill switch) | `skipped_disabled` |
+| Findings JSON cannot be safely serialized within `max_input_chars` (§3.2) | `skipped_input_too_large` |
 
 When ONLY blocking-but-also-some-human-review findings exist, the fix call still fires for the blocking ones; human-review findings are excluded from the fix-call input (preserving the "this needs human judgment" signal).
 
 ### 3.2 Prompt assembly
 
-Mirrors `assemble_prompt` for the challenge call but uses a separate prompt directory:
+Mirrors `assemble_prompt` for the challenge call but uses a separate prompt file:
 
 ```
 1. global/prompts/red-team/fix-plan.md           (NEW — system prompt + schema)
 2. <<<RED_TEAM_INPUT name="artifact">>>           original design or plan
 3. <<<RED_TEAM_INPUT name="source_spec">>>        same as challenge call
-4. <<<RED_TEAM_INPUT name="findings">>>           JSON array of challenge findings
-                                                    (excluding REQUEST_HUMAN_REVIEW
-                                                     entries — see §3.1)
+4. <<<RED_TEAM_INPUT name="findings_envelope">>>  JSON envelope (§3.2.1)
 5. <<<RED_TEAM_INPUT name="synthesis">>>          challenge synthesis paragraph
 ```
 
 The fix call does NOT see persona files. Per-persona viewpoints are already encoded in the findings + synthesis. The fix call is a single architect.
 
-Same input-injection defenses as the challenge call (delimiter wrapping, SHA-256 tagging, `_escape_delimiters`, `max_input_chars` truncation) apply to all attacker-influenced inputs. Findings JSON is also wrapped in `<<<RED_TEAM_INPUT>>>` because the model produced its content from attacker-controlled inputs.
+Same input-injection defenses as the challenge call (delimiter wrapping, SHA-256 tagging, `_escape_delimiters`, `max_input_chars` truncation) apply to artifact and source_spec. Findings JSON is wrapped in `<<<RED_TEAM_INPUT>>>` because the model produced its content from attacker-controlled inputs — but its truncation is structured (see §3.2.1).
+
+#### 3.2.1 Truncation-safe findings envelope
+
+A naive `_truncate(json.dumps(findings), max_input_chars)` would corrupt the JSON mid-object and the model would either fail to parse or silently see a half-finding with an incoherent ID. Instead, findings are serialized via `serialize_findings_envelope(findings, max_chars) → (envelope_json, omitted_ids, fits_safely)`:
+
+```json
+{
+  "truncated": false,
+  "omitted_finding_ids": [],
+  "findings": [
+    { "id": "rt1", "persona": "security-trust", "severity": "critical", ... },
+    ...
+  ]
+}
+```
+
+Algorithm:
+
+1. Sort findings by severity descending (`critical > high > medium`), then by `is_human_review` ascending (blocking first), then by `id` for stable ordering.
+2. Greedy-add findings to the envelope, recomputing the serialized length after each add.
+3. If a finding would push the envelope over `max_chars`, omit it and add its `id` to `omitted_finding_ids`. Do **not** include its partial JSON.
+4. If `omitted_finding_ids` is non-empty, set `truncated: true`.
+5. Return `fits_safely = (no blocking finding was omitted)`.
+
+If `fits_safely is False`, the dispatcher SKIPS the fix call with `fix_plan_status=skipped_input_too_large` rather than calling with a fix-plan that can't address the omitted blocking findings (per §3.1). When `truncated is True` but only medium/human-review findings were omitted, the fix call still fires; the sidecar's "Notes" section flags the omission.
+
+The fix-plan output schema (§3.3) gains a corresponding `input_truncated: bool` and `input_omitted_finding_ids: list[str]` field so audit trails record the input-side truncation independently of any output-side coverage gaps.
 
 ### 3.3 Output schema
 
@@ -149,10 +176,14 @@ class FixPlanMove:
 @dataclass
 class RedTeamFixPlan:
     summary: str                        # ≤ 100 words; "if you do these N things, the committee is addressed"
-    moves: list[FixPlanMove]            # 2-6 typical; 1 minimum, 10 max
+    moves: list[FixPlanMove]            # cfg.fix_plan.min_moves ≤ len ≤ cfg.fix_plan.max_moves
     unaddressed_finding_ids: list[str]  # blocking findings the plan deliberately doesn't address
+    orphan_finding_ids: list[str]       # blocking IDs the model emitted neither addressed nor unaddressed
     notes: str                          # 0-300 words; rationale for unaddressed; cross-tension calls
-    raw_output: str                     # preserved for audit
+    input_truncated: bool               # set when serialize_findings_envelope truncated (§3.2.1)
+    input_omitted_finding_ids: list[str] # IDs the prompt didn't show the model
+    warnings: list[str]                 # post-validation warnings (e.g., "move_cap_hit", "ids_invented")
+    raw_output: str                     # preserved for in-memory audit only; not persisted
     duration_s: float
     cost_usd: float
     input_tokens: int
@@ -162,40 +193,75 @@ class RedTeamFixPlan:
     error: str | None = None
 ```
 
+**Move-count contract** (single source of truth; resolves rt11):
+
+- `cfg.fix_plan.min_moves` defaults to `2`.
+- `cfg.fix_plan.max_moves` defaults to `6`.
+- A model output with `len(moves) < min_moves` or `len(moves) > max_moves * 2` is treated as a hard error (`error="fix-plan returned N moves; expected min..max"`), no rendering of the partial plan. The `* 2` slack accommodates over-eager models without rejecting plans that can be safely pruned.
+- A model output with `max_moves < len(moves) <= max_moves * 2` is **pruned** post-parse: the `max_moves` highest-leverage moves are kept (ranked by `len(addressed_finding_ids)` desc, then by order in raw output). Pruned moves' addressed IDs are recomputed against the kept moves; any blocking IDs no longer covered move into `unaddressed_finding_ids`. A `move_cap_hit` warning is appended.
+- Min violations are never auto-padded — the dispatcher does not synthesize moves to meet `min_moves`.
+
 ### 3.4 Schema validation
 
-Post-parse validation in `validate_fix_plan(raw, blocking_finding_ids) → RedTeamFixPlan`:
+Post-parse validation in `validate_fix_plan(raw, blocking_finding_ids, cfg) → RedTeamFixPlan`:
 
-- `len(moves) >= 1`. Empty-moves plan is a schema violation → `error = "fix-plan returned no moves"`.
-- `len(moves) <= 10`. Cap as a defense against runaway output. Excess moves dropped with a warning.
+- **Move count** per the §3.3 contract: `min_moves <= len <= max_moves` is the success path; `max_moves < len <= max_moves * 2` is pruned with a `move_cap_hit` warning; outside that range is a hard `error`.
 - Every move has non-empty `id`, `title`, `rationale`, `new_trade_off`. `sections_touched` and `addressed_finding_ids` may be empty (lists) but must be present.
-- `move.addressed_finding_ids ⊆ blocking_finding_ids`. Invented IDs are dropped from the move with a warning. If after dropping a move has zero addressed IDs AND zero `sections_touched`, the move itself is dropped (it's a no-op).
+- `move.addressed_finding_ids ⊆ blocking_finding_ids`. Invented IDs are dropped from the move; `ids_invented` warning recorded. If after dropping a move has zero addressed IDs AND zero `sections_touched`, the move itself is dropped (it's a no-op); the post-drop count is re-checked against `min_moves`.
 - Move IDs are unique within a plan; collisions get suffixed (`m2`, `m2_dup` → `m2`, `m3`).
-- Every blocking finding ID appears in either some move's `addressed_finding_ids` OR in `unaddressed_finding_ids`. Orphaned IDs (in neither) are appended to `unaddressed_finding_ids` and recorded on the in-memory `RedTeamFixPlan` with a `_orphans: list[str]` private attr; the sidecar renderer surfaces them in the "Notes" section as `**Orphaned (model didn't address or defer):** rt5, rt7`. The persisted `red_team_fix_plan` event payload also includes `orphan_finding_ids: [...]` so dashboards can flag low-coverage runs.
-- `unaddressed_finding_ids` is `⊆ blocking_finding_ids` AND disjoint from any move's addressed IDs. Conflicts resolve in favor of "addressed" (move wins).
+- **Coverage rules** (single, ordered):
+  1. `addressed = ∪{move.addressed_finding_ids}` (after invented-ID drop and pruning).
+  2. `model_unaddressed = unaddressed_finding_ids` from raw output, intersected with `blocking_finding_ids` (model-invented IDs dropped here too).
+  3. `model_unaddressed = model_unaddressed - addressed` (move wins on conflict).
+  4. `orphan_finding_ids = blocking_finding_ids - addressed - model_unaddressed`.
+  5. Final `unaddressed_finding_ids = model_unaddressed` (does NOT include orphans). `orphan_finding_ids` is its own field on `RedTeamFixPlan` so dashboards can distinguish "deliberately deferred" from "model forgot".
+- The sidecar renderer surfaces orphans explicitly (§4.1) so the operator sees that the model never assigned a verdict to those findings.
 - `summary`, `notes` are strings (may be empty). `summary` truncated at 1000 chars, `notes` at 3000.
+- Per-field length caps (rt13 hardening): `title ≤ 200 chars`, `rationale ≤ 1000 chars`, `new_trade_off ≤ 500 chars`, `sections_touched` capped at 20 entries each ≤ 100 chars. Over-cap fields are truncated with `...[CAP]` marker; corresponding `field_capped` warning recorded.
 
 Validation never raises — invalid plans set `error` and the dispatcher renders an error section in the sidecar.
 
-### 3.5 Dispatch
+### 3.5 Dispatch — shared run context
 
-New function in `scripts/stark_red_team.py`:
+To avoid duplicate state propagation between the design and plan dispatchers (rt2), v1.2 introduces a shared `RedTeamRunContext` carried through the whole invocation:
+
+```python
+@dataclass(frozen=True)
+class RedTeamRunContext:
+    run_id: str                       # generated once at dispatcher start; uuid4-suffixed
+    stage: str                        # "design" | "plan"
+    caller: str                       # "manual" | "forge" | "forged-review"
+    repo: str                         # canonical "owner/name" or "unknown"
+    artifact_relative_path: str | None # path relative to repo root, None when no repo
+    cwd: str | None                   # working dir for codex-CLI dispatches (kept for parity)
+    env: dict[str, str]               # the resolved subprocess env (with OPENAI_API_KEY etc.)
+    model_rates: dict[str, Any]
+    cfg_red_team: dict[str, Any]      # the merged red_team config (with locks already applied)
+    per_run_budget_usd: float
+    pr_number: int | None             # for insights event correlation
+    started_at_iso: str               # canonical timestamp for downstream events
+```
+
+The dispatcher constructs this context once at start. `run_red_team(...)`, `run_red_team_fix_plan(...)`, the local audit, and `red_team_insights.emit_*` ALL accept this context (or specific fields from it) as their primary identity input. The `run_id` is reused across all three persistence sinks so a single skill invocation produces a single, joinable trail.
 
 ```python
 def run_red_team_fix_plan(
+    ctx: RedTeamRunContext,
     *,
-    stage: str,
     artifact: str,
     source_spec: str,
     challenge_findings: list[RedTeamFinding],
     synthesis: str,
-    model: str,                 # default cfg["fix_plan"]["model"] → "gpt-5.5-pro"
-    reasoning_effort: str,      # default "xhigh", validated against _RESPONSES_API_REASONING_EFFORT
-    model_rates: dict[str, Any],
-    timeout_s: int,             # default cfg["fix_plan"]["timeout_s"] → 1200
-    max_input_chars: int,
-    env: dict[str, str] | None = None,
+    challenge_cost_usd: float,
 ) -> RedTeamFixPlan:
+    """Single attempt. Internally:
+      - reads model/reasoning_effort/timeout_s/max_moves/max_input_chars from
+        ctx.cfg_red_team["fix_plan"]
+      - serializes findings via serialize_findings_envelope (§3.2.1)
+      - dispatches via dispatch_responses_api with ctx.env
+      - validates via validate_fix_plan(..., cfg=ctx.cfg_red_team["fix_plan"])
+      - returns RedTeamFixPlan; never raises (errors land on .error)
+    """
     ...
 ```
 
@@ -205,21 +271,33 @@ If `model not in RESPONSES_API_MODELS`, the dispatch function returns `error="fi
 
 The function does not retry. Single attempt. The dispatcher routes to a degraded sidecar on failure.
 
+**Acceptance test (rt2):** integration test asserts that for one design and one plan invocation, `run_id`, `repo`, `artifact_relative_path`, `model_rates`, and the OPENAI_API_KEY-resolution env are byte-identical between the challenge call's transport invocation, the fix-plan call's transport invocation, the row written to `red_team_runs`, and all three insights events.
+
 ### 3.6 Cost tracking
 
-`fix_plan.cost_usd` is computed via the same `_resolve_rates` / `_cost_for` helpers used by the challenge call. The dispatcher accumulates:
+`fix_plan.cost_usd` is computed via the same `_resolve_rates` / `_cost_for` helpers used by the challenge call.
 
 ```python
 total_cost_usd = challenge.cost_usd + (fix_plan.cost_usd if fix_plan else 0.0)
 ```
 
-This sum is checked against `per_run_budget_usd` BEFORE invoking the fix call. If the budget would be exceeded, the fix call is skipped with `fix_plan_status = "skipped_budget_exhausted"` and a structured `red_team.fix_plan.budget_skipped` audit event.
+The pre-call gate (§3.1) checks `challenge.cost_usd < per_run_budget_usd` only. After the fix call returns, the dispatcher computes `total_cost_usd` and, if it exceeds `per_run_budget_usd`, appends `"over_budget_after_fix"` to the `RedTeamFixPlan.warnings` list (which is persisted in the local `fix_plan_json` column and emitted in the `red_team_fix_plan` event payload). The skill does NOT halt — by then the cost is already incurred — but the warning is the calibration signal that drives a follow-up budget bump.
+
+This replaces the v1 spec's earlier "budget circuit breaker" semantics for the fix call; the v1 challenge-side budget breaker (`halted_budget` exit status when challenge calls cumulatively exceed budget) is unchanged.
 
 ## 4. Sidecar + PR comment changes
 
 ### 4.1 Sidecar rendering
 
 A new `## Proposed Fix Plan` section is appended to `<artifact>.red-team.md` AFTER the existing `## Detail` section (or AFTER `## Findings` when there's no detail). The renderer is in `red_team_design_dispatch.py:render_sidecar_markdown` and the parallel function in `red_team_plan_dispatch.py`.
+
+**Untrusted-content escape rules (rt13).** All model-produced fields (`title`, `rationale`, `new_trade_off`, `summary`, `notes`, `sections_touched` items) are treated as untrusted markdown:
+
+1. The validation step (§3.4) enforces hard length caps before rendering ever sees the field.
+2. The renderer wraps long-form fields (`rationale`, `notes`, `new_trade_off`) in fenced markdown blocks (\`\`\`text ... \`\`\`) when their content contains any of `\`\`\``, raw HTML opening tags, or 4+ consecutive backticks. This neutralizes nested code fences and HTML rendering inside GitHub PR comments.
+3. `title` is rendered inline as plain text but with a fixed-width truncation at 200 chars (the §3.4 cap). Inline fences inside `title` are escaped (`\`...\`` becomes `\\\`...\\\``).
+4. `addressed_finding_ids` and `orphan_finding_ids` are rendered as backticked lists; finding IDs are syntactically constrained (`rt\d+`) so escaping is a no-op for valid IDs and dropping for malformed IDs.
+5. The total rendered fix-plan section is capped at 12 000 chars; over-cap content is truncated with a `[TRUNCATED — see local SQLite `fix_plan_json` column for full text]` marker. The local `fix_plan_json` column (§5.1) is the lossless source of truth.
 
 **When the fix call ran (success):**
 
@@ -297,87 +375,223 @@ The scoped `git add -- "$sidecar_path"` and `git commit ... -- "$sidecar_path"` 
 
 ### 5.1 Local SQLite (additive)
 
-Five additions to `red_team_runs`:
+Six additions to `red_team_runs`:
 
 ```sql
 ALTER TABLE red_team_runs ADD COLUMN repo TEXT;                    -- nullable
 ALTER TABLE red_team_runs ADD COLUMN artifact_relative_path TEXT;  -- nullable
-ALTER TABLE red_team_runs ADD COLUMN fix_plan_md TEXT;             -- nullable
+ALTER TABLE red_team_runs ADD COLUMN fix_plan_status TEXT;         -- nullable (see values below)
+ALTER TABLE red_team_runs ADD COLUMN fix_plan_md TEXT;             -- nullable, rendered markdown
+ALTER TABLE red_team_runs ADD COLUMN fix_plan_json TEXT;           -- nullable, validated JSON of RedTeamFixPlan (omits raw_output)
 ALTER TABLE red_team_runs ADD COLUMN fix_plan_cost_usd REAL;       -- nullable
-ALTER TABLE red_team_runs ADD COLUMN fix_plan_status TEXT;         -- nullable
 -- Values for fix_plan_status:
---   'success'                  — plan generated, see fix_plan_md
---   'error'                    — plan call failed, see fix_plan_md for error
+--   'success'                  — plan generated, see fix_plan_json/_md
+--   'error'                    — plan call failed, see fix_plan_json.error
 --   'skipped_clean'            — no blocking findings
 --   'skipped_human_review_only'— only human-review findings
 --   'skipped_budget_exhausted' — challenge call exhausted budget
 --   'skipped_challenge_error'  — challenge call errored
 --   'skipped_disabled'         — kill switch off
---   NULL                       — pre-v1.2 row (legacy)
+--   'skipped_input_too_large'  — findings JSON couldn't be safely truncated (§3.2.1)
+--   NULL                       — pre-v1.2 row (legacy; see §6.1 backfill filter)
 ```
 
-`repo` and `artifact_relative_path` are added to support per-repo dashboard filtering in stark-insights — v1 didn't capture them, so backfilled rows will have them as NULL (see §6.1). New runs after v1.2 capture them via `git rev-parse --show-toplevel` + path-relativization at dispatch time.
+**Why both `fix_plan_md` AND `fix_plan_json` (resolves rt8).** `fix_plan_md` is for human reading (renderable, paste-into-PR-comment); `fix_plan_json` is the lossless serialization of the validated `RedTeamFixPlan` dataclass with its moves, warnings, orphan IDs, input-truncation flags, tokens, duration, model, reasoning effort, and error — everything needed to reconstruct a `red_team_fix_plan` event later. `raw_output` is NOT persisted (it's a debug aid only and can echo attacker-controlled prompt content).
 
-`fix_plan_md` stores the rendered "Proposed Fix Plan" markdown (NOT the raw JSON). The raw JSON is preserved on the in-memory `RedTeamFixPlan.raw_output` for the duration of the dispatch but is NOT persisted — it would be redundant with the rendered markdown for audit purposes and would double the storage cost on the largest column.
+`repo` and `artifact_relative_path` are added to support per-repo dashboard filtering in stark-insights. v1 didn't capture them, so legacy rows will have them as NULL (see §6.1).
 
-`init_red_team_tables()` runs an idempotent migration: it queries `PRAGMA table_info(red_team_runs)`, checks for the new columns, and runs `ALTER TABLE` for any that are missing. SQLite supports adding nullable columns without rewriting the table, so this is safe and fast on existing DBs.
+**Migration mechanics.** `init_red_team_tables()` is the canonical migration entry point. It runs `CREATE TABLE IF NOT EXISTS` for the base v1 tables AND queries `PRAGMA table_info(red_team_runs)` to add any missing v1.2 columns via `ALTER TABLE`. Idempotent on:
+- A fresh DB (creates from scratch with all columns).
+- A pre-v1.2 DB (v1.0 / v1.1 — adds the six new columns).
+- A v1.2 DB (no-op).
+- A partially migrated DB (e.g., process killed mid-ALTER) — re-runs only the missing ALTERs because each is gated on the column presence check.
+
+`record_red_team_run` and `record_fix_plan` always reference columns by explicit names, so a forward-compatible row write does not break if the migration has been extended.
 
 ### 5.2 stark-insights events
 
-Three new event types in `event_schema.json` and `emit_queue._VALID_TYPES`:
+Three new event types in `event_schema.json` and `emit_queue._VALID_TYPES`. Canonical payload schemas below — these are the contract for both producers and lifters.
 
-| Type | Cardinality per run | Lifted columns | payload_extra fields |
-|---|---|---|---|
-| `red_team_run` | 1 | `agent_name=model`, `domain=stage`, `severity=worst_severity`, `score_value=cost_usd`, `passed=(status=='clean')` | `run_id`, `final_status`, `total_findings`, `blocking_count`, `human_review_count`, `critical_count`, `high_count`, `medium_count`, `rounds_used`, `duration_s`, `cost_usd`, `model`, `caller`, `repo`, `artifact_relative_path`, `fix_plan_status` |
-| `red_team_finding` | 0..N | `agent_name=persona`, `domain=stage`, `severity`, `repo` | `run_id`, `finding_id`, `persona`, `concern`, `consequence`, `counter_proposal`, `trade_off`, `reason_for_uncertainty`, `round_num`, `is_human_review` |
-| `red_team_fix_plan` | 0 or 1 | `agent_name=model`, `domain=stage`, `score_value=cost_usd` | `run_id`, `move_count`, `addressed_finding_ids`, `unaddressed_finding_ids`, `summary`, `notes`, `fix_plan_md`, `cost_usd`, `duration_s`, `input_tokens`, `output_tokens`, `reasoning_effort`, `error` |
+#### `red_team_run` (cardinality: 1 per skill invocation)
 
-Notes:
-- `worst_severity` for `red_team_run` is the highest severity present in any finding, mapping `{none → "clean", medium → "medium", high → "high", critical → "critical"}`. When `error`, severity is `null`.
-- `agent_name` for `red_team_finding` is the persona slug (e.g., `security-trust`); not the LLM agent. The lifted `agent_name` column is overloaded across event types — already true in v1 for `agent_dispatch` (LLM) vs. `review_finding` (review domain). This continues that overload deliberately.
-- `red_team_fix_plan.agent_name` and `red_team_run.agent_name` both carry the model name; they're equal in v1.2 but kept independent so a future version that allows distinct fix-plan models doesn't need a schema change.
-- All payloads include `repo` (when detected via git) and `artifact_relative_path` (the design/plan path, repo-relative, as a stable identifier across runs).
+```json
+{
+  "type": "red_team_run",
+  "timestamp": "2026-05-01T12:34:56Z",
+  "cli": "claude",
+  "source": "skill",
+  "schema_version": 1,
+  "project": "evinced/stark-skills",
+  "dedupe_key": "red-team:run:design:manual-abc123def456",
+  "payload": {
+    "run_id": "manual-abc123def456",
+    "stage": "design",
+    "model": "gpt-5.5-pro",
+    "caller": "manual",
+    "final_status": "halted",
+    "worst_severity": "high",
+    "passed": false,
+    "rounds_used": 1,
+    "total_findings": 6,
+    "blocking_count": 4,
+    "human_review_count": 1,
+    "critical_count": 0,
+    "high_count": 4,
+    "medium_count": 2,
+    "duration_s": 87.3,
+    "cost_usd": 1.92,
+    "repo": "evinced/stark-skills",
+    "artifact_relative_path": "docs/specs/foo.md",
+    "pr_number": 428,
+    "fix_plan_status": "success",
+    "warnings": []
+  }
+}
+```
+
+Fields:
+
+- `worst_severity`: `"critical" | "high" | "medium" | null` (NULL when no findings or `final_status == "error"`). Note: `"clean"` is **not** a severity value — clean runs set `worst_severity: null` and rely on `passed: true` / `final_status: "clean"` for filtering.
+- `passed`: `true` iff `final_status == "clean"`.
+- `repo`: canonical `owner/name` when detected, or the literal string `"unknown"` otherwise (never NULL — lifters require a string).
+- `artifact_relative_path`: nullable; only set when both repo and a containing repo are detected.
+- `pr_number`: nullable; only set when run inside a feature branch with an open PR.
+- `warnings`: list of structured warning strings; absent in v1.2 unless `over_budget_after_fix` was emitted (§3.6) — but the array is always present for forward compatibility.
+
+#### `red_team_finding` (cardinality: 0..N)
+
+```json
+{
+  "type": "red_team_finding",
+  "timestamp": "...", "cli": "claude", "source": "skill",
+  "schema_version": 1, "project": "evinced/stark-skills",
+  "dedupe_key": "red-team:finding:design:manual-abc123def456:1:rt3",
+  "payload": {
+    "run_id": "manual-abc123def456",
+    "stage": "design",
+    "round_num": 1,
+    "finding_id": "rt3",
+    "persona": "reliability-distsys",
+    "severity": "high",
+    "concern": "...",
+    "consequence": "...",
+    "counter_proposal": "...",
+    "trade_off": "...",
+    "reason_for_uncertainty": null,
+    "is_human_review": false,
+    "repo": "evinced/stark-skills",
+    "pr_number": 428
+  }
+}
+```
+
+- `is_human_review`: `true` iff `counter_proposal == "REQUEST_HUMAN_REVIEW"`.
+- `severity` is one of `"critical" | "high" | "medium"` (always non-null; findings without a severity are dropped at validation per v1).
+- `trade_off` and `reason_for_uncertainty` are mutually exclusive: one is non-null, the other is null.
+
+#### `red_team_fix_plan` (cardinality: 0 or 1, only when `fix_plan_status == "success"`)
+
+```json
+{
+  "type": "red_team_fix_plan",
+  "timestamp": "...", "cli": "claude", "source": "skill",
+  "schema_version": 1, "project": "evinced/stark-skills",
+  "dedupe_key": "red-team:fix_plan:design:manual-abc123def456",
+  "payload": {
+    "run_id": "manual-abc123def456",
+    "stage": "design",
+    "model": "gpt-5.5-pro",
+    "reasoning_effort": "xhigh",
+    "summary": "...",
+    "notes": "...",
+    "moves": [
+      {
+        "id": "m1",
+        "title": "...",
+        "rationale": "...",
+        "sections_touched": ["§4.2"],
+        "addressed_finding_ids": ["rt1", "rt3"],
+        "new_trade_off": "..."
+      }
+    ],
+    "move_count": 3,
+    "addressed_finding_ids": ["rt1", "rt3", "rt4"],
+    "unaddressed_finding_ids": ["rt2"],
+    "orphan_finding_ids": [],
+    "input_truncated": false,
+    "input_omitted_finding_ids": [],
+    "warnings": [],
+    "cost_usd": 2.41,
+    "duration_s": 87.3,
+    "input_tokens": 12450,
+    "output_tokens": 3120,
+    "fix_plan_md": "## Proposed Fix Plan\n...",
+    "repo": "evinced/stark-skills",
+    "pr_number": 428
+  }
+}
+```
+
+- The `moves` array is the structured source-of-truth; `fix_plan_md` is included as a denormalized rendering for downstream tools that want the markdown directly. Storage cost is acceptable (typical fix plan: ~5 KB of markdown).
+- Only emitted when the call succeeded (validated and not errored). Failure cases land on `red_team_run.fix_plan_status` instead — see §10.
+- `addressed_finding_ids` is the union of all `move.addressed_finding_ids` (post-validation). `orphan_finding_ids` is non-empty only when the model produced an inconsistent plan (rare; see §3.4 step 4).
 
 ### 5.3 Lifter rules in stark-insights
 
-Adds three entries to `_LIFT_RULES` in `src/stark_insights/lifting.py`:
+Adds three entries to `_LIFT_RULES` in `src/stark_insights/lifting.py`. Lifted columns must align with the canonical payload schemas in §5.2 — every payload_key referenced below is documented as present in the corresponding payload contract.
 
 ```python
 "red_team_run": [
     ("model", "agent_name", None, True),
     ("stage", "domain", None, True),
-    ("worst_severity", "severity", None, True),
-    ("cost_usd", "score_value", None, False),  # keep in payload_extra too
+    ("worst_severity", "severity", None, True),    # may be None → column nulled
+    ("cost_usd", "score_value", None, False),       # keep in payload_extra too
     ("passed", "passed", None, True),
     ("repo", "repo", None, True),
+    ("pr_number", "pr_number", None, True),
 ],
 "red_team_finding": [
     ("persona", "agent_name", None, True),
     ("stage", "domain", None, True),
     ("severity", "severity", None, True),
     ("repo", "repo", None, True),
+    ("pr_number", "pr_number", None, True),
 ],
 "red_team_fix_plan": [
     ("model", "agent_name", None, True),
     ("stage", "domain", None, True),
-    ("cost_usd", "score_value", None, False),  # keep in payload_extra too
+    ("cost_usd", "score_value", None, False),       # keep in payload_extra too
     ("repo", "repo", None, True),
+    ("pr_number", "pr_number", None, True),
 ],
 ```
 
-`consume=False` on `cost_usd` mirrors the `validation_result.overall` precedent: the lifted column is a lossy projection (Numeric(12,4) vs. raw float), so we keep the precise value in `payload_extra` for analytics queries that need the full precision.
+- `consume=False` on `cost_usd` mirrors the `validation_result.overall` precedent: the lifted column is a lossy projection (Numeric(12,4) vs. raw float), so we keep the precise value in `payload_extra` for analytics queries that need the full precision.
+- Lifters use Python-truthy null handling — payload values of `None` produce a NULL lifted column, not a string `"None"`. Verified by lifter unit tests for `worst_severity: null`.
+- Pre-deployment of the new lifters: events still ingest with all fields in `payload_extra`. Dashboards lose the lifted-column query speedup but no data is lost. This makes the cross-repo deployment order (stark-skills first vs. stark-insights first) a non-issue.
 
 ### 5.4 Dedupe keys (idempotency)
 
-Each emitted event carries a deterministic `dedupe_key`. The `emit_queue` table has `UNIQUE` on `dedupe_key`, so a re-run of the same skill on the same artifact won't double-insert.
+Each emitted event carries a deterministic `dedupe_key` keyed off `run_id` (already a uuid4 segment per v1) and a stable secondary key:
 
 ```
-red_team_run:        red-team:run:{repo}:{stage}:{run_id}
-red_team_finding:    red-team:finding:{repo}:{stage}:{run_id}:{round_num}:{finding_id}
-red_team_fix_plan:   red-team:fix_plan:{repo}:{stage}:{run_id}
+red_team_run:        red-team:run:{stage}:{run_id}
+red_team_finding:    red-team:finding:{stage}:{run_id}:{round_num}:{finding_id}
+red_team_fix_plan:   red-team:fix_plan:{stage}:{run_id}
 ```
 
-`run_id` is generated by the dispatcher (`manual-{uuid4.hex[:12]}`) per the v1 contract — globally unique already, so adding `repo`/`stage` is just defensive scoping for query convenience.
+`repo` is intentionally NOT in the dedupe key — `run_id` is globally unique already, and including `repo` would break dedupe if a row was originally written with `repo=NULL` (legacy) and later forward-emitted with a resolved repo string. This makes `run_id` the single identity axis.
+
+**Idempotency layers (resolves rt6).** The local `emit_queue.pending` table has `UNIQUE(dedupe_key)` so the SAME local queue won't enqueue duplicates. After a successful drain, the row is deleted from `pending` — so a SECOND enqueue of the same dedupe_key after drain WOULD re-enqueue without local protection.
+
+The cloud-side `events` table in stark-insights has `Index("idx_events_dedupe", "dedupe_key", unique=True)` (per `src/stark_insights/db/schema.py` — verified during spec drafting). The HTTP `/events` endpoint enforces this on insert: a duplicate `dedupe_key` is treated as a no-op success (200 OK with `inserted: 0`), not a 4xx error. This is the durable defense; the local `emit_queue` UNIQUE is just an optimization.
+
+**Backfill resume.** When `red_team_backfill.py` is interrupted and re-run:
+1. Each row's events are re-enqueued (local `pending` has been drained, so no UNIQUE collision there).
+2. On drain, the cloud-side dedupe_key UNIQUE rejects the already-ingested events as no-ops.
+3. The dispatcher's success/failure counts are computed from local `pending` deletions, so the same row counts as a "no-op success" on resume.
+
+This is verified by an acceptance test (§12.3) that runs the backfill, kills it mid-drain, runs it again, and asserts the cloud row count is the same as a single full run.
 
 ### 5.5 Drain semantics
 
@@ -396,43 +610,60 @@ The dispatcher does NOT call `emit_queue.drain()` synchronously — telemetry mu
 ### 6.1 Script: `scripts/red_team_backfill.py`
 
 ```bash
-python3 red_team_backfill.py [--dry-run] [--limit N] [--db PATH]
+python3 red_team_backfill.py [--dry-run] [--limit N] [--db PATH] [--scope all|legacy|forward]
 ```
 
 Default DB path: `~/.claude/code-review/history/forged-review/forged_review_metrics.db` (matches `red_team_audit.DEFAULT_DB_PATH`).
 
+`--scope` defaults to `legacy`:
+- `legacy`: emit ONLY rows where `fix_plan_status IS NULL` (the marker that no v1.2 dispatcher has ever recorded this row). This is the primary backfill mode.
+- `forward`: emit rows where `fix_plan_status IS NOT NULL`. Used when the v1.2 dispatcher's forward emission failed for some rows (network outage, etc.) — re-emits without re-running the LLM calls.
+- `all`: emit every row regardless of marker. Dedupe keys keep this idempotent; useful for disaster recovery.
+
 Behavior:
 
-1. Read all rows from `red_team_runs`, oldest first.
-2. For each row, also read matching `red_team_findings` (join on `run_id`).
-3. Synthesize event envelopes:
-   - `red_team_run` with `caller` from the row, `agent_name=model`, `domain=stage`. Backfill rows ALWAYS have `fix_plan_status=NULL` since fix plans didn't exist pre-v1.2 — emit with `fix_plan_status: "absent_pre_v1_2"` so dashboards can distinguish backfilled vs. genuinely-skipped rows.
-   - `red_team_finding` per finding row. Backfill rows have `round_num` from the source.
-   - No `red_team_fix_plan` events (none existed historically).
-4. `repo` and `artifact_relative_path` come from the new (post-§5.1) columns. For rows written before the v1.2 column-add migration ran, both will be NULL → emit as `repo: "unknown"` (string sentinel for dashboard groupings; do not use NULL because lifters expect a non-null repo) and `artifact_relative_path: null`.
-5. Set the envelope `timestamp` to `red_team_runs.created_at` (the original audit timestamp) so historical events land in their actual time bucket, not the backfill time.
-6. Use stable `dedupe_keys`:
+1. **Run the migration first.** `red_team_backfill.py` calls `red_team_audit.init_red_team_tables(db_path)` before issuing any SELECT. This guarantees `repo`, `artifact_relative_path`, `fix_plan_*` columns exist; `--scope=legacy` then filters correctly via the now-NULL post-migration values.
+2. Open the DB read-only after migration; SELECT rows from `red_team_runs` matching `--scope`, oldest first by `created_at`.
+3. For each row, also SELECT matching `red_team_findings` (join on `run_id`). For `--scope=forward`, also pull `fix_plan_json` and reconstruct the `red_team_fix_plan` event from the validated JSON when present.
+4. Synthesize event envelopes:
+   - `red_team_run` with all v1.2 payload fields. For legacy rows, `fix_plan_status` is set to `"absent_pre_v1_2"` (a separate sentinel from `"skipped_*"` so dashboards distinguish "no v1.2 dispatcher saw this row" from "v1.2 saw it and skipped").
+   - `red_team_finding` per finding row.
+   - `red_team_fix_plan` ONLY for forward-scope rows with non-null `fix_plan_json`. Reconstructs by `json.loads(fix_plan_json)`; the resulting payload matches the §5.2 schema exactly because the dispatcher persisted the same JSON at write time.
+5. `repo`: read from the row's `repo` column. NULL → emit as `"unknown"` (string, not NULL — lifters require a non-null repo). `artifact_relative_path`: read column; NULL → emit as `null` (lifters tolerate null).
+6. Envelope `timestamp` = `red_team_runs.created_at` so historical events land in their original time bucket.
+7. Dedupe keys:
    ```
-   backfill:red-team:run:{stage}:{local_pk}
-   backfill:red-team:finding:{stage}:{local_pk}:{finding_pk}
+   red-team:run:{stage}:{run_id}
+   red-team:finding:{stage}:{run_id}:{round_num}:{finding_id}
+   red-team:fix_plan:{stage}:{run_id}
    ```
-   Distinct from non-backfill keys via the `backfill:` prefix, so a forward emission of the same `run_id` (extremely unlikely — local_pk vs. uuid run_id) cannot collide.
-7. `enqueue()` each event. The `UNIQUE(dedupe_key)` constraint ensures the script is idempotent — re-runs are safe no-ops on already-ingested rows.
+   Identical to forward-emission keys (per §5.4) — `run_id` is globally unique, so backfill and forward emission produce the same dedupe key for the same logical row. The cloud-side UNIQUE on `dedupe_key` is the durable idempotency guarantee.
 
 ### 6.2 Dry-run mode
 
-`--dry-run` prints what would be emitted (counts by event type, sample envelopes, total events) without calling `enqueue`. Useful for verifying the row mapping before committing to the cloud SQL write.
+`--dry-run` prints what would be emitted (counts by event type, sample envelopes, total events, scope filter applied) without calling `enqueue`. Useful for verifying the row mapping and the scope filter before committing to writes.
 
 ### 6.3 Acceptance criterion for backfill
 
-After one successful run on the current local SQLite, the cloud-side count satisfies:
+After one successful run on a known fixture local SQLite, the script reports its own counts:
 
-```sql
-SELECT COUNT(*) FROM events WHERE type = 'red_team_run';   -- = local red_team_runs row count
-SELECT COUNT(*) FROM events WHERE type = 'red_team_finding';-- = local red_team_findings row count
+```
+[backfill] scope=legacy
+[backfill] read 18 runs, 47 findings from /Users/.../forged_review_metrics.db
+[backfill] enqueued 18 red_team_run, 47 red_team_finding, 0 red_team_fix_plan
+[backfill] (re-run would enqueue 0 events of each type)
 ```
 
-(Modulo network failures during drain, which dead-letter rows will eventually retry.)
+**Server-side verification** is scoped by dedupe-key prefix, NOT by global event type counts (resolves rt7 — global counts include forward emissions and other machines):
+
+```sql
+-- Verifies all backfilled rows landed; safe across multi-machine deployments.
+SELECT COUNT(*) FROM events
+ WHERE type = 'red_team_run'
+   AND dedupe_key IN (...the dedupe keys this backfill computed...);
+```
+
+The acceptance test computes the expected dedupe keys deterministically from the local DB, then asserts each appears exactly once in `events`. Re-running the backfill produces the same keys and the same row count (cloud-side dedupe UNIQUE enforces idempotency). A separate test simulates a kill mid-drain and confirms the second run reaches the same end state.
 
 ### 6.4 Out of scope
 
@@ -452,7 +683,8 @@ Additions to `global/config.json`:
       "model": "gpt-5.5-pro",
       "reasoning_effort": "xhigh",
       "timeout_s": 1200,
-      "max_moves": 10,
+      "min_moves": 2,                    // hard error if fewer (§3.3)
+      "max_moves": 6,                    // pruned at 2× then hard error (§3.3)
       "max_input_chars": 200000          // shared with challenge call default
     }
   }
@@ -463,9 +695,36 @@ The `enabled: false` initial default is deliberate — the v1.2 PR ships the sch
 
 ### 7.1 Locked fields (defense-in-depth)
 
-`red_team.fix_plan.enabled`, `model`, `reasoning_effort`, and `max_moves` join the existing locked-fields set in `_RED_TEAM_LOCKED_FIELDS`. Same rationale as v1: a repo-level downgrade ("set effort to medium" / "disable fix-plan") would preserve the appearance of substance review while neutering its rigor. Operational tuning (`timeout_s`, `max_input_chars`) is not locked.
+The v1 `_RED_TEAM_LOCKED_FIELDS` is a `frozenset[str]` of flat top-level keys. v1.2 promotes it to a `frozenset[tuple[str, ...]]` of dotted-path tuples — every existing v1 entry becomes a 1-tuple, plus five new nested entries:
 
-`get_red_team_config()` enforces the lock on nested keys via the same drop-and-warn path. The `red_team_override_rejected` event payload is extended with `path: "red_team.fix_plan.<field>"` so audit logs distinguish v1 lock violations from v1.2 ones.
+```python
+_RED_TEAM_LOCKED_FIELDS: frozenset[tuple[str, ...]] = frozenset({
+    # v1 (now expressed as 1-tuples — semantically unchanged):
+    ("personas",), ("model",), ("enabled",), ("agent",),
+    ("min_severity_to_block",), ("halt_on_unresolved",),
+    ("allow_human_review_halt",), ("stages",),
+    # v1.2 (NEW):
+    ("fix_plan", "enabled"),
+    ("fix_plan", "model"),
+    ("fix_plan", "reasoning_effort"),
+    ("fix_plan", "min_moves"),
+    ("fix_plan", "max_moves"),
+})
+```
+
+`get_red_team_config()` is updated to walk override dicts recursively against the path tuples. For each candidate override `(value, path)`:
+
+```python
+def _drop_locked_overrides(override: dict, base_path: tuple = ()) -> tuple[dict, list[str]]:
+    """Returns (cleaned_override, dropped_paths). Recursive; dropped_paths
+    contains dotted strings for the override_rejected events."""
+```
+
+The `red_team_override_rejected` event payload gains a `path` field (string, dotted: `"fix_plan.enabled"`) so a single locked-field rejection event clearly identifies WHICH locked field was attempted. v1's flat `path` field already shipped — backward-compatible.
+
+Same rationale as v1: a repo-level downgrade ("set effort to medium" / "disable fix-plan") would preserve the appearance of substance review while neutering its rigor. Operational tuning (`timeout_s`, `max_input_chars`) remains unlocked.
+
+**Acceptance tests (resolves rt10).** Unit tests verify each of the 5 new locked paths individually: a repo-level config attempting `red_team.fix_plan.<field> = X` is dropped, a `red_team_override_rejected` event is emitted with `path = "fix_plan.<field>"`, and the resolved config retains the global default for that field. A negative test verifies that `red_team.fix_plan.timeout_s` (unlocked) IS respected at the repo level.
 
 ### 7.2 Backward compatibility
 
@@ -507,16 +766,16 @@ global/prompts/red-team/
 
 | File | Change |
 |---|---|
-| `scripts/stark_red_team.py` | Add `RedTeamFixPlan`, `FixPlanMove` dataclasses; `assemble_fix_plan_prompt`, `parse_fix_plan_output`, `validate_fix_plan`, `run_red_team_fix_plan`. ~+250 lines. No changes to existing `run_red_team`. |
-| `scripts/red_team_design_dispatch.py` | After `rt.run_red_team(...)`, gate on `blocking_count > 0` and call `rt.run_red_team_fix_plan(...)` if eligible. Update `render_sidecar_markdown` to append the `## Proposed Fix Plan` section. Pipe into local audit (`fix_plan_md`, `fix_plan_cost_usd`, `fix_plan_status`) and into `red_team_insights.emit_*`. Update commit message body. ~+150 lines. |
-| `scripts/red_team_plan_dispatch.py` | Same shape as design dispatcher. ~+150 lines. |
-| `scripts/red_team_audit.py` | Idempotent migration in `init_red_team_tables` for the five new columns (`repo`, `artifact_relative_path`, `fix_plan_md`, `fix_plan_cost_usd`, `fix_plan_status`). Update `record_red_team_run` to accept and persist `repo` + `artifact_relative_path`. Add `record_fix_plan(run_id, fix_plan_md, fix_plan_cost_usd, fix_plan_status)` helper as a single-column update. ~+70 lines. |
+| `scripts/stark_red_team.py` | Add `RedTeamFixPlan`, `FixPlanMove`, `RedTeamRunContext` dataclasses; `assemble_fix_plan_prompt`, `serialize_findings_envelope`, `parse_fix_plan_output`, `validate_fix_plan`, `run_red_team_fix_plan`. ~+350 lines. No changes to existing `run_red_team` or `RedTeamResult`. |
+| `scripts/red_team_design_dispatch.py` | Construct `RedTeamRunContext` at start; thread through challenge + fix-plan + audit + insights emission. After `rt.run_red_team(...)`, gate per §3.1 and call `rt.run_red_team_fix_plan(...)` when eligible. Update `render_sidecar_markdown` to append the `## Proposed Fix Plan` section per §4.1. Pipe into local audit (`fix_plan_md`, `fix_plan_json`, `fix_plan_cost_usd`, `fix_plan_status`) and into `red_team_insights.emit_*`. Update commit message body per §4.3. Add `--enable-fix-plan-for-calibration` flag (§11.3). ~+200 lines. |
+| `scripts/red_team_plan_dispatch.py` | Same shape as design dispatcher. ~+200 lines. |
+| `scripts/red_team_audit.py` | Idempotent migration in `init_red_team_tables` for the six new columns (`repo`, `artifact_relative_path`, `fix_plan_status`, `fix_plan_md`, `fix_plan_json`, `fix_plan_cost_usd`). Update `record_red_team_run` to accept `repo`, `artifact_relative_path`, `pr_number`. Add `record_fix_plan(run_id, fix_plan_md, fix_plan_json, fix_plan_cost_usd, fix_plan_status)` helper. ~+90 lines. |
+| `scripts/config_loader.py` | Promote `_RED_TEAM_LOCKED_FIELDS` to `frozenset[tuple[str, ...]]` per §7.1. Implement `_drop_locked_overrides` recursive walker. Default-merge `red_team.fix_plan` (with `enabled: false`). Extend `red_team_override_rejected` event to include dotted `path`. ~+60 lines. |
 | `scripts/event_schema.json` | Add `red_team_run`, `red_team_finding`, `red_team_fix_plan` to the `type` enum. |
 | `scripts/emit_queue.py` | Add same three to `_VALID_TYPES`. |
 | `scripts/test_stark_red_team.py` | Tests for fix-plan flow already covered by `test_red_team_fix_plan.py`; no change unless an existing test makes assumptions invalidated by the new code path. |
 | `scripts/test_red_team_audit.py` | Migration test (old DB → upgraded), `record_fix_plan` round-trip. ~+80 lines. |
-| `global/config.json` | Bump `per_run_budget_usd` from 15.00 to 30.00. Add `red_team.fix_plan` section. |
-| `scripts/config_loader.py` | Default-merge `red_team.fix_plan`. Extend `_RED_TEAM_LOCKED_FIELDS` to include `fix_plan.enabled`, `fix_plan.model`, `fix_plan.reasoning_effort`, `fix_plan.max_moves`. |
+| `global/config.json` | Bump `per_run_budget_usd` from 15.00 to 30.00. Add `red_team.fix_plan` section per §7. |
 | `skill/stark-red-team-design/SKILL.md` | Document the new `## Proposed Fix Plan` section in §Phase 3 rendering. Note insights audit. Bump `revision` field. |
 | `skill/stark-red-team-plan/SKILL.md` | Same. Bump `revision` field. |
 
@@ -531,88 +790,144 @@ No schema migration in stark-insights. No new tables. No new lifted columns on `
 
 ## 10. Failure modes
 
-| Failure | Recovery |
-|---|---|
-| Challenge call errored | Fix call skipped (`fix_plan_status=skipped_challenge_error`); sidecar shows challenge error verbatim. Skill exit code from challenge, unchanged. |
-| Fix call timeout | Sidecar shows `## Proposed Fix Plan — Status: error — fix-plan timeout after Ns`. Skill continues with `clean` exit (challenge findings ship). `red_team.fix_plan.timeout` event emitted. |
-| Fix call returns invalid JSON | Same as timeout — error rendered, no plan applied. `red_team.fix_plan.parse_error` emitted. |
-| Fix call hits `max_input_chars` | Findings JSON is truncated with `[TRUNCATED]` marker (same as v1 truncation rules). The fix-plan call will see partial findings and may produce a plan addressing only what it saw — annotated in sidecar via the `unaddressed_finding_ids` mechanism. |
-| Fix call returns ≥ 11 moves | Excess moves dropped post-parse with `red_team.fix_plan.move_cap_hit` event. Sidecar renders the kept moves. |
-| Fix call invents non-existent finding IDs | Invented IDs are stripped from the move's `addressed_finding_ids`. Empty moves (no remaining IDs and no `sections_touched`) are dropped. |
-| Budget already exhausted by challenge + verification | Fix call skipped (`fix_plan_status=skipped_budget_exhausted`). `halted_budget` is NOT triggered by skipping the fix — the budget halt only fires if the challenge itself exceeded budget (v1 semantics preserved). |
-| `OPENAI_API_KEY` unavailable for the fix call | Same as challenge — `dispatch_responses_api` returns `error="no OpenAI API key available"`; sidecar shows the error in the fix-plan section. The challenge call would have failed identically, so this case is already covered upstream. |
-| stark-insights service down at emit time | Events queue locally in `~/.stark-insights/queue.db`; drained on next service tick. No impact on skill flow. After 5 retries, dead-lettered (existing behavior). |
-| stark-insights schema drift (e.g., new lifters not yet deployed) | Events still ingest with all fields in `payload_extra`, lifted columns null. Dashboards relying on lifted columns degrade gracefully (rows are present, just less efficient to query). Lifters can ship in stark-insights independently. |
-| Backfill script encounters a malformed historical row | Skips the row with a stderr warning; continues with the rest. Counts emitted vs. skipped at end. |
+**Invariant (resolves rt3): the skill's exit code, terminal-printed status, sidecar-banner status, and `red_team_runs.final_status` are derived ENTIRELY from the challenge call's result.** Fix-call success/failure changes only `fix_plan_status` and the `## Proposed Fix Plan` sidecar section. A blocking-findings challenge result with a fix-plan parse failure remains a `halted` exit, not a `clean` one.
+
+**Diagnostic representation (resolves rt5): all fix-plan diagnostic signals are encoded as fields on the `red_team_run` and `red_team_fix_plan` event payloads, not as new event types.** The fields are:
+
+- `red_team_run.payload.fix_plan_status` — the canonical state machine value (one of the documented strings in §5.1).
+- `red_team_run.payload.warnings` — list of structured strings (`"over_budget_after_fix"`, etc.). Always present.
+- `red_team_fix_plan.payload.warnings` — list of structured strings (`"move_cap_hit"`, `"ids_invented"`, `"field_capped"`). Only emitted when `fix_plan_status == "success"` (parse errors land on `red_team_run.fix_plan_status` only).
+- `red_team_fix_plan.payload.error` — string when the call dispatched but parsing/validation failed and the dispatcher chose to still emit a `red_team_fix_plan` for telemetry purposes (rare; controlled by an internal flag).
+
+This avoids registering 4+ ephemeral event types in `_VALID_TYPES` that exist only to encode fix-plan sub-states.
+
+| Failure | Recovery | `fix_plan_status` | Skill exit / final_status |
+|---|---|---|---|
+| Challenge call errored | Fix call skipped; sidecar shows challenge error verbatim. | `skipped_challenge_error` | from challenge (typically `error`) |
+| Fix call timeout | Sidecar shows error message; raw_output preserved in-memory only. | `error` (via fix_plan_json) | from challenge (unchanged) |
+| Fix call returns invalid JSON | Same as timeout. `parse_error` warning recorded. | `error` | from challenge |
+| Fix call returns < `min_moves` or > `max_moves * 2` moves | Hard error; no rendering. | `error` | from challenge |
+| Fix call returns `max_moves < N <= max_moves * 2` moves | Pruned to `max_moves`; `move_cap_hit` warning. Coverage recomputed; orphaned IDs surface. | `success` | from challenge |
+| Fix call invents non-existent finding IDs | Invented IDs dropped per move; `ids_invented` warning. Empty moves dropped; remaining count re-checked against `min_moves`. | `success` (or `error` if drop pushes below `min_moves`) | from challenge |
+| Findings JSON cannot fit in `max_input_chars` AND the unfittable findings include any blocking | Fix call NOT dispatched; `serialize_findings_envelope` reported `fits_safely=False`. | `skipped_input_too_large` | from challenge |
+| Findings JSON truncated but only medium/human-review findings omitted | Fix call dispatched; `RedTeamFixPlan.input_truncated=True` and `input_omitted_finding_ids` populated. | `success` | from challenge |
+| Total cost exceeds budget after fix call returned | Warning `over_budget_after_fix` appended; printed to stderr; persisted. No halt — cost is already incurred. | `success` | from challenge |
+| Budget already exhausted by challenge | Fix call skipped. v1 `halted_budget` semantics on challenge are unchanged (NOT triggered by fix-call skip alone). | `skipped_budget_exhausted` | from challenge |
+| `OPENAI_API_KEY` unavailable for the fix call | `dispatch_responses_api` returns transport error; sidecar shows error in fix-plan section. Challenge would have failed identically — same upstream signal. | `error` | from challenge |
+| stark-insights service down at emit time | Events queue locally in `~/.stark-insights/queue.db`; drained on next service tick. After 5 retries, dead-lettered (existing behavior). | unchanged | unchanged |
+| stark-insights lifter changes not yet deployed | Events ingest with all fields in `payload_extra`, lifted columns NULL. Dashboards degrade gracefully. | unchanged | unchanged |
+| Backfill encounters a malformed historical row | Skip with stderr warning; continue. Reports skipped count at end. Skill flow N/A (offline tool). | N/A | N/A |
+| Backfill killed mid-drain | Re-run resumes via dedupe — cloud-side UNIQUE rejects already-ingested events as no-op success. End state matches a single full run. | N/A | N/A |
 
 ## 11. Cost analysis
 
-### 11.1 Per-run cost projection (gpt-5.5-pro)
+### 11.1 Per-run cost — typical and worst case
 
-Token rates from `global/config.json`: input $25/1M, output $100/1M.
+Token rates from `global/config.json` (gpt-5.5-pro): input $25/1M, output $100/1M. `xhigh` reasoning bills as additional output tokens (Responses API includes them in `usage.output_tokens` per the v1 `dispatch_responses_api` accounting note).
 
-| Call | Input tokens | Output tokens | Reasoning effort | Approx cost |
-|---|---|---|---|---|
-| Challenge (existing) | ~12k | ~3k | high | ~$0.60 |
-| Fix-plan (NEW) | ~14k (artifact + spec + findings) | ~5k (moves + summary + notes) | xhigh | ~$0.85 + xhigh-multiplier |
+**Typical-case projection** (median artifact + median spec + 4 findings):
 
-`xhigh` reasoning is a billable reasoning increment. Empirically (per the v1.1 calibration on `gpt-5.5-pro` at `high`: $1.90/run including verification), `xhigh` costs roughly 1.5–2.5× `high`. Worst case fix-plan call: ~$2.00–$2.50. Combined per-run worst case: challenge ~$2 + fix-plan ~$2.50 = ~$4.50.
+| Call | Input tokens | Output tokens (incl. reasoning) | Cost |
+|---|---|---|---|
+| Challenge (effort=high) | ~12 000 | ~3 000 | ~$0.60 |
+| Fix-plan (effort=xhigh) | ~14 000 | ~6 000 | ~$0.95 |
+| **Typical total** | | | **~$1.55** |
 
-`per_run_budget_usd: 30.00` provides ~6.5× headroom — enough to absorb a stability-verify retry of the challenge plus the fix call, plus margin.
+Stability verification on the challenge (when blocking found) adds another ~$0.60 → ~$2.15 typical.
 
-### 11.2 Calibration step
+**Worst-case ceiling** (resolves rt14):
 
-Before merging v1.2, run the existing calibration fixture (`docs/specs/red-team-fixture-source-spec.md`) with fix-plan enabled, 5 times, and capture:
-- `fix_plan.cost_usd` per run (record p50, p95)
-- `fix_plan.duration_s` per run (p50, p95)
-- `fix_plan.move_count` distribution
-- Coverage rate (mean fraction of blocking findings addressed)
+| Call | `max_input_chars` ceiling | `max_output_tokens` ceiling | Worst-case cost |
+|---|---|---|---|
+| Challenge | 200 000 chars ≈ 50 000 tokens | 32 768 | $25/1M × 50k + $100/1M × 32 768 = **$4.53** |
+| Fix-plan | 200 000 chars ≈ 50 000 tokens | 32 768 | **$4.53** |
 
-Write results to `docs/calibration/2026-05-XX-red-team-v1.2-fix-plan-calibration.md`. Update `per_run_budget_usd` if observed p95 fix-plan cost is ≥ $4 (suggests xhigh is ~3× high not ~2×, and we need more budget headroom).
+xhigh hidden reasoning is bounded by `max_output_tokens` since reasoning tokens are billed under that header. A pathological run that hits both input and output ceilings on both calls costs **$9.06** (no stability verify) or **$13.59** (with one verify). The configured `per_run_budget_usd: 30.00` provides ~2.2× headroom over this ceiling — defensible for p99.
 
-This is a soft pre-merge check, not a hard gate — the v1 calibration ritual was a hard gate because it set the stability threshold from raw data; the v1.2 fix-plan budget is sized conservatively from priors.
+**The pre-call gate (§3.1) cannot enforce this worst case before the fix call returns** — that's the explicit design choice in §3.6. The post-call `over_budget_after_fix` warning surfaces violations for calibration follow-up, not runtime halt.
+
+### 11.2 Calibration
+
+Two independent calibration steps:
+
+1. **Pre-merge bench-mark** (one-shot, before merging the v1.2 PR). Run the v1.2 dispatcher with `fix_plan.enabled=true` (overridden via the test-only mechanism in §11.3) on the fixture spec set, 10 runs each over 3 fixtures of varying size (small ~200 lines, medium ~600 lines, large ~1500 lines). Record p50, p95, and max for: `fix_plan.cost_usd`, `fix_plan.duration_s`, `fix_plan.input_tokens`, `fix_plan.output_tokens`, `fix_plan.move_count`, `addressed_finding_ids` coverage rate. Write to `docs/calibration/2026-05-XX-red-team-v1.2-fix-plan-calibration.md`. Bump `per_run_budget_usd` if `current_budget < 1.5 × observed_p95_total_cost` (matches the §12.2 acceptance threshold). On the current $30 budget, this triggers when p95 total cost exceeds $20.
+2. **Post-rollout observation** (continuous, after enabling). Operate `red_team_run.warnings` as a calibration signal — repeated `over_budget_after_fix` (>5% of runs) prompts a budget bump PR; `move_cap_hit` rate >20% prompts raising `max_moves` from 6.
+
+This is a hard pre-merge gate (resolves rt15): the calibration doc must exist before flipping `fix_plan.enabled` to true. Without calibration, the budget and the move count caps are guesses.
+
+### 11.3 Test-only enable mechanism
+
+Because `fix_plan.enabled` is a locked field (§7.1) and the v1.2 PR ships with `enabled: false`, the calibration bench-mark must use a sanctioned override. Two paths, both globally-scoped (NOT repo-overridable):
+
+1. **Edit `global/config.json` to `enabled: true` for the calibration run, then revert before commit.** The lock prevents repo-level override; it does not prevent global-level edits — the calibration is itself a global decision.
+2. **CLI flag `--enable-fix-plan-for-calibration`** on the dispatchers. Bypasses the `cfg["fix_plan"]["enabled"]` check at the call site. Emits a one-time `red_team.fix_plan.calibration_override` warning to stderr so the operator knows the bypass is active. Only available via the `red_team_<stage>_dispatch.py` CLI; not exposed through the skill's argument parsing.
+
+Path 2 is preferred for the calibration ritual because it's reversible without a config edit. The flag exists in v1.2 even after the rollout flips `enabled: true` — useful for debugging future fix-plan regressions.
 
 ## 12. Acceptance criteria
 
-### 12.1 Stark-skills
+Acceptance is split between defaults-as-shipped (12.1) and behavior-when-enabled (12.2) to resolve rt15. The disabled-default tests run in CI on every PR; the enabled-fixture tests run during calibration (§11.2) and as part of the post-flip-enable PR.
 
-- [ ] `scripts/stark_red_team.py` exposes `run_red_team_fix_plan`, `RedTeamFixPlan`, `FixPlanMove`. Existing `run_red_team` and `RedTeamResult` are unchanged in shape.
+### 12.1 Disabled-default (ships with v1.2 PR; CI-enforced)
+
+- [ ] `scripts/stark_red_team.py` exposes `run_red_team_fix_plan`, `RedTeamFixPlan`, `FixPlanMove`, `RedTeamRunContext`, `serialize_findings_envelope`, `validate_fix_plan`. Existing `run_red_team` and `RedTeamResult` are unchanged in shape.
 - [ ] `global/prompts/red-team/fix-plan.md` exists; loaded by `assemble_fix_plan_prompt`.
-- [ ] `red_team_design_dispatch.py` and `red_team_plan_dispatch.py` invoke `run_red_team_fix_plan` only when `blocking_count > 0` AND budget allows AND `fix_plan.enabled`. Skip cases set the documented `fix_plan_status` value.
-- [ ] Sidecar renders the `## Proposed Fix Plan` section for success, error, and skipped cases per §4.1.
-- [ ] PR comment includes the same fix-plan content; truncates `notes` then `rationale` only when over `gh`'s 65 KB cap.
-- [ ] `red_team_audit.py:init_red_team_tables` adds `repo`, `artifact_relative_path`, `fix_plan_md`, `fix_plan_cost_usd`, `fix_plan_status` to existing DBs idempotently. Migration is a no-op on a DB that already has them.
-- [ ] Both dispatchers detect `repo` (via `git rev-parse --show-toplevel` then `gh repo view --json nameWithOwner`) and compute `artifact_relative_path` (artifact path relativized to the repo root) at dispatch time, persisting both via `record_red_team_run` and including them in the emitted `red_team_run` event payload.
-- [ ] `red_team_insights.py` emits `red_team_run`, `red_team_finding`, and (when present) `red_team_fix_plan` events. Emission failures are caught and logged; never break the skill.
-- [ ] Dedupe keys are stable across re-runs of the same `run_id`.
-- [ ] `red_team_backfill.py --dry-run` reports correct counts on a populated local SQLite. Live run is idempotent (re-running emits 0 new events).
-- [ ] `event_schema.json` and `emit_queue._VALID_TYPES` include the three new types.
-- [ ] `global/config.json` has `per_run_budget_usd: 30.00` and the `fix_plan` section.
-- [ ] `_RED_TEAM_LOCKED_FIELDS` covers `fix_plan.{enabled,model,reasoning_effort,max_moves}`. A repo-level override of any locked field is rejected with a `red_team_override_rejected` event whose `path` field names the locked nested key.
-- [ ] Both skill `SKILL.md` files document the fix-plan section and bump `revision`.
-- [ ] Unit tests for fix-plan parsing, validation, gating, sidecar rendering, dedupe-key stability, audit migration, backfill idempotency.
+- [ ] `red_team_design_dispatch.py` and `red_team_plan_dispatch.py` invoke `run_red_team_fix_plan` only when ALL of `cfg.fix_plan.enabled`, `challenge.error is None`, `challenge.blocking_count > 0`, `challenge.cost_usd < per_run_budget_usd`, `fits_safely`. Skip cases set the documented `fix_plan_status` value.
+- [ ] **Default config ships with `fix_plan.enabled: false`.** When loaded with the default config, both dispatchers skip the fix call with `fix_plan_status=skipped_disabled` regardless of challenge findings. Sidecar renders the skipped section. No `red_team_fix_plan` event emitted.
+- [ ] Sidecar renders the `## Proposed Fix Plan` section for success, error, and ALL skip statuses per §4.1.
+- [ ] PR comment renders identically; truncation honours the §4.1 12 KB internal cap and the §4.2 65 KB GitHub cap.
+- [ ] `red_team_audit.py:init_red_team_tables` is idempotent on:
+  - a fresh DB
+  - a v1.0 (pre-v1.2) DB
+  - a v1.1 DB (after the v1.1 followups landed)
+  - a v1.2 DB (no-op)
+  - a partially migrated DB (some columns added, others not)
+  Each test asserts the final schema matches §5.1 exactly.
+- [ ] Both dispatchers construct a `RedTeamRunContext`, populate `repo` (via `git rev-parse --show-toplevel` then `gh repo view --json nameWithOwner`), `artifact_relative_path` (relative to repo root), `pr_number` (when in a feature branch), and pass it to all downstream calls. Integration test asserts byte-identical context across challenge dispatch, fix-plan dispatch, local audit row, and all three insights events.
+- [ ] `red_team_insights.py` emits `red_team_run`, `red_team_finding` (one per finding), and `red_team_fix_plan` (only when `fix_plan_status == "success"`) events. Emission failures are caught and logged; never break the skill. Test asserts a forced `enqueue` exception leaves `final_status` and exit code untouched.
+- [ ] Dedupe keys match §5.4 exactly. Re-running the same run produces the same keys.
+- [ ] `red_team_backfill.py` calls `init_red_team_tables` before SELECT. `--scope=legacy` filters on `fix_plan_status IS NULL`. `--scope=forward` reads `fix_plan_json` and reconstructs `red_team_fix_plan` events. `--dry-run` reports the same counts the live run would emit.
+- [ ] Backfill idempotency test: kill mid-drain, re-run, assert cloud `events` table has the expected dedupe-key set with each appearing exactly once.
+- [ ] `event_schema.json` and `emit_queue._VALID_TYPES` include the three new types. No diagnostic event types added.
+- [ ] `global/config.json` has `per_run_budget_usd: 30.00`, the `fix_plan` section with `enabled: false`, `min_moves: 2`, `max_moves: 6`, and `reasoning_effort: "xhigh"`.
+- [ ] `_RED_TEAM_LOCKED_FIELDS` is now a `frozenset[tuple[str, ...]]`; covers all v1 keys as 1-tuples plus the 5 v1.2 nested paths from §7.1. Per-locked-field unit tests verify drop-and-emit-event behavior. Negative test verifies `red_team.fix_plan.timeout_s` IS respected at repo level.
+- [ ] Truncation safety: `serialize_findings_envelope` test fixture with 50 findings totaling 300 KB outputs a parseable JSON envelope with `truncated: true` and `omitted_finding_ids` populated. No partial JSON. `fits_safely` is False when blocking findings are omitted.
+- [ ] Move-count contract: tests for 0, 1, 2, 6, 7, 12, 13 moves emitted by the model. Each lands in the documented branch (hard error / valid / pruned / hard error).
+- [ ] Untrusted-content rendering: tests with code fences, raw HTML, 4+ backticks, very-long titles, very-long notes, non-`rt\d+` finding IDs in `addressed_finding_ids` — verify no markdown breakage and per-field caps honoured.
+- [ ] Both skill `SKILL.md` files document the fix-plan section, the disabled default, and bump `revision`.
 - [ ] `skill-creator:skill-creator` structural eval passes on both updated skills.
 
-### 12.2 Stark-insights
+### 12.2 Enabled-fixture (calibration + post-flip PR)
+
+These run when `fix_plan.enabled` is set to `true` (via §11.3 mechanism in calibration; via the post-flip PR's config change in production).
+
+- [ ] One end-to-end run of `/stark-red-team-design` against `docs/specs/red-team-fixture-source-spec.md` with fix-plan enabled:
+  - Challenge produces ≥ 1 blocking finding (asserted on the fixture).
+  - Sidecar contains a fully-rendered `## Proposed Fix Plan` section with `min_moves..max_moves` moves.
+  - Local SQLite has a row in `red_team_runs` with `fix_plan_status='success'`, non-null `fix_plan_md`, non-null `fix_plan_json`, and `fix_plan_cost_usd > 0`.
+  - `~/.stark-insights/queue.db` has 1 `red_team_run` event with `fix_plan_status='success'`, ≥1 `red_team_finding` event, and 1 `red_team_fix_plan` event with `move_count` matching the sidecar.
+  - After service drain, the cloud `events` table has the matching rows; lifted columns (`severity`, `agent_name`, `domain`, `score_value`, `passed`, `repo`, `pr_number`) populated; `payload_extra` contains the unlifted fields.
+- [ ] Calibration doc `docs/calibration/2026-05-XX-red-team-v1.2-fix-plan-calibration.md` exists with p50, p95, max for cost, duration, move_count across ≥ 30 runs (10 per fixture × 3 fixtures). Budget is set to ≥ 1.5× observed p95 total cost.
+- [ ] One run with the test-only `--enable-fix-plan-for-calibration` flag emits a `red_team.fix_plan.calibration_override` stderr warning and otherwise behaves as if `enabled: true`.
+
+### 12.3 Stark-insights
 
 - [ ] `lifting.py` has lifters for the three new event types per §5.3.
-- [ ] Lifter unit tests cover all three types: lifted column extraction, payload_extra preservation, missing-key tolerance.
-- [ ] Service deploys without schema migration. Events of the new types written before the deploy ingest with `payload_extra` only — verified in test.
+- [ ] Lifter unit tests cover all three types: lifted column extraction, payload_extra preservation, missing-key tolerance, NULL-payload-value handling (`worst_severity: null` → NULL severity column, not `"None"` string).
+- [ ] Pre-deployment lifter behavior: events of the new types written before the lifter PR deploys are ingested with `payload_extra` only and lifted columns NULL — verified in test.
 
-### 12.3 Cross-repo verification
+### 12.4 Cross-repo verification
 
-- [ ] One end-to-end smoke run of `/stark-red-team-design` against `docs/specs/red-team-fixture-source-spec.md`:
-  - Sidecar contains a "Proposed Fix Plan" section.
-  - Local SQLite has a row in `red_team_runs` with non-null `fix_plan_md`.
-  - `~/.stark-insights/queue.db` has at least 3 enqueued events: 1 `red_team_run`, ≥1 `red_team_finding`, 1 `red_team_fix_plan`.
-  - After service drain, `events` table in stark-insights has the matching rows with lifted columns populated.
-- [ ] One end-to-end smoke run of `red_team_backfill.py` on the current local SQLite — counts match per §6.3.
+- [ ] Backfill end-to-end smoke run with `--scope=legacy` on the current local SQLite — counts match the §6.3 dedupe-key-prefixed query.
+- [ ] Forward-emission resilience: kill stark-insights service, run dispatcher (challenge + fix-plan, with calibration override), restart service, observe events drain successfully on the next 1-min tick.
 
 ## 13. Rollout
 
-1. Merge v1.2 changes to stark-skills with `fix_plan.enabled: false` initially.
-2. Deploy stark-insights lifter changes; verify a manually-emitted event lands with lifted columns.
-3. Run calibration ritual (§11.2). Adjust budget if needed.
-4. Flip `fix_plan.enabled: true` in `global/config.json` and ship.
-5. Run `red_team_backfill.py` once locally; verify cloud counts.
-6. Observe for one week: fix-call duration p95, cost p95, coverage rate, error rate. Tune `timeout_s` and budget if signal disagrees with prior.
+The order below resolves rt15: calibration uses the §11.3 test-only override, NOT a flip-enable-then-flip-back dance, so `fix_plan.enabled` only changes once in production config history.
+
+1. **Pre-merge calibration.** On a calibration branch, run the §11.2 bench-mark using `--enable-fix-plan-for-calibration` (no config flip). Write the calibration doc. Adjust `per_run_budget_usd` and any tuning parameters in the v1.2 PR if the bench-mark says so.
+2. **Merge v1.2 to stark-skills** with `fix_plan.enabled: false`, calibration doc included. CI runs the §12.1 disabled-default tests.
+3. **Deploy stark-insights lifter changes** as a separate PR. Smoke-test by emitting a hand-crafted event of each new type and querying the cloud `events` table.
+4. **Run `red_team_backfill.py --scope=legacy`** once on the producer's machine; verify the §12.3 dedupe-key-prefixed query matches.
+5. **Post-flip PR**: set `fix_plan.enabled: true` in `global/config.json`. CI runs §12.2 enabled-fixture tests against the fixture spec set. Merge.
+6. **Observe** for one week: monitor `red_team_run.warnings` (`over_budget_after_fix` rate), `red_team_fix_plan.warnings` (`move_cap_hit` rate), per-fixture coverage rate, fix-call error rate. Open follow-up PRs for budget/move-cap tuning if observed signal exceeds the §11.2 thresholds.
