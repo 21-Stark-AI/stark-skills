@@ -111,6 +111,61 @@ def test_isolate_workdir_cleans_up_even_on_exception():
     assert not captured[0].exists()
 
 
+def test_scrub_env_does_not_pass_through_home():
+    """PR-#430 round-3 review fix #7: HOME used to ride along so codex
+    could read ``~/.codex``, but that also exposed ``~/.ssh``, ``~/.aws``,
+    and other dotfiles to a prompt-injected codex run. The synthetic-home
+    pairing now provides ``HOME`` separately, so ``scrub_env`` must drop
+    the inherited HOME unconditionally."""
+    out = sb.scrub_env({"PATH": "/usr/bin", "HOME": "/Users/operator"})
+    assert "HOME" not in out
+
+
+def test_synthetic_home_exposes_only_codex_subdir(tmp_path):
+    """The synthetic HOME contains a symlink to ``~/.codex`` and nothing
+    else from the operator's real home."""
+    # Build a fake real-home with the dotfiles a real one would have.
+    real = tmp_path / "real-home"
+    (real / ".codex").mkdir(parents=True)
+    (real / ".codex" / "auth.json").write_text("token-stub")
+    (real / ".ssh").mkdir()
+    (real / ".ssh" / "id_rsa").write_text("PRIVATE-KEY-MATERIAL")
+    (real / ".aws").mkdir()
+    (real / ".aws" / "credentials").write_text("aws-secret")
+
+    with sb.synthetic_home(real_home=real) as fake:
+        # Only .codex is reachable.
+        assert (fake / ".codex").exists()
+        assert (fake / ".codex" / "auth.json").read_text() == "token-stub"
+        # Real home's other dotfiles are NOT exposed.
+        assert not (fake / ".ssh").exists()
+        assert not (fake / ".aws").exists()
+
+
+def test_synthetic_home_is_cleaned_up_on_exit(tmp_path):
+    real = tmp_path / "real-home"
+    (real / ".codex").mkdir(parents=True)
+    (real / ".codex" / "auth.json").write_text("x")
+    captured: list[Path] = []
+    with sb.synthetic_home(real_home=real) as fake:
+        captured.append(fake)
+        assert fake.exists()
+    assert not captured[0].exists()
+    # Real home untouched.
+    assert (real / ".codex" / "auth.json").exists()
+
+
+def test_synthetic_home_works_when_codex_dir_missing(tmp_path):
+    """If ``~/.codex`` doesn't exist (codex not configured), the synthetic
+    home is still a fresh empty dir — codex will fail with a clear auth
+    error rather than silently inheriting the real home."""
+    real = tmp_path / "real-home"
+    real.mkdir()
+    with sb.synthetic_home(real_home=real) as fake:
+        assert fake.is_dir()
+        assert list(fake.iterdir()) == []
+
+
 def test_wrap_command_is_passthrough_today():
     """Sanity: wrap_command exists as a feature-flag hook for future
     bubblewrap/sandbox-exec wrappers; today it returns the input

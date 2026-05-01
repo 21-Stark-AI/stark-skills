@@ -1087,11 +1087,22 @@ def dispatch_codex(
     ]
 
     if sandbox:
-        from red_team_sandbox import isolate_workdir, scrub_env, wrap_command
+        from red_team_sandbox import (
+            isolate_workdir,
+            scrub_env,
+            synthetic_home,
+            wrap_command,
+        )
 
         scrubbed_env = scrub_env(env)
         wrapped_cmd = wrap_command(cmd)
-        with isolate_workdir() as tmp:
+        # Pair the env scrub with a synthetic ``$HOME`` containing only a
+        # symlink to ``~/.codex`` so codex auth still works while
+        # everything else under the operator's real home stays unreachable
+        # from the attacker-influenced child (PR-#430 round-3 review fix
+        # #7).
+        with isolate_workdir() as tmp, synthetic_home() as fake_home:
+            scrubbed_env["HOME"] = str(fake_home)
             try:
                 proc = subprocess.run(
                     wrapped_cmd,

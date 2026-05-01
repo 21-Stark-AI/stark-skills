@@ -47,27 +47,39 @@ from pathlib import Path
 
 # Minimum environment the codex CLI subprocess needs to reach the model.
 #
-# Scope is deliberately narrow: PATH (find the codex binary), HOME (codex
-# CLI auth state lives under ``$HOME/.codex``), locale, and TMPDIR. Model
-# credentials (``OPENAI_API_KEY``, ``CHATGPT_AUTH_TOKEN``, etc.) are NOT in
-# the allowlist — the parent orchestrator runs Responses-API calls
-# in-process, so the codex child is the attacker-influenced surface and
-# must not see those secrets even if a tool-execution shim reads its env.
+# Scope is deliberately narrow: PATH (find the codex binary), locale, and
+# TMPDIR. Model credentials (``OPENAI_API_KEY``, ``CHATGPT_AUTH_TOKEN``,
+# etc.) are NOT in the allowlist — the parent orchestrator runs
+# Responses-API calls in-process, so the codex child is the
+# attacker-influenced surface and must not see those secrets even if a
+# tool-execution shim reads its env.
+#
+# HOME is intentionally absent: codex CLI in ChatGPT-auth mode reads its
+# credential from ``$HOME/.codex``, but pointing HOME at the operator's
+# real home dir also lets a prompt-injected codex run read ``~/.ssh``,
+# ``~/.aws``, and other dotfiles (PR-#430 round-3 review finding #7). The
+# caller is expected to pair ``scrub_env`` with :func:`synthetic_home` so
+# the codex child sees a temp HOME containing only a symlink to the real
+# ``~/.codex`` directory. The pairing happens in
+# :func:`stark_red_team.dispatch_codex`.
 #
 # This is the FU-rt1 fix from the PR-#430 review (finding #6): a "sandbox"
 # that still hands OpenAI / ChatGPT credentials to the attacker-influenced
-# codex child defeats the whole point of sandboxing it. Codex CLI in
-# ChatGPT-auth mode reads its credential from ``$HOME/.codex``; that path
-# stays reachable via ``HOME`` so legitimate codex auth still works.
+# codex child defeats the whole point of sandboxing it.
 _DEFAULT_ENV_ALLOWLIST: frozenset[str] = frozenset({
     "PATH",
-    "HOME",
     "USER",
     "SHELL",
     "LANG",
     "LC_ALL",
     "TMPDIR",
 })
+
+# Subdirectory of the real HOME that we expose to the codex child via the
+# synthetic HOME symlink. Codex's ChatGPT auth state lives here. Any other
+# subdirectory of HOME (``.ssh``, ``.aws``, ``.kube``, repo working
+# trees, …) stays out of reach.
+_SYNTHETIC_HOME_PROJECT_PATHS: tuple[str, ...] = (".codex",)
 
 
 def scrub_env(
@@ -81,6 +93,11 @@ def scrub_env(
     ``allow_extra``). The caller passes the input mapping (typically
     ``os.environ``) explicitly so tests can inject deterministic state
     without touching the process env.
+
+    HOME is intentionally NOT in the allowlist; pair this with
+    :func:`synthetic_home` and inject the resulting path as ``HOME``
+    explicitly so the codex child sees a sandboxed home rather than the
+    operator's real one.
     """
     src = base if base is not None else dict(os.environ)
     allow = _DEFAULT_ENV_ALLOWLIST | (allow_extra or frozenset())
@@ -103,6 +120,53 @@ def isolate_workdir(prefix: str = "stark-rt-") -> Generator[Path, None, None]:
         # Best-effort cleanup: if codex left a write somewhere, ignore the
         # error. The temp dir is process-scoped so a leak on shutdown is
         # at worst a stale directory in $TMPDIR.
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def synthetic_home(
+    real_home: str | os.PathLike[str] | None = None,
+    *,
+    project_paths: tuple[str, ...] = _SYNTHETIC_HOME_PROJECT_PATHS,
+) -> Generator[Path, None, None]:
+    """Yield a temp directory standing in for ``$HOME`` for the codex child.
+
+    The synthetic home contains a symlink to each ``project_paths`` entry
+    that exists under the real home (default: just ``.codex`` so codex
+    CLI's ChatGPT auth state stays reachable). Everything else under the
+    operator's real home — ``.ssh``, ``.aws``, ``.kube``, project working
+    trees, ``.zsh_history``, IDE caches — is unreachable from inside the
+    sandbox even with a prompt-injected ``cat`` or shell-out attempt.
+
+    PR-#430 round-3 review fix #7: previously ``scrub_env`` kept the real
+    HOME in its allowlist, which scrubbed env-vars but left the entire
+    home directory readable. The synthetic-home pairing closes that
+    boundary leak while preserving codex CLI authentication.
+    """
+    home = Path(real_home) if real_home is not None else Path(os.path.expanduser("~"))
+    tmp = Path(tempfile.mkdtemp(prefix="stark-rt-home-"))
+    try:
+        for sub in project_paths:
+            target = home / sub
+            if not target.exists():
+                continue
+            link = tmp / sub
+            try:
+                link.symlink_to(target.resolve(), target_is_directory=target.is_dir())
+            except OSError:
+                # Symlinks unsupported on this filesystem (rare, e.g.
+                # FAT32 TMPDIR). Fall back to a shallow copy so codex
+                # still reaches its auth dir; the temp HOME still hides
+                # everything else.
+                if target.is_dir():
+                    shutil.copytree(target, link, symlinks=True)
+                else:
+                    shutil.copy2(target, link)
+        yield tmp
+    finally:
+        # ``rmtree`` does not follow symlinks by default, so the real
+        # ~/.codex tree stays untouched even if cleanup races. The temp
+        # dir itself is process-scoped under TMPDIR.
         shutil.rmtree(tmp, ignore_errors=True)
 
 

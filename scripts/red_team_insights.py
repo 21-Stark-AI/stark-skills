@@ -69,6 +69,8 @@ def build_run_envelope(
     fix_plan_status: str | None,
     warnings: list[str] | None,
     started_at_iso: str,
+    round_outcomes: list[dict[str, Any]] | None = None,
+    terminal_transition: str | None = None,
 ) -> dict[str, Any]:
     repo_label = repo or "unknown"
     payload = {
@@ -93,6 +95,15 @@ def build_run_envelope(
         "pr_number": pr_number,
         "fix_plan_status": fix_plan_status,
         "warnings": list(warnings or []),
+        # FU-rt4 — named transition log. Each entry is one round outcome;
+        # ``terminal_transition`` is the labelled exit edge (terminate.clean,
+        # terminate.cost_budget_exhausted, …). PR-#430 round-3 review fix
+        # #13: the loop used to compute these, then immediately ``del``ete
+        # them, so the audit / JSON / metrics surface couldn't tell why a
+        # run halted vs. exited cleanly. Surfacing them here keeps the
+        # state-machine semantics observable downstream.
+        "round_outcomes": list(round_outcomes or []),
+        "terminal_transition": terminal_transition,
     }
     return _envelope(
         "red_team_run",
@@ -255,6 +266,8 @@ def emit_run(
     model: str,
     fix_plan_status: str | None,
     run_warnings: list[str] | None,
+    round_outcomes: list[dict[str, Any]] | None = None,
+    terminal_transition: str | None = None,
 ) -> None:
     """Best-effort enqueue of one ``red_team_run`` event.
 
@@ -262,6 +275,11 @@ def emit_run(
     after any ``--model`` override), NOT ``ctx.cfg_red_team['model']``. The
     audit row, sidecar, JSON output, and this event must agree on the
     model that actually ran.
+
+    ``round_outcomes`` and ``terminal_transition`` carry the FU-rt4 named
+    transition log up from the dispatcher's iterative loop so consumers
+    can tell, after the fact, whether a run exited via ``terminate.clean``
+    or ``terminate.cost_budget_exhausted``.
     """
     try:
         envelope = build_run_envelope(
@@ -287,6 +305,8 @@ def emit_run(
             fix_plan_status=fix_plan_status,
             warnings=run_warnings,
             started_at_iso=ctx.started_at_iso,
+            round_outcomes=round_outcomes,
+            terminal_transition=terminal_transition,
         )
         _enqueue(envelope, "red_team_run")
     except Exception as exc:  # pragma: no cover - defensive fail-open wrapper

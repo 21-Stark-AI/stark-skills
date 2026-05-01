@@ -15,12 +15,53 @@ the operator may also see in a sidecar / PR comment.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 
-from emit_queue import _redact
+from emit_queue import _redact as _redact_secrets
 
 _DEFAULT_EXCERPT_MAX_CHARS = 240
 _TRUNCATION_MARKER = "…"
+
+# FU-rt6 explicitly requires "redacting known secrets and PII" before
+# audit insert. ``emit_queue._redact`` covers token-shaped secrets
+# (sk-*, ghp_*, base64). Red-team finding text additionally tends to
+# quote requirements / PR diffs / customer data, so this module layers
+# PII patterns on top before the secret pass.
+#
+# PR-#430 round-3 review fix #15: previously audit text went through
+# secret redaction only, so a finding citing "alice@example.com had
+# trouble logging in (192.168.1.42)" persisted that prose verbatim.
+_PII_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Email: local@domain.tld. Conservative — requires a TLD of 2+ chars.
+    (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), "[EMAIL-REDACTED]"),
+    # IPv4: four octets joined by dots. Redact even private ranges so
+    # internal topology doesn't bleed out.
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[IP-REDACTED]"),
+    # US-style SSN: NNN-NN-NNNN.
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN-REDACTED]"),
+    # Credit-card-shaped: 16 digits with optional spaces or dashes between
+    # 4-digit groups. Pattern-only, not Luhn-validated, because Luhn would
+    # mask a small fraction of legitimate non-card numbers and we'd rather
+    # over-redact than leak.
+    (re.compile(r"\b\d{4}[ \-]?\d{4}[ \-]?\d{4}[ \-]?\d{4}\b"), "[CC-REDACTED]"),
+    # US-style phone: NNN-NNN-NNNN, NNN.NNN.NNNN, (NNN) NNN-NNNN.
+    (re.compile(r"\b(?:\(?\d{3}\)?[ \-.]?)\d{3}[ \-.]?\d{4}\b"), "[PHONE-REDACTED]"),
+)
+
+
+def _redact(text: str) -> str:
+    """Redact secrets AND PII before audit / metrics persistence.
+
+    PII redaction runs first so an email like ``alice@evinced.com`` is
+    replaced with ``[EMAIL-REDACTED]`` instead of falling through the
+    secret patterns. The secret pass then catches anything that looks
+    like an API key, GitHub token, or base64-encoded blob.
+    """
+    out = text
+    for pattern, replacement in _PII_PATTERNS:
+        out = pattern.sub(replacement, out)
+    return _redact_secrets(out)
 
 
 @dataclass(frozen=True)

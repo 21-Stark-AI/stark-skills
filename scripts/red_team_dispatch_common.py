@@ -399,6 +399,33 @@ def _escape_inline(text: str) -> str:
     return out.replace("\n", " ").strip()
 
 
+def _escape_block(text: str) -> str:
+    """Escape Markdown specials in untrusted multi-line prose.
+
+    Same escapement as :func:`_escape_inline` but preserves newlines and
+    paragraph structure so a synthesis paragraph still reads as a
+    paragraph. Used for the model's free-text fields embedded in the bot
+    PR comment so attacker-influenced artifact / spec text cannot inject
+    misleading links, images, raw HTML, or fake review markup into a
+    comment that reads as Stark's attestation.
+
+    PR-#430 round-3 review fix #8 / round-4 finding #8: the synthesis
+    block was previously emitted raw, so a crafted artifact could embed
+    ``[Approved](http://attacker)`` or ``<img onerror=...>`` and the bot
+    comment would render them with the GitHub-bot trust badge in front.
+    """
+    if not text:
+        return ""
+    out = text.replace("\\", "\\\\")
+    for ch in _INLINE_MARKDOWN_SPECIALS:
+        if ch == "\\":
+            continue
+        out = out.replace(ch, "\\" + ch)
+    # Preserve paragraph breaks but trim leading/trailing whitespace so
+    # the surrounding markdown spacing stays tidy.
+    return out.strip()
+
+
 def _needs_fence(text: str) -> bool:
     """Detect markdown content that must be fenced rather than inlined.
 
@@ -885,7 +912,11 @@ def render_pr_comment_body(
             lines.extend(["### Raw output excerpt", "", "```", excerpt[:2000], "```", ""])
     else:
         if result.synthesis:
-            lines.extend(["## Synthesis", "", result.synthesis.strip(), ""])
+            # Synthesis is model output over attacker-influenceable artifact /
+            # spec / PR-diff text. Escape Markdown specials so a crafted
+            # input can't inject a fake "approved" link, an HTML image, or
+            # other markup into a comment posted by a trusted bot account.
+            lines.extend(["## Synthesis", "", _escape_block(result.synthesis), ""])
         lines.extend(_highlights_section(findings, run_id, stage, result.round_num))
         lines.extend(_findings_collapsible_by_persona(findings, run_id, stage, result.round_num))
 
@@ -1103,6 +1134,7 @@ def _run_iterative(
             "terminate.degraded",
             "terminate.flicker_attempts_exhausted",
             "terminate.budget_exhausted_flicker",
+            "terminate.cost_budget_exhausted",
         }:
             result_error = (
                 f"red-team gate could not confirm stability: state machine "
@@ -1205,6 +1237,27 @@ def _run_iterative(
             sm.mark_terminated(state, transition or "terminate.unknown")
             return _finalize(primary, terminal_transition=transition), state.history
 
+        # PR-#430 round-3 review fix #16: cost-budget guard around any
+        # decision to do another LLM call. Before this guard, flicker
+        # reruns and remediation rounds could keep firing primary +
+        # verification calls until ``flicker_attempts`` or ``max_rounds``
+        # ran out, even if the run had already blown its
+        # ``per_run_budget_usd``. A ``per_run_budget_usd`` of 0 disables
+        # the gate (back-compat for callers that haven't configured a
+        # budget yet); any positive value enforces it. We terminate via
+        # ``terminate.cost_budget_exhausted`` so ``_finalize`` surfaces
+        # the gap and the operator sees that a stability decision wasn't
+        # reached for budget reasons rather than for stability reasons.
+        if (
+            ctx.per_run_budget_usd > 0
+            and total_cost_usd >= ctx.per_run_budget_usd
+        ):
+            sm.mark_terminated(state, "terminate.cost_budget_exhausted")
+            return (
+                _finalize(primary, terminal_transition="terminate.cost_budget_exhausted"),
+                state.history,
+            )
+
         # Flicker without budget exhaustion: re-run the same round_num so
         # rounds_used accounting stays consistent with the state machine.
         if outcome == sm.RoundOutcome.flicker:
@@ -1271,7 +1324,27 @@ def execute_dispatch(
         cwd=cwd,
         telemetry=telemetry,
     )
-    del history  # FU-rt4 transition log; insights events already capture per-round outcomes.
+    # FU-rt4 transition log — passed to ``emit_run`` below so the durable
+    # ``red_team_run`` event carries every round outcome and the labelled
+    # exit edge. PR-#430 round-3 review fix #13: previously this was
+    # ``del``eted on the next line, so audit / JSON / metrics consumers
+    # had no way to see why a run halted vs. exited cleanly.
+    round_outcomes_payload = [
+        {
+            "round_num": rec.round_num,
+            "outcome": rec.outcome.value if hasattr(rec.outcome, "value") else str(rec.outcome),
+            "transition": rec.transition,
+            "primary_blocking_count": rec.primary.blocking_count if rec.primary else 0,
+            "primary_human_review_count": rec.primary.human_review_count if rec.primary else 0,
+            "verification_blocking_count": (
+                rec.verification.blocking_count if rec.verification else None
+            ),
+        }
+        for rec in history
+    ]
+    terminal_transition_value = (
+        history[-1].transition if history and history[-1].transition else None
+    )
 
     # FU-rt8 — Demote human-review halts when the operator has already
     # accepted the same concern. Accepts persist in the audit DB so the
@@ -1362,6 +1435,8 @@ def execute_dispatch(
                 model=model,
                 fix_plan_status=fix_plan_status,
                 run_warnings=run_warnings,
+                round_outcomes=round_outcomes_payload,
+                terminal_transition=terminal_transition_value,
             )
         except Exception as exc:
             print(f"  [!] Failed to persist or emit fix-plan state: {exc}", file=sys.stderr)
@@ -1418,6 +1493,11 @@ def execute_dispatch(
         "repo": ctx.repo,
         "artifact_relative_path": ctx.artifact_relative_path,
         "pr_number": ctx.pr_number,
+        # FU-rt4 named transition log (PR-#430 round-3 review fix #13). One
+        # entry per state-machine round + the labelled exit edge so
+        # downstream consumers can tell why a run terminated.
+        "round_outcomes": round_outcomes_payload,
+        "terminal_transition": terminal_transition_value,
         # FU-rt9 — collapsible per-persona PR comment body. The skill posts
         # this directly via `gh pr review --comment --body "$pr_comment_body"`
         # instead of feeding the (flat) sidecar markdown through truncation.

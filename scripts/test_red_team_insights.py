@@ -160,6 +160,8 @@ def test_build_run_envelope_matches_design_contract_field_by_field():
             "pr_number": 428,
             "fix_plan_status": "success",
             "warnings": [],
+            "round_outcomes": [],
+            "terminal_transition": None,
         },
     }
     _assert_schema_valid(envelope)
