@@ -65,16 +65,16 @@ Return exactly one JSON object matching this shape:
   "summary": "One paragraph summarizing the proposed direction.",
   "moves": [
     {
-      "id": "move1",
+      "id": "m1",
       "title": "Short imperative title",
       "addressed_finding_ids": ["rt1", "rt3"],
       "rationale": "Why this move addresses the named findings.",
-      "proposed_change": "Design-level change to make.",
-      "new_trade_off": "What this move gives up or makes harder.",
-      "verification": "How reviewers can tell the move was applied."
+      "sections_touched": ["§4.2", "§5"],
+      "new_trade_off": "What this move gives up or makes harder."
     }
   ],
   "unaddressed_finding_ids": ["rt2"],
+  "notes": "Optional rationale for unaddressed findings or cross-finding tensions.",
   "warnings": [
     "Any caveat about uncertainty, grouping, truncation, or human-review-only findings."
   ]
@@ -85,10 +85,12 @@ Return exactly one JSON object matching this shape:
 
 - `moves` must contain between 2 and 6 objects unless the input makes that
   impossible; explain any exception in `warnings`.
-- Move IDs must be stable within your output: `move1`, `move2`, ...
+- Move IDs must be stable within your output: `m1`, `m2`, ...
 - `addressed_finding_ids` must be a non-empty array and every ID must be from
   the provided findings.
+- `sections_touched` must be an array. Use `[]` when no source section is clear.
 - `unaddressed_finding_ids` must contain only provided finding IDs not addressed
   by any move.
 - `new_trade_off` is required for every move and must not be empty.
+- `notes` must be a string. Use `""` when there are no notes.
 - `warnings` must be an array. Use `[]` when there are no warnings.
