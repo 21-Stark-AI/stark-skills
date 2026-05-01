@@ -144,7 +144,13 @@ def build_envelopes_for_row(row: dict[str, Any]) -> list[dict[str, Any]]:
             duration_s=float(row["duration_s"]),
             cost_usd=float(row["cost_usd"]),
             fix_plan_status=fix_plan_status,
-            warnings=[],
+            # Reconstruct run-level warnings from fix_plan_json. The
+            # over_budget_after_fix warning (Phase 5 Task 3) is appended
+            # to BOTH fix_plan.warnings AND red_team_run.warnings; only
+            # the former survives in local SQLite (fix_plan_json column),
+            # so backfill mirrors any run-level warnings that originate
+            # from fix-plan accounting back into the run event.
+            warnings=_run_warnings_from_fix_plan_json(row.get("fix_plan_json")),
             started_at_iso=timestamp,
         )
     ]
@@ -173,6 +179,31 @@ def build_envelopes_for_row(row: dict[str, Any]) -> list[dict[str, Any]]:
     if fix_plan_status == "success" and row.get("fix_plan_json") is not None:
         envelopes.append(_build_fix_plan_envelope(row, repo=repo, timestamp=timestamp))
     return envelopes
+
+
+_RUN_LEVEL_FIX_PLAN_WARNINGS = frozenset({"over_budget_after_fix"})
+
+
+def _run_warnings_from_fix_plan_json(fix_plan_json: str | None) -> list[str]:
+    """Reconstruct run-level warnings that originate in fix-plan accounting.
+
+    Phase 5 Task 3 appends ``over_budget_after_fix`` to BOTH
+    ``fix_plan.warnings`` and ``red_team_run.warnings`` at forward-emit
+    time, but the local SQLite only stores the fix-plan side (in
+    ``fix_plan_json``). Mirror it back so ``--scope=forward`` produces
+    a ``red_team_run`` event with the same warnings the original forward
+    emission carried.
+    """
+    if not fix_plan_json:
+        return []
+    try:
+        plan = json.loads(fix_plan_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    warnings = plan.get("warnings") if isinstance(plan, dict) else None
+    if not isinstance(warnings, list):
+        return []
+    return [w for w in warnings if w in _RUN_LEVEL_FIX_PLAN_WARNINGS]
 
 
 def _build_fix_plan_envelope(

@@ -404,16 +404,34 @@ def _strip_locked_fields(
     return cleaned
 
 
+_RED_TEAM_LOCKED_PARENTS: frozenset[tuple[str, ...]] = frozenset(
+    p[: i + 1]
+    for p in _RED_TEAM_LOCKED_FIELDS
+    for i in range(len(p) - 1)
+)
+
+
 def _drop_locked_overrides(
     override: dict[str, Any],
     base_path: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], list[str]]:
-    """Drop locked dotted paths from a lower-precedence red_team override."""
+    """Drop locked dotted paths from a lower-precedence red_team override.
+
+    A locked PARENT (e.g. ``fix_plan``) whose override value is not a dict
+    is also rejected: a non-dict override would replace the entire locked
+    structure (and its locked children) wholesale, defeating the lock.
+    """
     cleaned: dict[str, Any] = {}
     rejected_paths: list[str] = []
     for key, value in override.items():
         path = (*base_path, key)
         if path in _RED_TEAM_LOCKED_FIELDS:
+            rejected_paths.append(".".join(path))
+            continue
+        if path in _RED_TEAM_LOCKED_PARENTS and not isinstance(value, dict):
+            # e.g. setting `fix_plan: "off"` would replace the dict and
+            # bypass the per-leaf lock checks that follow. Reject the
+            # entire override at this path.
             rejected_paths.append(".".join(path))
             continue
         if isinstance(value, dict):

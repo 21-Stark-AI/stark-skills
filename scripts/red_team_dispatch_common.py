@@ -181,6 +181,10 @@ def _record_run(ctx: rt.RedTeamRunContext, result: rt.RedTeamResult, model: str)
             "artifact_relative_path": ctx.artifact_relative_path,
             "pr_number": ctx.pr_number,
             "fix_plan_status": "pending",
+            # Pin the local audit row's created_at to the same ISO timestamp
+            # the forward-emitted red_team_run event uses, so backfill
+            # (--scope=forward) reconstructs byte-identical timestamps.
+            "created_at": ctx.started_at_iso,
         }
     )
 
@@ -276,10 +280,28 @@ def resolve_fix_plan(
     return status, fix_plan, run_warnings
 
 
+_INLINE_MARKDOWN_SPECIALS = ("\\", "`", "*", "_", "[", "]", "<", ">", "|")
+
+
 def _escape_inline(text: str) -> str:
-    text = text.replace("`", "\\`")
-    text = text.replace("\n", " ").strip()
-    return text
+    """Escape Markdown specials in untrusted single-line text.
+
+    Title fields are rendered inside an H3 heading; without escaping, an
+    attacker-controlled title like ``[Click](http://attacker)`` or
+    ``<img onerror=...>`` would render as a link or HTML in PR comments.
+    Escape the inline-rendering specials by prefixing each with a
+    backslash. CommonMark renders ``\\[`` as a literal ``[``.
+    """
+    if not text:
+        return ""
+    # Backslash MUST be escaped first to avoid double-escaping the
+    # backslashes we're about to introduce.
+    out = text.replace("\\", "\\\\")
+    for ch in _INLINE_MARKDOWN_SPECIALS:
+        if ch == "\\":
+            continue
+        out = out.replace(ch, "\\" + ch)
+    return out.replace("\n", " ").strip()
 
 
 def _needs_fence(text: str) -> bool:

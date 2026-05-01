@@ -149,38 +149,51 @@ def record_red_team_run(
     )
     fix_plan_cost_usd = run_data.get("fix_plan_cost_usd", fix_plan_cost_usd)
 
+    # Pass created_at explicitly when the caller has an authoritative
+    # ISO-8601 string (e.g. RedTeamRunContext.started_at_iso). Otherwise
+    # let SQLite's default fire. This keeps backfill timestamps
+    # byte-identical to forward-emission timestamps for the same run.
+    created_at = run_data.get("created_at")
+
     conn = audit_base.connect(db_path)
     try:
-        conn.execute(
-            "INSERT INTO red_team_runs (run_id, stage, rounds_used, final_status, "
-            "total_findings, critical_count, high_count, medium_count, "
-            "human_review_count, duration_s, cost_usd, model, caller, repo, "
-            "artifact_relative_path, pr_number, fix_plan_status, fix_plan_md, "
-            "fix_plan_json, fix_plan_cost_usd) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                run_data["run_id"],
-                run_data["stage"],
-                run_data["rounds_used"],
-                run_data["final_status"],
-                run_data["total_findings"],
-                run_data["critical_count"],
-                run_data["high_count"],
-                run_data["medium_count"],
-                run_data["human_review_count"],
-                run_data["duration_s"],
-                run_data["cost_usd"],
-                run_data["model"],
-                run_data["caller"],
-                repo,
-                artifact_relative_path,
-                pr_number,
-                fix_plan_status,
-                fix_plan_md,
-                fix_plan_json,
-                fix_plan_cost_usd,
-            ),
-        )
+        if created_at is None:
+            conn.execute(
+                "INSERT INTO red_team_runs (run_id, stage, rounds_used, final_status, "
+                "total_findings, critical_count, high_count, medium_count, "
+                "human_review_count, duration_s, cost_usd, model, caller, repo, "
+                "artifact_relative_path, pr_number, fix_plan_status, fix_plan_md, "
+                "fix_plan_json, fix_plan_cost_usd) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_data["run_id"], run_data["stage"], run_data["rounds_used"],
+                    run_data["final_status"], run_data["total_findings"],
+                    run_data["critical_count"], run_data["high_count"],
+                    run_data["medium_count"], run_data["human_review_count"],
+                    run_data["duration_s"], run_data["cost_usd"], run_data["model"],
+                    run_data["caller"], repo, artifact_relative_path, pr_number,
+                    fix_plan_status, fix_plan_md, fix_plan_json, fix_plan_cost_usd,
+                ),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO red_team_runs (run_id, stage, rounds_used, final_status, "
+                "total_findings, critical_count, high_count, medium_count, "
+                "human_review_count, duration_s, cost_usd, model, caller, repo, "
+                "artifact_relative_path, pr_number, fix_plan_status, fix_plan_md, "
+                "fix_plan_json, fix_plan_cost_usd, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_data["run_id"], run_data["stage"], run_data["rounds_used"],
+                    run_data["final_status"], run_data["total_findings"],
+                    run_data["critical_count"], run_data["high_count"],
+                    run_data["medium_count"], run_data["human_review_count"],
+                    run_data["duration_s"], run_data["cost_usd"], run_data["model"],
+                    run_data["caller"], repo, artifact_relative_path, pr_number,
+                    fix_plan_status, fix_plan_md, fix_plan_json, fix_plan_cost_usd,
+                    created_at,
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
