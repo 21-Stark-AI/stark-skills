@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<design-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: f5d4be2d01787579d5fcfe09d1bef452eb50c668
-revision_date: 2026-05-01T09:39:44Z
+revision: 6b5438ee63c05c6bf139d5a10c6697855f9d0ff8
+revision_date: 2026-05-01T12:51:04Z
 ---
 
 # stark-red-team-design
@@ -199,23 +199,36 @@ rendered as skipped and no second LLM call is made.
 
 ### 4.2 PR comment (skipped if `--dry-run`, `--no-pr-comment`, or no PR)
 
-Post the rendered markdown summary as `stark-claude[bot]`. The body MUST
-go through `red_team_dispatch_common.truncate_pr_comment` before posting
-so the design-§4.2 cascade applies (truncate `notes` first, then each
-move's `rationale` to 200 chars, then a hard `[TRUNCATED — see sidecar]`
-marker) before GitHub's 65 KB cap rejects the request:
+Post the dispatcher-rendered `pr_comment_body` (FU-rt9). It is a single
+collapsible-per-persona summary with a critical/high "Highlights" section
+on top, deterministic anchors for every finding, and an HTML-comment
+marker (`<!-- stark-red-team: run_id=... -->`) so a downstream watcher
+can edit the existing comment instead of stacking a new one per round:
 
 ```bash
-body=$("$PYTHON" -c "
-import sys; sys.path.insert(0, '$SCRIPTS')
-from red_team_dispatch_common import truncate_pr_comment
-print(truncate_pr_comment(sys.stdin.read()), end='')
-" <<<"$summary")
+body=$(echo "$output" | "$PYTHON" -c "import sys, json; print(json.load(sys.stdin)['pr_comment_body'], end='')")
 $PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number \
     --comment --body "$body"
 ```
 
+The dispatcher already runs `truncate_pr_comment` on the body before
+returning it, so the GitHub 65 KB cap is honored without a second pass.
 If posting fails, warn and continue.
+
+### 4.2.1 Accepting human-review halts
+
+If the run exits `halted_human_review`, the operator can acknowledge a
+specific concern with `red_team_accept.py STABLE_KEY` (the stable key is
+shown in the sidecar, the PR comment, and the `red_team_status.py`
+display). Accepted keys persist in the audit DB so subsequent runs no
+longer halt on the same concern. Flag form:
+
+```bash
+"$PYTHON" "$SCRIPTS/red_team_design_dispatch.py" \
+    --design "$design_path" \
+    --accept-red-team-human-review "$stable_key" \
+    --no-confirm
+```
 
 ### 4.3 Insights audit
 

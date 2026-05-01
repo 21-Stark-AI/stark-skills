@@ -7,6 +7,7 @@ emission.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -634,6 +635,235 @@ def render_sidecar_markdown(
     return "\n".join(lines)
 
 
+def _persona_anchor(stable_key: str) -> str:
+    """Stable HTML anchor id for one finding (FU-rt7 + FU-rt9).
+
+    GitHub strips most punctuation from anchor IDs. Hash the stable key down
+    to a short hex slug so the anchor stays addressable across re-rendered
+    bodies even when the underlying ``stable_key`` is long.
+    """
+    digest = hashlib.sha256(stable_key.encode("utf-8")).hexdigest()[:12]
+    return f"rt-{digest}"
+
+
+_PR_COMMENT_RUN_MARKER_PREFIX = "<!-- stark-red-team: run_id="
+
+
+def pr_comment_run_marker(run_id: str) -> str:
+    """Return the HTML-comment marker that anchors a PR comment to a run.
+
+    Skill scripts use this to find an existing comment for the same run_id
+    and edit it (FU-rt9: one updatable summary comment per run) instead of
+    posting a fresh comment.
+    """
+    return f"{_PR_COMMENT_RUN_MARKER_PREFIX}{run_id} -->"
+
+
+def _highlights_section(
+    findings: list[rt.RedTeamFinding],
+    run_id: str,
+    stage: str,
+    round_num: int,
+) -> list[str]:
+    """Top-level highlights block for critical / high findings (FU-rt9).
+
+    The collapsible-per-persona body keeps the comment compact, but
+    reviewers triaging an actual blocking risk shouldn't have to expand
+    sections to find it. Highlights link to the deterministic anchors
+    rendered below so clicking a row jumps to the full finding.
+    """
+    high_findings = [
+        f for f in findings
+        if not rt.is_human_review(f)
+        and rt.SEVERITY_RANK.get(f.severity, 0) >= rt.SEVERITY_RANK["high"]
+    ]
+    if not high_findings:
+        return []
+    high_findings = sorted(
+        high_findings,
+        key=lambda f: (-rt.SEVERITY_RANK.get(f.severity, 0), f.persona, f.id),
+    )
+    lines: list[str] = ["## Highlights (critical + high)", ""]
+    for f in high_findings:
+        stable_key = rt.compute_stable_key(
+            run_id=run_id,
+            stage=stage,
+            round_num=round_num,
+            persona=f.persona,
+            finding_id=f.id,
+            concern_hash=f.concern_hash,
+        )
+        anchor = _persona_anchor(stable_key)
+        badge = _SEVERITY_BADGE.get(f.severity, "")
+        concern_short = f.concern.replace("\n", " ").strip()
+        if len(concern_short) > 140:
+            concern_short = concern_short[:137] + "..."
+        lines.append(
+            f"- {badge} **{f.severity}** · `{f.persona}` · "
+            f"[`{f.id}`](#{anchor}) — {_escape_inline(concern_short)}"
+        )
+    lines.append("")
+    return lines
+
+
+def _findings_collapsible_by_persona(
+    findings: list[rt.RedTeamFinding],
+    run_id: str,
+    stage: str,
+    round_num: int,
+) -> list[str]:
+    """Group findings into per-persona ``<details>`` blocks (FU-rt9).
+
+    Each block opens collapsed by default and includes every finding for
+    that persona at any severity, in severity-then-id order. Stable
+    anchors are emitted before each finding so the highlights section
+    (and external links) can deep-link in.
+    """
+    if not findings:
+        return []
+    by_persona: dict[str, list[rt.RedTeamFinding]] = {}
+    for f in findings:
+        by_persona.setdefault(f.persona, []).append(f)
+    persona_order = [p for p in rt.VALID_PERSONA_SLUGS if p in by_persona]
+
+    lines: list[str] = ["## Findings", ""]
+    for persona in persona_order:
+        rows = sorted(
+            by_persona[persona],
+            key=lambda x: (-rt.SEVERITY_RANK.get(x.severity, 0), x.id),
+        )
+        critical = sum(1 for f in rows if f.severity == "critical")
+        high = sum(1 for f in rows if f.severity == "high")
+        medium = sum(1 for f in rows if f.severity == "medium")
+        human_review = sum(1 for f in rows if rt.is_human_review(f))
+        summary = (
+            f"`{persona}` — {len(rows)} findings "
+            f"(critical={critical}, high={high}, medium={medium}"
+        )
+        if human_review:
+            summary += f", human-review={human_review}"
+        summary += ")"
+        lines.append(f"<details><summary>{summary}</summary>")
+        lines.append("")
+        for f in rows:
+            stable_key = rt.compute_stable_key(
+                run_id=run_id,
+                stage=stage,
+                round_num=round_num,
+                persona=f.persona,
+                finding_id=f.id,
+                concern_hash=f.concern_hash,
+            )
+            anchor = _persona_anchor(stable_key)
+            badge = _SEVERITY_BADGE.get(f.severity, "")
+            lines.append(f"<a id=\"{anchor}\"></a>")
+            lines.append(
+                f"#### {badge} `{f.id}` — {_escape_inline(f.persona)} ({f.severity})"
+            )
+            lines.append("")
+            lines.append(f"<sub>`{stable_key}`</sub>")
+            lines.append("")
+            if f.risk_key or f.affected_component or f.failure_mode:
+                meta_parts = []
+                if f.risk_key:
+                    meta_parts.append(f"**risk_key:** `{f.risk_key}`")
+                if f.affected_component:
+                    meta_parts.append(f"**component:** `{f.affected_component}`")
+                if f.failure_mode:
+                    meta_parts.append(f"**failure_mode:** `{f.failure_mode}`")
+                lines.append(" · ".join(meta_parts))
+                lines.append("")
+            lines.extend(_render_text("Concern", f.concern))
+            lines.append("")
+            lines.extend(_render_text("Consequence", f.consequence))
+            lines.append("")
+            if f.counter_proposal == rt.REQUEST_HUMAN_REVIEW:
+                lines.append("**Counter-proposal.** _Requests human review._")
+                if f.reason_for_uncertainty:
+                    lines.append("")
+                    lines.extend(_render_text("Reason", f.reason_for_uncertainty))
+            else:
+                lines.extend(_render_text("Counter-proposal", f.counter_proposal))
+                if f.trade_off:
+                    lines.append("")
+                    lines.extend(_render_text("Trade-off", f.trade_off))
+            lines.append("")
+        lines.append("</details>")
+        lines.append("")
+    return lines
+
+
+def render_pr_comment_body(
+    *,
+    artifact_path: Path,
+    source_spec_path: Path | None,
+    result: rt.RedTeamResult,
+    model: str,
+    run_id: str,
+    stage: str,
+    fix_plan_status: str | None = None,
+    fix_plan: rt.RedTeamFixPlan | None = None,
+) -> str:
+    """Render the FU-rt9 collapsible PR comment body.
+
+    Differs from :func:`render_sidecar_markdown` in three ways:
+
+    - One ``<details>`` block per persona (was: one section per finding,
+      flat). 5 personas × 2 rounds = 10 comments collapses to ONE comment
+      with 5 collapsible sections.
+    - Highlights block at top surfaces critical / high findings without
+      forcing reviewers to expand persona sections.
+    - HTML-comment marker at the head identifies the comment as belonging
+      to a specific run, so callers can find-and-edit instead of posting
+      a fresh comment per round.
+
+    Sidecar markdown (file on disk) keeps the flat layout — collapsibles
+    don't render in plain-markdown viewers and the file is read offline.
+    """
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    status = final_status(result)
+    findings = result.findings
+
+    lines: list[str] = [
+        pr_comment_run_marker(run_id),
+        f"# Red-team review — {artifact_path.name}",
+        "",
+        f"- **Date:** {timestamp}",
+        f"- **Run ID:** `{run_id}`",
+        f"- **Model:** `{model}`",
+        (
+            f"- **Source spec:** `{source_spec_path}`"
+            if source_spec_path
+            else f"- **Source spec:** ({stage} used as its own spec)"
+        ),
+        f"- **Status:** **{status}**",
+        (
+            f"- **Findings:** {len(findings)} total — "
+            f"{result.blocking_count} blocking (≥ high), "
+            f"{result.human_review_count} human-review"
+        ),
+        (
+            f"- **Cost:** ${result.cost_usd:.4f} | **Duration:** {result.duration_s:.1f}s"
+        ),
+        "",
+    ]
+
+    if result.error:
+        lines.extend(["## Error", "", "```", result.error.strip(), "```", ""])
+        excerpt = (result.raw_output or "").strip()
+        if excerpt:
+            lines.extend(["### Raw output excerpt", "", "```", excerpt[:2000], "```", ""])
+    else:
+        if result.synthesis:
+            lines.extend(["## Synthesis", "", result.synthesis.strip(), ""])
+        lines.extend(_highlights_section(findings, run_id, stage, result.round_num))
+        lines.extend(_findings_collapsible_by_persona(findings, run_id, stage, result.round_num))
+
+    if fix_plan_status is not None:
+        lines.append(render_fix_plan_section(fix_plan_status=fix_plan_status, fix_plan=fix_plan))
+    return "\n".join(lines)
+
+
 def truncate_pr_comment(body: str, fix_plan: dict[str, Any] | None = None) -> str:
     del fix_plan
     if len(body) <= GH_COMMENT_LIMIT:
@@ -908,6 +1138,42 @@ def execute_dispatch(
     )
     del history  # FU-rt4 transition log; insights events already capture per-round outcomes.
 
+    # FU-rt8 — Demote human-review halts when the operator has already
+    # accepted the same stable_key. Accepts persist in the audit DB so the
+    # next dispatcher invocation honors them. Only human-review counts move;
+    # blocking findings still halt regardless.
+    if audit and result.error is None and result.human_review_count > 0:
+        try:
+            import red_team_human_review
+
+            unaccepted, accepted_keys = red_team_human_review.filter_human_review_findings(
+                result.findings,
+                run_id=ctx.run_id,
+                stage=stage,
+                round_num=result.round_num,
+            )
+            del accepted_keys  # JSON output already exposes findings; keys aren't returned.
+            if not unaccepted and len(unaccepted) < result.human_review_count:
+                # All human-review findings have matching accepts. Rebuild
+                # the result with human_review_count zeroed so derive_status
+                # returns "clean"/"halted" by blocking-count alone.
+                result = rt.RedTeamResult(
+                    stage=result.stage,
+                    round_num=result.round_num,
+                    synthesis=result.synthesis,
+                    findings=result.findings,
+                    blocking_count=result.blocking_count,
+                    human_review_count=0,
+                    raw_output=result.raw_output,
+                    duration_s=result.duration_s,
+                    cost_usd=result.cost_usd,
+                    error=result.error,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                )
+        except Exception as exc:  # pragma: no cover - defensive: never break dispatch
+            print(f"  [!] Human-review accept lookup failed: {exc}", file=sys.stderr)
+
     fix_plan_status = "pending"
     fix_plan: rt.RedTeamFixPlan | None = None
     fix_plan_md: str | None = None
@@ -976,6 +1242,17 @@ def execute_dispatch(
             encoding="utf-8",
         )
 
+    pr_comment_body = render_pr_comment_body(
+        artifact_path=artifact_path,
+        source_spec_path=source_spec_path,
+        result=result,
+        model=model,
+        run_id=ctx.run_id,
+        stage=stage,
+        fix_plan_status=fix_plan_status,
+        fix_plan=fix_plan,
+    )
+
     return {
         "status": final_status(result),
         "run_id": ctx.run_id,
@@ -999,4 +1276,8 @@ def execute_dispatch(
         "repo": ctx.repo,
         "artifact_relative_path": ctx.artifact_relative_path,
         "pr_number": ctx.pr_number,
+        # FU-rt9 — collapsible per-persona PR comment body. The skill posts
+        # this directly via `gh pr review --comment --body "$pr_comment_body"`
+        # instead of feeding the (flat) sidecar markdown through truncation.
+        "pr_comment_body": truncate_pr_comment(pr_comment_body),
     }
