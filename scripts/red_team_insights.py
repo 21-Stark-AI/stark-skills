@@ -111,6 +111,11 @@ def build_finding_envelope(
     reason_for_uncertainty: str | None,
     is_human_review: bool,
     timestamp_iso: str,
+    stable_key: str = "",
+    concern_hash: str = "",
+    risk_key: str | None = None,
+    affected_component: str | None = None,
+    failure_mode: str | None = None,
 ) -> dict[str, Any]:
     repo_label = repo or "unknown"
     payload = {
@@ -120,6 +125,17 @@ def build_finding_envelope(
         "finding_id": finding_id,
         "persona": persona,
         "severity": severity,
+        # FU-rt7 — stable_key + concern_hash anchor this finding to the same
+        # identity as the audit row, the PR-comment anchor, and the CLI
+        # accept-flag input. Empty string is the back-compat fallback when an
+        # older producer hasn't been re-deployed.
+        "stable_key": stable_key,
+        "concern_hash": concern_hash,
+        # FU-rt5 — structured identity. Null when the model-output rollout
+        # hasn't reached this producer yet.
+        "risk_key": risk_key,
+        "affected_component": affected_component,
+        "failure_mode": failure_mode,
         "concern": concern,
         "consequence": consequence,
         "counter_proposal": counter_proposal,
@@ -255,6 +271,14 @@ def emit_finding(
 ) -> None:
     """Best-effort enqueue of one ``red_team_finding`` event."""
     try:
+        stable_key = rt.compute_stable_key(
+            run_id=ctx.run_id,
+            stage=ctx.stage,
+            round_num=round_num,
+            persona=finding.persona,
+            finding_id=finding.id,
+            concern_hash=finding.concern_hash,
+        )
         envelope = build_finding_envelope(
             run_id=ctx.run_id,
             stage=ctx.stage,
@@ -271,6 +295,11 @@ def emit_finding(
             reason_for_uncertainty=finding.reason_for_uncertainty,
             is_human_review=rt.is_human_review(finding),
             timestamp_iso=ctx.started_at_iso,
+            stable_key=stable_key,
+            concern_hash=finding.concern_hash,
+            risk_key=finding.risk_key,
+            affected_component=finding.affected_component,
+            failure_mode=finding.failure_mode,
         )
         _enqueue(envelope, "red_team_finding")
     except Exception as exc:  # pragma: no cover - defensive fail-open wrapper

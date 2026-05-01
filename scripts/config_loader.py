@@ -172,6 +172,15 @@ DEFAULT_RED_TEAM = {
         "max_moves": 6,
         "max_input_chars": 200_000,
     },
+    # FU-rt6 — Raw finding text is sensitive audit data. Default is to store a
+    # short redacted excerpt + SHA-256 hash; full-text retention requires an
+    # explicit org/repo policy flag. Excerpt length is capped to keep
+    # accidental secret echoes short. Both fields are locked so a downstream
+    # repo cannot silently re-enable full-text retention.
+    "audit": {
+        "retain_full_text": False,
+        "excerpt_max_chars": 240,
+    },
 }
 
 DEFAULT_MODEL_RATES = {
@@ -222,6 +231,11 @@ _RED_TEAM_LOCKED_FIELDS: frozenset[tuple[str, ...]] = frozenset({
     ("fix_plan", "reasoning_effort"),
     ("fix_plan", "min_moves"),
     ("fix_plan", "max_moves"),
+    # FU-rt6 — Lock retention posture. A compromised repo flipping
+    # `audit.retain_full_text` back to True would silently turn the metrics
+    # DB into a sensitive-document store; the substance-vs-appearance lock
+    # is the same shape as the rt2 round-1 lock on `min_severity_to_block`.
+    ("audit", "retain_full_text"),
 })
 
 

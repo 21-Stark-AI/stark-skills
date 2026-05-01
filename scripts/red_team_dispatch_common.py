@@ -194,6 +194,14 @@ def _record_and_emit_findings(ctx: rt.RedTeamRunContext, result: rt.RedTeamResul
     import red_team_insights
 
     for finding in result.findings:
+        stable_key = rt.compute_stable_key(
+            run_id=ctx.run_id,
+            stage=ctx.stage,
+            round_num=result.round_num,
+            persona=finding.persona,
+            finding_id=finding.id,
+            concern_hash=finding.concern_hash,
+        )
         red_team_audit.record_finding(
             run_id=ctx.run_id,
             stage=ctx.stage,
@@ -206,6 +214,11 @@ def _record_and_emit_findings(ctx: rt.RedTeamRunContext, result: rt.RedTeamResul
             counter_proposal=finding.counter_proposal,
             trade_off=finding.trade_off,
             reason_for_uncertainty=finding.reason_for_uncertainty,
+            stable_key=stable_key,
+            concern_hash=finding.concern_hash,
+            risk_key=finding.risk_key,
+            affected_component=finding.affected_component,
+            failure_mode=finding.failure_mode,
         )
         red_team_insights.emit_finding(ctx, finding=finding, round_num=result.round_num)
 

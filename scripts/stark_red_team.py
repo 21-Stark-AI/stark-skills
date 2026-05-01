@@ -70,6 +70,82 @@ _RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 _RESPONSES_API_DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 
+_VALID_FAILURE_MODES: frozenset[str] = frozenset({
+    "data-loss",
+    "availability",
+    "cost",
+    "security",
+    "correctness",
+    "compliance",
+    "performance",
+    "operability",
+})
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slugify(value: str, max_len: int = 64) -> str:
+    """Normalize a free-text string to a deterministic slug.
+
+    Used for `risk_key` and `affected_component` so two different wordings of
+    the same identity collapse to the same slug. ``"Schema migration"`` and
+    ``"schema-migration"`` both become ``"schema-migration"``.
+    """
+    slug = _SLUG_RE.sub("-", (value or "").lower()).strip("-")
+    return slug[:max_len]
+
+
+def _normalize_concern(text: str) -> str:
+    """Lowercase + collapse whitespace for stable hashing.
+
+    Two phrasings that differ only in case or whitespace produce the same
+    ``concern_hash``. Bigger semantic differences are still captured by the
+    structured ``risk_key``/``affected_component``/``failure_mode`` triple.
+    """
+    return " ".join((text or "").lower().split())
+
+
+def compute_concern_hash(
+    persona: str,
+    risk_key: str | None,
+    affected_component: str | None,
+    concern: str,
+) -> str:
+    """SHA-256 fingerprint of a finding's stable identity components.
+
+    Only ``persona`` + the structured fields + the normalized concern text
+    feed the hash. ``id``, ``round_num``, ``run_id``, and the model's prose
+    severity are deliberately excluded so the same risk discovered twice
+    produces the same fingerprint.
+    """
+    canonical = "|".join([
+        persona or "",
+        risk_key or "",
+        affected_component or "",
+        _normalize_concern(concern),
+    ])
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def compute_stable_key(
+    *,
+    run_id: str,
+    stage: str,
+    round_num: int,
+    persona: str,
+    finding_id: str,
+    concern_hash: str,
+) -> str:
+    """Build the canonical stable finding key.
+
+    Format: ``{run_id}:{stage}:{round_num}:{persona}:{finding_id}:{concern_hash}``.
+    The trailing ``concern_hash`` is what makes the key collision-resistant
+    across reruns where the model may renumber slot-3 with a different concern
+    (FU-rt7).
+    """
+    return f"{run_id}:{stage}:{round_num}:{persona}:{finding_id}:{concern_hash}"
+
+
 @dataclass
 class RedTeamFinding:
     """One finding from one persona in one round."""
@@ -82,6 +158,16 @@ class RedTeamFinding:
     counter_proposal: str
     trade_off: str | None
     reason_for_uncertainty: str | None
+    # FU-rt5 — Structured fields. Optional during the prompt-rollout window;
+    # once prompts in production routinely emit them, validate_findings will
+    # promote these to required for non-human-review findings.
+    risk_key: str | None = None
+    affected_component: str | None = None
+    failure_mode: str | None = None
+    # FU-rt7 — Stable identity. Computed from persona + structured fields +
+    # normalized concern text by ``validate_findings``; never read from the
+    # model. Two reruns of the same risk produce identical hashes.
+    concern_hash: str = ""
 
 
 @dataclass
@@ -591,6 +677,28 @@ def validate_fix_plan(
         return _empty_fix_plan(error=f"fix-plan validation error: {exc}", warnings=warnings)
 
 
+def _extract_structured_field(raw: dict[str, Any], key: str) -> str | None:
+    """Read an optional structured field, slugifying free-text values.
+
+    Returns ``None`` for missing/empty/non-string values so callers can
+    distinguish "model omitted this field" (back-compat path) from "model
+    provided a slug" (FU-rt5 stability gate path).
+    """
+    value = raw.get(key)
+    if not isinstance(value, str):
+        return None
+    slug = _slugify(value)
+    return slug or None
+
+
+def _extract_failure_mode(raw: dict[str, Any]) -> str | None:
+    value = raw.get("failure_mode")
+    if not isinstance(value, str):
+        return None
+    slug = _slugify(value)
+    return slug if slug in _VALID_FAILURE_MODES else None
+
+
 def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding]:
     """Convert raw dicts to RedTeamFinding, dropping invalid entries.
 
@@ -601,6 +709,13 @@ def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding
     - Either (a) concrete counter_proposal + trade_off (string), or
              (b) counter_proposal == REQUEST_HUMAN_REVIEW + reason_for_uncertainty (string)
     - Invalid entries are silently dropped
+
+    Optional structured fields (FU-rt5): ``risk_key``, ``affected_component``,
+    ``failure_mode``. These flow through when present (slugified) and feed the
+    stability gate's structured-overlap check; absent values fall back to the
+    Jaccard concern-text gate. ``concern_hash`` is always computed from
+    persona + structured fields + normalized concern text and stamped on the
+    finding for downstream stable-key composition (FU-rt7).
     """
     out: list[RedTeamFinding] = []
     for raw in raw_findings:
@@ -621,6 +736,16 @@ def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding
         if any(not isinstance(raw.get(k), str) or not raw.get(k) for k in required_strs):
             continue
 
+        risk_key = _extract_structured_field(raw, "risk_key")
+        affected_component = _extract_structured_field(raw, "affected_component")
+        failure_mode = _extract_failure_mode(raw)
+        concern_hash = compute_concern_hash(
+            persona=persona,
+            risk_key=risk_key,
+            affected_component=affected_component,
+            concern=raw["concern"],
+        )
+
         if counter_proposal == REQUEST_HUMAN_REVIEW:
             reason = raw.get("reason_for_uncertainty")
             if not isinstance(reason, str) or not reason:
@@ -634,6 +759,10 @@ def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding
                 counter_proposal=REQUEST_HUMAN_REVIEW,
                 trade_off=None,
                 reason_for_uncertainty=reason,
+                risk_key=risk_key,
+                affected_component=affected_component,
+                failure_mode=failure_mode,
+                concern_hash=concern_hash,
             ))
         else:
             trade_off = raw.get("trade_off")
@@ -648,6 +777,10 @@ def validate_findings(raw_findings: list[dict[str, Any]]) -> list[RedTeamFinding
                 counter_proposal=counter_proposal,
                 trade_off=trade_off,
                 reason_for_uncertainty=None,
+                risk_key=risk_key,
+                affected_component=affected_component,
+                failure_mode=failure_mode,
+                concern_hash=concern_hash,
             ))
     return out
 
@@ -705,18 +838,59 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+def _structured_overlap(fa: RedTeamFinding, fb: RedTeamFinding) -> bool:
+    """Two findings overlap if they share persona + structured identity.
+
+    The structured triple ``(risk_key, affected_component, failure_mode)``
+    carries the risk identity. A match on persona plus any of the structured
+    fields is a strong signal that two reruns surfaced the same concern under
+    different wording — which is exactly what the Jaccard gate kept missing
+    (FU-rt5).
+    """
+    if fa.persona != fb.persona:
+        return False
+    if fa.risk_key and fb.risk_key and fa.risk_key == fb.risk_key:
+        return True
+    if (
+        fa.affected_component
+        and fb.affected_component
+        and fa.affected_component == fb.affected_component
+        and (
+            (fa.failure_mode and fa.failure_mode == fb.failure_mode)
+            or (fa.risk_key and fb.risk_key and fa.risk_key == fb.risk_key)
+        )
+    ):
+        return True
+    return False
+
+
+def _has_structured_identity(f: RedTeamFinding) -> bool:
+    """A finding has structured identity if at least ``risk_key`` is set.
+
+    ``affected_component`` alone isn't enough — two unrelated risks against
+    the same component would falsely match.
+    """
+    return bool(f.risk_key)
+
+
 def _overlap(
     rt_a: "RedTeamResult",
     rt_b: "RedTeamResult",
     jaccard_min: float = 0.4,
 ) -> bool:
-    """Return True iff at least one blocking finding in each output shares
-    the same persona and has a concern text Jaccard >= jaccard_min.
+    """Return True iff at least one blocking finding pair overlaps stably.
 
-    Used by the stability check (rt2 + rt_b2). Two calls that find overlapping
-    blocking findings under this definition are considered stably-blocking;
-    calls that don't overlap are treated as flicker and the round is
-    downgraded to advisory.
+    Stability test, in order of preference (FU-rt5):
+
+    1. **Structured-fields path:** if both findings have ``risk_key``,
+       require persona + structured-identity match (``_structured_overlap``).
+       This is the canonical path once prompts emit structured fields.
+    2. **Jaccard fallback:** if either finding lacks structured identity
+       (back-compat with v1 outputs and the prompt-rollout window), fall
+       back to persona + concern-text Jaccard ≥ ``jaccard_min``.
+
+    Calls that overlap under one of these tests are stably blocking; calls
+    that don't are treated as flicker and the round is downgraded to advisory.
     """
     blocking_a = [f for f in rt_a.findings if not is_human_review(f)
                   and SEVERITY_RANK.get(f.severity, 0) >= SEVERITY_RANK["high"]]
@@ -726,12 +900,14 @@ def _overlap(
         return False
 
     for fa in blocking_a:
-        tok_a = _tokenize(fa.concern)
         for fb in blocking_b:
             if fa.persona != fb.persona:
                 continue
-            tok_b = _tokenize(fb.concern)
-            if _jaccard(tok_a, tok_b) >= jaccard_min:
+            if _has_structured_identity(fa) and _has_structured_identity(fb):
+                if _structured_overlap(fa, fb):
+                    return True
+                continue
+            if _jaccard(_tokenize(fa.concern), _tokenize(fb.concern)) >= jaccard_min:
                 return True
     return False
 
@@ -1053,7 +1229,8 @@ def dispatch_responses_api(
             error="responses api returned non-object payload",
         )
 
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    raw_usage = payload.get("usage")
+    usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
     # output_tokens already includes reasoning tokens; do NOT add
     # output_tokens_details.reasoning_tokens or we'd double-count cost.
     # Coerce defensively — schema drift (string instead of int) shouldn't
