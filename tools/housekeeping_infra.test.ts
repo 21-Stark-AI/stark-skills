@@ -373,9 +373,10 @@ test("CLI runs when invoked through a symlink (Node 25 strip-types regression)",
       ["--experimental-strip-types", linkedScript, "--dry-run", "--json"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
-    // --dry-run --json prints a JSON receipt; empty stdout means the gate
-    // misfired and main() never ran.
-    assert.ok(stdout.trim().length > 0, "expected JSON receipt, got empty stdout");
+    // Parse the JSON receipt — empty stdout (gate misfire) or text-mode
+    // output (a regression to the non-JSON branch) would both fail here.
+    const receipt = JSON.parse(stdout);
+    assert.equal(receipt.dryRun, true);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
