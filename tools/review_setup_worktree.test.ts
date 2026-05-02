@@ -263,6 +263,34 @@ test("CLI runs when invoked through a symlink (Node 25 strip-types regression)",
   }
 });
 
+// Covers the lexical (non-realpath) branch of isInvokedAsScript: when
+// NODE_OPTIONS=--preserve-symlinks-main is set, Node keeps import.meta.url
+// at the symlink URL, so only the lexical comparison matches. Without that
+// branch, this test would print empty stdout on Node 25.
+test("CLI runs through a symlink with --preserve-symlinks-main", (t) => {
+  const tmpDir = makeTmp(t);
+  if (!tmpDir) return;
+  const realScript = fileURLToPath(
+    new URL("./review_setup_worktree.ts", import.meta.url),
+  );
+  const linkedScript = path.join(tmpDir, "review_setup_worktree.ts");
+  try {
+    fs.symlinkSync(realScript, linkedScript);
+    const stdout = execFileSync(
+      process.execPath,
+      ["--experimental-strip-types", linkedScript, "--help"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, NODE_OPTIONS: "--preserve-symlinks-main" },
+      },
+    );
+    assert.match(stdout, /Usage: review_setup_worktree/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("setupWorktree skips the repo check when --skip-repo-check is set", () => {
   const runner = fakeRunner({
     ghJson: {

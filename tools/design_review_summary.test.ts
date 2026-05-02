@@ -351,13 +351,10 @@ test("CLI runs when invoked through a symlink (Node 25 strip-types regression)",
       ["--experimental-strip-types", linkedScript, "--help"],
       { encoding: "utf8" },
     );
-    // --help isn't wired (no parser flag for it); the script reads stdin or
-    // --input. The point is to prove main() ran — any non-empty stderr (the
-    // input-required error) confirms the gate fired.
-    assert.ok(
-      res.stdout.length > 0 || res.stderr.length > 0,
-      `expected output, got empty stdout+stderr (gate misfired). exit=${res.status}`,
-    );
+    // Assert on the actual --help output, not just any non-empty stream:
+    // a loader or parser failure would also print to stderr and falsely pass.
+    assert.equal(res.status, 0, `exit ${res.status}; stderr=${res.stderr}`);
+    assert.match(res.stdout, /Usage: design_review_summary/);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
