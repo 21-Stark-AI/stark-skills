@@ -326,3 +326,36 @@ test("CLI --json wraps the markdown payload", (t) => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// Regression: under Node 25's --experimental-strip-types, the entry-point
+// gate goes silent when the script is invoked through a symlink (e.g.
+// ~/.claude/code-review/tools/ → stark-skills/tools/). See
+// review_setup_worktree for the full root cause. Guard by invoking through
+// a real symlink and asserting the CLI parser actually runs.
+test("CLI runs when invoked through a symlink (Node 25 strip-types regression)", (t) => {
+  let tmpDir: string;
+  try {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "design-summary-symlink-"));
+  } catch (err) {
+    t.skip(`os.tmpdir() unavailable: ${(err as Error).message}`);
+    return;
+  }
+  const realScript = fileURLToPath(
+    new URL("./design_review_summary.ts", import.meta.url),
+  );
+  const linkedScript = path.join(tmpDir, "design_review_summary.ts");
+  try {
+    fs.symlinkSync(realScript, linkedScript);
+    const res = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", linkedScript, "--help"],
+      { encoding: "utf8" },
+    );
+    // Assert on the actual --help output, not just any non-empty stream:
+    // a loader or parser failure would also print to stderr and falsely pass.
+    assert.equal(res.status, 0, `exit ${res.status}; stderr=${res.stderr}`);
+    assert.match(res.stdout, /Usage: design_review_summary/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
