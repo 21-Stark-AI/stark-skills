@@ -477,9 +477,13 @@ function main(): void {
   process.exit(receipt.errors.length ? 1 : 0);
 }
 
+// Resolve through realpath so a symlinked invocation path (common when
+// ~/.claude/code-review/tools/ is a symlink into stark-skills) still matches
+// import.meta.url, which Node's --experimental-strip-types loader normalizes
+// through realpath under Node 25+.
 const invokedDirectly =
   process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+  import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href;
 if (invokedDirectly) {
   main();
 }

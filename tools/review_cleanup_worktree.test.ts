@@ -2,6 +2,11 @@
 // drive every reason path without touching a real git repo.
 
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { cleanupWorktree, type Runner } from "./review_cleanup_worktree.ts";
@@ -120,4 +125,30 @@ test("cleanupWorktree removes a clean worktree at the expected HEAD", () => {
   assert.equal(r.removed, true);
   assert.equal(r.reason, "removed");
   assert.deepEqual(removeCalls, ["/tmp/x"]);
+});
+
+// Regression: under Node 25's --experimental-strip-types, import.meta.url is
+// resolved through realpath while process.argv[1] keeps the symlinked path,
+// so the prior `pathToFileURL(path.resolve(argv[1]))` gate silently never
+// fired when the script was invoked through a symlink (e.g. ~/.claude/
+// code-review/tools/ → stark-skills/tools/). Symptom was empty stdout +
+// exit 0. Guard by invoking the script through a real symlink and asserting
+// the CLI parser actually runs.
+test("CLI runs when invoked through a symlink (Node 25 strip-types regression)", () => {
+  const realScript = fileURLToPath(
+    new URL("./review_cleanup_worktree.ts", import.meta.url),
+  );
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-cleanup-symlink-"));
+  const linkedScript = path.join(tmpDir, "review_cleanup_worktree.ts");
+  try {
+    fs.symlinkSync(realScript, linkedScript);
+    const stdout = execFileSync(
+      process.execPath,
+      ["--experimental-strip-types", linkedScript, "--help"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    assert.match(stdout, /Usage: review_cleanup_worktree/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
