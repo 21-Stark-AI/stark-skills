@@ -196,7 +196,7 @@ def _build_graph_dependency_context(
     Resolves *base* through :func:`_resolve_base_ref` so blast-radius
     discovery uses the same merge-base as ``_get_changed_files`` and
     the agent prompts. Without this, a stale local ``main`` ref could
-    feed architecture/correctness sub-agents dependency nodes from
+    feed architecture/behavior sub-agents dependency nodes from
     other PRs that already landed on origin/main.
     """
     stark_graph = SCRIPTS_DIR / "stark_graph.py"

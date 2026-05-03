@@ -5,8 +5,8 @@ description: >-
 argument-hint: "[--prompts-dir design-review] (reads assessment from context or latest history)"
 disable-model-invocation: true
 model: opus
-revision: ea827b2dd463a563417f2dd86c31248eb42b5cfb
-revision_date: 2026-04-10T17:10:53+03:00
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 # stark-review-improvement
@@ -121,7 +121,7 @@ Read the target prompt file. Apply the minimum edit needed.
 | Scope creep — agents flag v2/future concerns as v1 issues          | `03-scope.md`                   | Add: "Calibrate findings to the design's stated scope and scale. Do not flag deferred/Phase 2 items as issues."         |
 | Same finding surfaces in 3+ domains                                | `agent.md`                      | Add: "If a finding primarily belongs to another domain, mention it briefly and defer to that domain's review."          |
 | One agent generates disproportionately more findings               | Agent-specific `agent.md`       | Tighten severity calibration: "A finding is high only if it would block implementation or cause a production incident." |
-| Over-engineering for scale (low-volume system gets scale critique) | `07-scalability.md`             | Add: "Consider the stated traffic volume. Do not recommend horizontal scaling for systems under 100 runs/day."          |
+| Over-engineering for scale (low-volume system gets scale critique) | Relevant domain prompt           | Add: "Consider the stated traffic volume. Do not recommend horizontal scaling for systems under 100 runs/day."          |
 | False positives on explicit design decisions                       | Domain prompt (relevant domain) | Add: "If the design explicitly addresses this concern in another section, do not flag it."                              |
 | Findings about missing features that are out of scope              | `01-completeness.md`            | Add: "Only flag missing items that are within the stated scope. Out-of-scope omissions are not completeness issues."    |
 
