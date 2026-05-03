@@ -24,7 +24,7 @@ Return JSON only, using this exact structure:
 {
   "domains": [
     {
-      "domain": "general",
+      "domain": "completeness",
       "relevant": true,
       "confidence": 0.92,
       "reason": "Brief explanation"

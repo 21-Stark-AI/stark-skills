@@ -2018,7 +2018,7 @@ def review_pr_single(
         spec_context = f"{spec_context}\n\n{ctx_files_content}" if spec_context else ctx_files_content
 
     # Build graph dependency context for enriched domains
-    enriched_domains = config.get("graph_enriched_domains", ["architecture", "correctness", "regression-prevention"])
+    enriched_domains = config.get("graph_enriched_domains", ["architecture", "behavior"])
     graph_context = _build_graph_dependency_context(effective_cwd, base, pr_number, config) if enriched_domains else None
     if graph_context:
         print(f"  [graph] dependency context built ({len(graph_context)} chars)", file=out)
@@ -2191,7 +2191,7 @@ def review_pr(
         spec_context = f"{spec_context}\n\n{ctx_files_content}" if spec_context else ctx_files_content
 
     # Build graph dependency context for enriched domains
-    enriched_domains = config.get("graph_enriched_domains", ["architecture", "correctness", "regression-prevention"])
+    enriched_domains = config.get("graph_enriched_domains", ["architecture", "behavior"])
     graph_context = _build_graph_dependency_context(effective_cwd, base, pr_number, config) if enriched_domains else None
     if graph_context:
         print(f"  [graph] dependency context built ({len(graph_context)} chars)", file=out)
