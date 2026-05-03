@@ -75,7 +75,7 @@ For each root cause, provide a concrete action: what to add to the plan, which p
 
 ### 4h. Coverage Matrix
 
-Maps the deployment-plan failure vectors (A-J) to the 10 adversarial domains. Populated from actual findings. See [domain-definitions.md](domain-definitions.md) for the full vector table.
+Maps the deployment-plan failure vectors (A-J) to the 4 adversarial domains. Populated from actual findings. See [domain-definitions.md](domain-definitions.md) for the full vector table.
 
 ### 4i. Changes Made
 

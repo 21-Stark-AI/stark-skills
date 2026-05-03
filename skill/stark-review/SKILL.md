@@ -6,8 +6,8 @@ description: >-
 argument-hint: "[PR_NUMBER] [--agent claude|codex|gemini] [--dry-run] [--repo ORG/REPO]"
 disable-model-invocation: false
 model: opus[1m]
-revision: 8a249169623b83c1677dcda2bee230a3dd9fa8d1
-revision_date: 2026-04-27T18:17:48Z
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 Cheaper single-agent PR review path. Keep this skill thin: call the Python
@@ -49,14 +49,11 @@ default agent per domain. Example:
 {
   "domain_agents": {
     "architecture": "codex",
-    "accessibility": "codex",
-    "correctness": "codex",
+    "behavior": "codex",
     "type-safety": "codex",
     "security": "codex",
     "test-coverage": "codex",
-    "spec-conformance": "codex",
-    "ui-design-conformance": "codex",
-    "regression-prevention": "codex"
+    "spec-conformance": "codex"
   }
 }
 ```

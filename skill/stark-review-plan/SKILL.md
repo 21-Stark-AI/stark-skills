@@ -1,23 +1,23 @@
 ---
 name: stark-review-plan
 description: >-
-  Multi-agent plan review: multi-LLM x 10 adversarial domains with fix loop. Use for review plan, audit deployment plan.
+  Multi-agent plan review: multi-LLM x 4 adversarial domains with fix loop. Use for review plan, audit deployment plan.
 argument-hint: "<path> [--rounds N] [--dry-run] [--force] [--tournament] [--agents claude,codex,gemini]"
 disable-model-invocation: true
 model: opus
-revision: 5bae9fae09f143b1e4134f06a268384aa3d24080
-revision_date: 2026-04-28T17:30:41Z
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 # stark-review-plan
 
-Multi-agent execution plan review: N agents × 10 adversarial domains dispatched in parallel
+Multi-agent execution plan review: N agents × 4 adversarial domains dispatched in parallel
 (default: 2 agents — Claude + Codex; configurable up to 3 with Gemini). Reviews quality of how
 a plan will be executed — can this plan actually be carried out safely?
 
 **This skill assumes the plan will fail and hunts for where it will break.**
 
-Normal mode: N agents × 10 domains = N×10 sub-agents in parallel (default N=2).
+Normal mode: N agents × 4 domains = N×4 sub-agents in parallel (default N=2).
 Tournament mode (`--tournament`): 3 agents each independently review the full document across all
 domains, then a judge evaluates and synthesizes the winner.
 
@@ -108,7 +108,7 @@ $PYTHON $SCRIPTS/triage_orchestrator.py --type plan --file "$path" --round $roun
   || $PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir plan-review --file "$path" --round $round --timeout 300 "${agents_args[@]}"
 ```
 
-Capture stdout as JSON. The triage orchestrator runs domain triage first, then dispatches only relevant domains. If the orchestrator fails, the `||` fallback calls `plan_review_dispatch.py` directly with all domains (N agents × 10 domains, default N=2).
+Capture stdout as JSON. The triage orchestrator runs domain triage first, then dispatches only relevant domains. If the orchestrator fails, the `||` fallback calls `plan_review_dispatch.py` directly with all domains (N agents × 4 domains, default N=2).
 
 Parse the JSON output. Extract findings from `results[].findings[]`.
 
@@ -143,12 +143,12 @@ Write a temporary `in-progress.json` to `~/.claude/code-review/history/plan-revi
 
 **Only runs when `--tournament` was passed. Replaces Phases 2 and 3.**
 
-Each agent independently reviews the full document across ALL 10 domains in a single comprehensive prompt. No domain splitting — each agent gets one combined prompt. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead:
+Each agent independently reviews the full document across ALL 4 domains in a single comprehensive prompt. No domain splitting — each agent gets one combined prompt. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead:
 
 ### 2T.a. Dispatch full-document reviews
 
 1. Determine the agent set: if `--agents <list>` was supplied, use that list; otherwise use the default tournament roster (`claude`, `codex`, `gemini`). Tournament mode requires at least 2 agents — if `--agents` resolves to a single agent, abort with an error suggesting normal mode instead.
-2. Build a single combined prompt per agent by concatenating all 10 domain prompt files from `~/.claude/code-review/prompts/plan-review/{agent}/` (preceded by `agent.md` preamble if present), then appending the plan content.
+2. Build a single combined prompt per agent by concatenating all 4 domain prompt files from `~/.claude/code-review/prompts/plan-review/{agent}/` (preceded by `agent.md` preamble if present), then appending the plan content.
 3. Dispatch each selected agent ONCE with the combined prompt. Use the same per-agent CLI shape as `_run_plan_subagent` in `scripts/plan_review_dispatch.py` (model, env, prompt-vs-stdin convention) — do not invent a new invocation:
    - **claude**: `build_claude_cmd()` with prompt on stdin; env from `build_agent_env("claude", "review")`.
    - **codex**: `codex exec -m $(_resolve_model codex) -c "$CODEX_REASONING_CONFIG" --ephemeral --json -s read-only -` with prompt on stdin; env from `build_agent_env("codex", "review")`. Use 2× the configured timeout (codex reasoning is slower).

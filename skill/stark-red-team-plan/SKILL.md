@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<plan-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: b1ebb989cde8f5fa8ae9a606a9973b738c664c10
-revision_date: 2026-05-01T16:17:03Z
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 # stark-red-team-plan
@@ -329,6 +329,6 @@ Manual invocation is informational.
   `2026-04-27-red-team-v1-calibration` baseline. Budget capped by
   `red_team.per_run_budget_usd` (default $15.00).
 - **Relation to `/stark-review-plan`.** `stark-review-plan` is multi-agent
-  domain-based (10 domains × N agents) with a fix loop; this skill is a
+  domain-based (4 domains × N agents) with a fix loop; this skill is a
   single-pass adversarial committee with no fix loop. Use this to surface
   blind spots before kicking off the heavier review/execution.
