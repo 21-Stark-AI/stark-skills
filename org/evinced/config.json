@@ -1,6 +1,5 @@
 {
   "severity_overrides": {
-    "accessibility": { "min_severity": "medium" },
     "security": {
       "title_patterns": {
         "unbounded memory": { "max_severity": "low", "reason": "Downgrade when spec explicitly addresses memory bounds or defers LRU" },

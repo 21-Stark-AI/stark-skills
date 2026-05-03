@@ -7,8 +7,8 @@ disable-model-invocation: false
 context: fork
 model: opus[1m]
 workflow_path: references/workflow.md
-revision: 8a249169623b83c1677dcda2bee230a3dd9fa8d1
-revision_date: 2026-04-27T18:17:48Z
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 ## Preflight
@@ -17,7 +17,7 @@ Run [standard preflight](../../standards/preflight.md) with `--workflow stark-te
 
 # stark-team-review
 
-Multi-agent PR review: all enabled LLMs across 9 domain specializations dispatched in parallel. Default install runs Claude + Codex; Gemini participates when enabled in config. Autonomous fix-review loop until clean or max rounds.
+Multi-agent PR review: all enabled LLMs across 6 domain specializations dispatched in parallel. Default install runs Claude + Codex; Gemini participates when enabled in config. Autonomous fix-review loop until clean or max rounds.
 
 ## Arguments
 

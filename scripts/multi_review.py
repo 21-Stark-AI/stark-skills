@@ -1,27 +1,24 @@
 #!/usr/bin/env python3
 """Multi-agent PR review orchestrator.
 
-Runs up to 3 CLI agents (Claude, Codex, Gemini) across 9 domain
+Runs up to 3 CLI agents (Claude, Codex, Gemini) across 6 domain
 specializations. Each agent posts a consolidated review via its GitHub App,
 grouped by domain.
 
 Architecture:
     multi_review.py (orchestrator)
-    ├── claude × 9 domains  → stark-claude bot
-    ├── codex  × 9 domains  → stark-codex bot
-    └── gemini × 9 domains  → stark-gemini bot
+    ├── claude × 6 domains  → stark-claude bot
+    ├── codex  × 6 domains  → stark-codex bot
+    └── gemini × 6 domains  → stark-gemini bot
 
 Prompts loaded from ~/.claude/code-review/prompts/{agent}/ (with repo/org overrides):
-    agent.md          Agent-specific preamble
-    01-architecture   Architecture & design patterns
-    02-accessibility   WCAG 2.1 AA compliance
-    03-correctness    Correctness & logic bugs
-    04-type-safety    TypeScript types & API surface
-    05-security       Security & error handling
-    06-test-coverage  Test coverage & quality
-    07-spec-conformance  Spec and acceptance criteria alignment
-    08-ui-design-conformance  UI design system and interaction consistency
-    09-regression-prevention  Backward compatibility and change safety
+    agent.md             Agent-specific preamble
+    01-architecture      Architecture & design patterns
+    02-behavior          Correctness, logic bugs, and regressions in existing callers
+    03-type-safety       TypeScript types & API surface
+    04-security          Security & error handling
+    05-test-coverage     Test coverage & quality
+    06-spec-conformance  Spec and acceptance criteria alignment
 
 Usage:
     multi_review.py --pr 10
@@ -199,7 +196,7 @@ def _build_graph_dependency_context(
     Resolves *base* through :func:`_resolve_base_ref` so blast-radius
     discovery uses the same merge-base as ``_get_changed_files`` and
     the agent prompts. Without this, a stale local ``main`` ref could
-    feed architecture/correctness sub-agents dependency nodes from
+    feed architecture/behavior sub-agents dependency nodes from
     other PRs that already landed on origin/main.
     """
     stark_graph = SCRIPTS_DIR / "stark_graph.py"
@@ -2021,7 +2018,7 @@ def review_pr_single(
         spec_context = f"{spec_context}\n\n{ctx_files_content}" if spec_context else ctx_files_content
 
     # Build graph dependency context for enriched domains
-    enriched_domains = config.get("graph_enriched_domains", ["architecture", "correctness", "regression-prevention"])
+    enriched_domains = config.get("graph_enriched_domains", ["architecture", "behavior"])
     graph_context = _build_graph_dependency_context(effective_cwd, base, pr_number, config) if enriched_domains else None
     if graph_context:
         print(f"  [graph] dependency context built ({len(graph_context)} chars)", file=out)
@@ -2194,7 +2191,7 @@ def review_pr(
         spec_context = f"{spec_context}\n\n{ctx_files_content}" if spec_context else ctx_files_content
 
     # Build graph dependency context for enriched domains
-    enriched_domains = config.get("graph_enriched_domains", ["architecture", "correctness", "regression-prevention"])
+    enriched_domains = config.get("graph_enriched_domains", ["architecture", "behavior"])
     graph_context = _build_graph_dependency_context(effective_cwd, base, pr_number, config) if enriched_domains else None
     if graph_context:
         print(f"  [graph] dependency context built ({len(graph_context)} chars)", file=out)
