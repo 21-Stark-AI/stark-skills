@@ -5,8 +5,8 @@ description: >-
 argument-hint: (reads assessment from context or design-review history)
 disable-model-invocation: true
 model: opus
-revision: e604960726e99b6a2299def9e33fb258540177e5
-revision_date: 2026-04-03T18:57:42+03:00
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 # stark-review-design-improvement
@@ -56,10 +56,10 @@ Invoke `/stark-review-improvement --prompts-dir design-review` with the extracte
 
 When the delegated skill presents action items for confirmation, add context about the design review pipeline:
 
-- **Domain prompts** are at `global/prompts/design-review/{claude,codex,gemini}/00-general.md` through `11-test-plan.md`
+- **Domain prompts** are at `global/prompts/design-review/{claude,codex,gemini}/01-completeness.md` through `08-test-plan.md`
 - **Agent preamble** is at `global/prompts/design-review/{agent}/agent.md`
 - **Dispatch script** is `scripts/plan_review_dispatch.py` (not `multi_review.py`)
-- **12 domains:** general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility, test-plan
+- **8 domains:** completeness, security, scope, api-design, data-modeling, consistency, accessibility, test-plan
 
 ### Common design review improvements
 
@@ -70,7 +70,7 @@ These patterns appear frequently in design review assessments:
 | Scope creep (agents flag Phase 2 / future work) | `03-scope.md` (all agents) | Add: "Only flag items within the design's stated v1 scope" |
 | Cross-domain duplicates (same finding in 3+ domains) | `agent.md` (all agents) | Add: "Defer findings to the primary domain" |
 | One agent noisier than others | Agent-specific `agent.md` | Tighten severity: "high = blocks implementation or production risk" |
-| Scale critique on low-volume system | `07-scalability.md` | Add: "Consider stated traffic volume before flagging" |
+| Scale critique on low-volume system | Relevant domain prompt | Add: "Consider stated traffic volume before flagging" |
 | Missing features that are explicitly out of scope | `01-completeness.md` | Add: "Only flag omissions within stated scope" |
 | Repeated findings about same design pattern | `agent.md` | Add max-findings guidance or severity floor |
 

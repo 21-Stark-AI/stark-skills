@@ -24,8 +24,8 @@ Set each to `in_progress` BEFORE starting, `completed` when done.
 For Phase 2, create child tasks dynamically per round:
 
 ```
-TaskCreate: "Round 1: dispatch N×10 sub-agents"
-            activeForm: "Dispatching N×10 sub-agents (round 1)"
+TaskCreate: "Round 1: dispatch N×8 sub-agents"
+            activeForm: "Dispatching N×8 sub-agents (round 1)"
 TaskCreate: "Round 1: classify + fix"
             activeForm: "Classifying and fixing findings"
 ```
@@ -47,14 +47,14 @@ Record `T0` at skill start. Print for every phase transition and key event:
 [HH:MM:SS] === stark-review-design started ===
 [HH:MM:SS] Phase 1: Setup — done (3s)
 [HH:MM:SS] Phase 2: Review-Fix Loop — started
-[HH:MM:SS]   ▸ Round 1: dispatching N×10 sub-agents
-[HH:MM:SS]   ▸ Round 1: N×10 succeeded — 180s
+[HH:MM:SS]   ▸ Round 1: dispatching N×8 sub-agents
+[HH:MM:SS]   ▸ Round 1: N×8 succeeded — 180s
 [HH:MM:SS]   ▸ Round 1: 15 fix, 6 noise, 4 FP — fixing design
 [HH:MM:SS]   ▸ Round 1: done
-[HH:MM:SS]   ▸ Round 2: dispatching N×10 sub-agents
+[HH:MM:SS]   ▸ Round 2: dispatching N×8 sub-agents
 [HH:MM:SS]   ...
 [HH:MM:SS] Phase 2: done (11m 30s)
-[HH:MM:SS] Phase 3: Final Review — N×10 sub-agents — done (3m 10s)
+[HH:MM:SS] Phase 3: Final Review — N×8 sub-agents — done (3m 10s)
 [HH:MM:SS] Phase 4: Summary — done (5s)
 [HH:MM:SS] Phase 5: Output — done (3s)
 [HH:MM:SS] === stark-review-design completed ===
@@ -64,7 +64,7 @@ For tournament mode:
 
 ```
 [HH:MM:SS] === stark-review-design (tournament) started ===
-[HH:MM:SS]   ▸ Dispatching 3 comprehensive reviews (all 12 domains)
+[HH:MM:SS]   ▸ Dispatching 3 comprehensive reviews (all 8 domains)
 [HH:MM:SS]   ▸ All 3 agents returned — 240s
 [HH:MM:SS]   ▸ Judge evaluation pass 1
 [HH:MM:SS]   ▸ Judge evaluation pass 2 (order swapped)
@@ -75,7 +75,7 @@ For tournament mode:
 ## 5-minute checkpoints (required for runs > 5 min)
 
 ```
-[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 18/N×10 sub-agents complete
+[HH:MM:SS] ⏱ Checkpoint — 5m elapsed | Phase 2, Round 1 | 18/N×8 sub-agents complete
 ```
 
 ## Metrics block at end (required)

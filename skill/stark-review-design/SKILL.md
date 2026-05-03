@@ -1,12 +1,12 @@
 ---
 name: stark-review-design
 description: >-
-  Multi-agent design/spec review: multi-LLM x 12 domains. Use for review design, review spec, review architecture.
+  Multi-agent design/spec review: multi-LLM x 8 domains. Use for review design, review spec, review architecture.
 argument-hint: "<path> [--rounds N] [--dry-run] [--force] [--tournament]"
 disable-model-invocation: true
 model: opus
-revision: 8a249169623b83c1677dcda2bee230a3dd9fa8d1
-revision_date: 2026-04-27T18:17:48Z
+revision: ea7268a18edb159e040db78148f2ab9cb324d76a
+revision_date: 2026-05-03T06:43:43Z
 ---
 
 ## Preflight
@@ -15,7 +15,7 @@ Run [standard preflight](../../standards/preflight.md) with `--workflow stark-re
 
 # stark-review-design
 
-Multi-agent architecture/spec review: N agents × 12 domain specializations dispatched in parallel
+Multi-agent architecture/spec review: N agents × 8 domain specializations dispatched in parallel
 (default: 2 agents — Claude + Codex; configurable up to 3 with Gemini). Review-fix loop for up to
 N rounds, then final review-only round. Answers the question: **"Is this the right system?"**
 
@@ -29,9 +29,9 @@ N rounds, then final review-only round. Answers the question: **"Is this the rig
 
 **Raw input:** `$ARGUMENTS`
 
-## Domains (12)
+## Domains (8)
 
-`general`, `completeness`, `security`, `scope`, `api-design`, `data-modeling`, `consistency`, `scalability`, `extensibility`, `resilience`, `accessibility`, `test-plan`
+`completeness`, `security`, `scope`, `api-design`, `data-modeling`, `consistency`, `accessibility`, `test-plan`
 
 ## Constants
 
@@ -89,15 +89,15 @@ max_rounds=3
 
 When `--tournament` is passed, skip the normal Phase 2 / Phase 3 loop and run this instead:
 
-Each of the 3 agents (Claude, Codex, Gemini) independently reviews the **entire design document across ALL 12 domains** in a single comprehensive pass. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead, the skill orchestrator:
+Each of the 3 agents (Claude, Codex, Gemini) independently reviews the **entire design document across ALL 8 domains** in a single comprehensive pass. Tournament mode does NOT use `plan_review_dispatch.py`'s normal per-domain dispatch pattern. Instead, the skill orchestrator:
 
-1. Combines all 12 domain prompts into a single comprehensive prompt per agent
+1. Combines all 8 domain prompts into a single comprehensive prompt per agent
 2. Dispatches each agent ONCE with the combined prompt (directly via CLI, not via plan_review_dispatch.py)
 3. Collects 3 full review documents (one per agent)
 4. Calls `evaluate_review()` from `tournament.py` to judge them
 
 The 3 competing reviews are evaluated by `tournament.py`'s `evaluate_review()` function. The judge evaluates on:
-- Coverage — did the agent find issues across all 12 domains?
+- Coverage — did the agent find issues across all 8 domains?
 - Severity accuracy — are severity ratings calibrated correctly?
 - False positive rate — are flagged issues real?
 - Actionability — are findings specific enough to act on?
@@ -139,7 +139,7 @@ For round = 1 to max_rounds:
 $PYTHON $SCRIPTS/triage_orchestrator.py --type design --file "$path" --round $round --json || $PYTHON $SCRIPTS/plan_review_dispatch.py --prompts-dir design-review --file "$path" --round $round --timeout 300
 ```
 
-Capture stdout as JSON. The triage orchestrator runs domain triage first, then dispatches only relevant domains. If the orchestrator fails, the `||` fallback calls `plan_review_dispatch.py` directly with all domains (N agents × 12 domains, default N=2).
+Capture stdout as JSON. The triage orchestrator runs domain triage first, then dispatches only relevant domains. If the orchestrator fails, the `||` fallback calls `plan_review_dispatch.py` directly with all domains (N agents × 8 domains, default N=2).
 
 Parse the JSON output. Extract findings from `results[].findings[]`.
 

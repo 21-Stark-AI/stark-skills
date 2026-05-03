@@ -1,19 +1,13 @@
 # Domain Definitions & Classification
 
-## Domains (10)
+## Domains (4)
 
 | # | Domain | Focus |
 |---|--------|-------|
-| 1 | general | Overall coherence, scope clarity, stated goals vs. actual steps |
-| 2 | completeness | Missing prerequisites, undocumented assumptions, gaps in coverage |
-| 3 | security | Identity lifecycle, least-privilege, secrets handling, blast radius |
-| 4 | feasibility | Command validity, idempotency, human-executable steps, tooling availability |
-| 5 | operability | Observability, alerting, runbooks, on-call impact, operator UX |
-| 6 | sequencing | Dependency ordering, parallel vs. serial correctness, race conditions |
-| 7 | rollback | Rollback completeness, partial-failure traps, state recovery |
-| 8 | risk | Risk inventory, probability x impact, mitigations, residual risk |
-| 9 | gates | Cutover criteria, go/no-go checks, validation evidence, sign-off |
-| 10 | timeline | Duration estimates, critical path, buffer, deadline realism |
+| 1 | completeness | Overall coherence, scope clarity, missing prerequisites, undocumented assumptions, gaps in coverage |
+| 2 | security | Identity lifecycle, least-privilege, secrets handling, blast radius |
+| 3 | sequencing | Dependency ordering, parallel vs. serial correctness, race conditions |
+| 4 | viability | Command validity, idempotency, risk inventory, probability x impact, mitigations, residual risk |
 
 ## Finding Classification
 
@@ -31,20 +25,20 @@ Cross-reference: 2+ agents flagging the same section with the same concern = `hi
 
 ## Coverage Matrix (Vectors A-J)
 
-Maps deployment-plan failure vectors to the 10 adversarial domains. Populated from actual findings.
+Maps deployment-plan failure vectors to the 4 adversarial domains. Populated from actual findings.
 
 | Vector | Domain | Status | Evidence |
 |--------|--------|--------|----------|
-| A) Partial-Failure Trap | rollback, sequencing | {found/clean/not-applicable} | {section or finding ref} |
-| B) Imperative Idempotency | feasibility | {found/clean/not-applicable} | {section or finding ref} |
+| A) Partial-Failure Trap | viability, sequencing | {found/clean/not-applicable} | {section or finding ref} |
+| B) Imperative Idempotency | viability | {found/clean/not-applicable} | {section or finding ref} |
 | C) Blank-Slate IaC | completeness | {found/clean/not-applicable} | {section or finding ref} |
 | D) Dependency Sequencing | sequencing | {found/clean/not-applicable} | {section or finding ref} |
-| E) Reality Drift | operability | {found/clean/not-applicable} | {section or finding ref} |
-| F) Command Validation | feasibility | {found/clean/not-applicable} | {section or finding ref} |
-| G) Cutover Gates | gates, rollback | {found/clean/not-applicable} | {section or finding ref} |
+| E) Reality Drift | completeness | {found/clean/not-applicable} | {section or finding ref} |
+| F) Command Validation | viability | {found/clean/not-applicable} | {section or finding ref} |
+| G) Cutover Gates | viability | {found/clean/not-applicable} | {section or finding ref} |
 | H) API Prerequisites | completeness, sequencing | {found/clean/not-applicable} | {section or finding ref} |
 | I) Identity Lifecycle | security | {found/clean/not-applicable} | {section or finding ref} |
-| J) Evidence Strictness | general | {found/clean/not-applicable} | {section or finding ref} |
+| J) Evidence Strictness | completeness | {found/clean/not-applicable} | {section or finding ref} |
 
 ## Tournament Evaluation Criteria
 

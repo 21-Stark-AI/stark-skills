@@ -1,15 +1,12 @@
 {
   "version": 1,
-  "always_include": ["general", "completeness", "scope", "consistency"],
+  "always_include": ["completeness", "scope", "consistency"],
   "conditional": {
     "api-design": {"patterns": ["\\bREST\\b", "\\bAPI\\b", "\\bendpoint", "\\bHTTP\\b", "\\bGraphQL\\b"]},
     "data-modeling": {"patterns": ["\\bdatabase\\b", "\\bschema\\b", "\\bPostgreSQL\\b", "\\bSQLite\\b", "\\bmodel\\b"]},
     "security": {"patterns": ["\\bauth\\b", "\\btoken\\b", "\\bencrypt\\b", "\\bsecret\\b", "\\bpermission\\b"]},
-    "scalability": {"patterns": ["\\bconcurren\\b", "\\bscale\\b", "\\bperformanc\\b", "\\bthroughput\\b"]},
-    "resilience": {"patterns": ["\\bretry\\b", "\\bfailover\\b", "\\bcircuit.breaker\\b", "\\btimeout\\b"]},
-    "extensibility": {"patterns": ["\\bplugin\\b", "\\bhook\\b", "\\bextend\\b", "\\bregist\\b"]},
     "accessibility": {"patterns": ["\\ba11y\\b", "\\baccessib\\b", "\\bscreen.reader\\b", "\\bWCAG\\b", "\\bARIA\\b"]},
-    "implementation-feasibility": {"patterns": ["always"]}
+    "test-plan": {"patterns": ["always"]}
   },
   "patches_since_consolidation": 0
 }

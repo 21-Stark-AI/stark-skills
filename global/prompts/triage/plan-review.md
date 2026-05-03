@@ -24,7 +24,7 @@ Return JSON only, using this exact structure:
 {
   "domains": [
     {
-      "domain": "general",
+      "domain": "completeness",
       "relevant": true,
       "confidence": 0.92,
       "reason": "Brief explanation"
@@ -37,7 +37,7 @@ Return JSON only, using this exact structure:
 
 - Assess every domain in the catalogue; do not omit domains.
 - Judge relevance, not whether a finding definitely exists.
-- Consider which execution, rollout, dependency, risk, security, rollback, and scheduling concerns the plan actually addresses.
+- Consider which execution, dependency, security, sequencing, and viability concerns the plan actually addresses.
 - Base relevance on the plan's content and operational claims, not on file-level change heuristics.
 - Err toward `relevant: true` when the plan materially discusses a domain or creates risk in that area.
 - Keep reasons brief and specific to the plan.
