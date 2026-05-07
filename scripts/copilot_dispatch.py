@@ -123,6 +123,32 @@ def _normalize_verdict(obj: dict) -> tuple[str, list[str], list[str], str]:
     return verdict, blocking, suggestions, summary
 
 
+def _snapshot_worktree(worktree_path: str) -> tuple[str, str]:
+    """Capture (HEAD sha, working-tree status) for a defensive read-only check."""
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True, text=True, cwd=worktree_path,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-uall"],
+        capture_output=True, text=True, cwd=worktree_path,
+    ).stdout
+    return head, status
+
+
+def _restore_worktree(worktree_path: str, snapshot: tuple[str, str]) -> None:
+    """Best-effort restore the worktree to the pre-review snapshot."""
+    head, _ = snapshot
+    subprocess.run(
+        ["git", "reset", "--hard", head],
+        capture_output=True, text=True, cwd=worktree_path,
+    )
+    subprocess.run(
+        ["git", "clean", "-fd"],
+        capture_output=True, text=True, cwd=worktree_path,
+    )
+
+
 def _run_wing_review(
     wing: str,
     review_payload: str,
@@ -137,25 +163,29 @@ def _run_wing_review(
     stdin_input: str | None = None
 
     if wing == "claude":
+        # Read-only by tool allowlist.
         cmd = build_claude_cmd(allowed_tools="Read,Glob,Grep")
         stdin_input = review_payload
     elif wing == "codex":
+        # Read-only sandbox; do NOT use --full-auto for review.
         cmd = [
             "codex", "exec",
             "-m", _resolve_model("codex"),
             "-c", CODEX_REASONING_EFFORT_MEDIUM,
             "--ephemeral", "--json",
-            "--full-auto",
+            "-s", "read-only",
             "-",
         ]
         stdin_input = review_payload
     elif wing == "gemini":
-        gemini_home = setup_gemini_home("gemini-copilot-wing-", cwd, "copilot")
+        # Plan approval mode = read-only; do NOT use --yolo for review.
+        gemini_home = setup_gemini_home(
+            "gemini-copilot-wing-", cwd, "copilot", approval_mode="plan",
+        )
         cmd = [
             "gemini",
             "-m", _resolve_model("gemini"),
             "-p", review_payload,
-            "--yolo",
         ]
     else:
         return "", "unknown_agent"
@@ -357,10 +387,31 @@ def run_copilot_step(
             prior_rounds=prior,
         )
 
+        # Snapshot the worktree before the wing reviews so we can detect any
+        # mutation. The wing is configured read-only (claude allowlist,
+        # codex `-s read-only`, gemini approval_mode="plan"), but we still
+        # verify defensively — a mutating reviewer is a contract violation.
+        pre_snapshot = _snapshot_worktree(worktree_path)
+
         wing_raw, wing_err = _run_wing_review(wing, payload, worktree_path, wing_timeout)
         if wing_err == "timeout":
             # one retry per failure mode table
             wing_raw, wing_err = _run_wing_review(wing, payload, worktree_path, wing_timeout)
+
+        post_snapshot = _snapshot_worktree(worktree_path)
+        if pre_snapshot != post_snapshot:
+            _restore_worktree(worktree_path, pre_snapshot)
+            current_round.wing_raw = wing_raw
+            current_round.verdict = "unparseable"
+            current_round.blocking_findings = [
+                "wing reviewer mutated the worktree — read-only contract violated; worktree restored",
+            ]
+            current_round.summary = "Wing mutation detected; aborting."
+            rounds.append(current_round)
+            final_verdict = "unresolved"
+            error = "wing_mutation_detected"
+            break
+
         if wing_err:
             current_round.wing_raw = wing_raw
             current_round.verdict = "unparseable"
@@ -381,7 +432,21 @@ def run_copilot_step(
                   "verdict block. Respond again ending with EXACTLY one ```json fenced block "
                   "containing keys verdict, blocking_findings, non_blocking_suggestions, summary."
             )
+            retry_pre = _snapshot_worktree(worktree_path)
             wing_raw, wing_err = _run_wing_review(wing, retry_payload, worktree_path, wing_timeout)
+            retry_post = _snapshot_worktree(worktree_path)
+            if retry_pre != retry_post:
+                _restore_worktree(worktree_path, retry_pre)
+                current_round.wing_raw = wing_raw
+                current_round.verdict = "unparseable"
+                current_round.blocking_findings = [
+                    "wing reviewer mutated the worktree on parse-retry — read-only contract violated; worktree restored",
+                ]
+                current_round.summary = "Wing mutation detected on parse-retry; aborting."
+                rounds.append(current_round)
+                final_verdict = "unresolved"
+                error = "wing_mutation_detected"
+                break
             parse_retry = True
             if not wing_err:
                 verdict_obj = _extract_verdict_json(wing_raw)

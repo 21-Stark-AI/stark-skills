@@ -5,8 +5,8 @@ description: >-
 argument-hint: '<plan-or-prompt> [--plan-slug SLUG] [--test-command CMD] [--lead claude|codex|gemini] [--wing claude|codex|gemini] [--max-rounds N] [--timeout N] [--dry-run]'
 disable-model-invocation: true
 model: opus
-revision: cb87cdbd58eefd19a2ed55f1a870d05de6cb90d0
-revision_date: 2026-05-07T05:33:57Z
+revision: bc283607be3935518e36e050289e9178e046d072
+revision_date: 2026-05-07T05:41:40Z
 ---
 
 ## Preflight
@@ -350,4 +350,5 @@ Most autopilot failure modes apply here too — see [autopilot's references/fail
 | `--lead` == `--wing` | `error=lead_eq_wing` returned immediately | Refuse before dispatch in §1; never reach dispatcher |
 | Lead's revision round produces empty diff vs prior round | `final_verdict=unresolved`, `error=lead_fix_round_no_change` | Stop the run; surface findings — lead is stuck |
 | Wing returns `block` verdict | `final_verdict=blocked`, `error=wing_blocked` | Stop the run; print wing's `summary` and `blocking_findings` |
+| Wing mutates the worktree (read-only contract violation) | `final_verdict=unresolved`, `error=wing_mutation_detected`. Worktree is restored to the pre-review snapshot via `git reset --hard <pre-HEAD> && git clean -fd`. | Stop the run; surface the violation. The wing is invoked read-only (claude allowlist; codex `-s read-only`; gemini `approval_mode=plan`), so this is a hard contract bug if it fires. |
 | Verification gate fails after wing approval (§2e) | (Out of dispatcher scope) | Either burn one extra dispatcher round with the gate failure as a finding, or stop the run |
