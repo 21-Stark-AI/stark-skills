@@ -5,8 +5,8 @@ description: >-
 argument-hint: '<plan-or-prompt> [--plan-slug SLUG] [--test-command CMD] [--lead claude|codex|gemini] [--wing claude|codex|gemini] [--max-rounds N] [--timeout N] [--dry-run]'
 disable-model-invocation: true
 model: opus
-revision: bc283607be3935518e36e050289e9178e046d072
-revision_date: 2026-05-07T05:41:40Z
+revision: f1653ea1d3dec16590431ad558264face446b81b
+revision_date: 2026-05-07T08:23:47Z
 ---
 
 ## Preflight
@@ -136,6 +136,8 @@ Each step: lead implements in worktree → wing reviews diff → fix-loop until 
 ```
 
 In plan-file or inline mode, replace the Mode line with `Mode: plan-file` or `Mode: inline`.
+
+**No-op case:** If every phase is skipped (all tasks closed or human-led), still print the banner with `Steps: 0` and a `(no actionable steps)` line in place of the per-step list, followed by a `Skipped phases:` block enumerating each skipped phase with the phase number, issue number, and `(N/M closed)` count. Then exit with a clear "Nothing to do — all tasks already implemented." message. Do not invoke the dispatcher.
 
 If `--dry-run`, stop here.
 
