@@ -205,3 +205,32 @@ test("parseOutput: still flags malformed findings (has title or severity)", () =
   assert.equal(findings.length, 0);
   assert.equal(parseErrors.length, 4);
 });
+
+test("parseOutput: no_findings sentinel sets noFindingsAck and is not a parse error", () => {
+  const sentinel = JSON.stringify({ no_findings: true, domain: "security", agent: "codex" });
+  const { findings, parseErrors, noFindingsAck } = parseOutput(sentinel);
+  assert.equal(findings.length, 0);
+  assert.equal(parseErrors.length, 0);
+  assert.equal(noFindingsAck, true);
+});
+
+test("parseOutput: sentinel + findings → ack stays true alongside findings", () => {
+  // Defensive: agent emits both. We accept both — findings are still parsed,
+  // ack is still set. Dispatcher rule already prefers findings.length > 0.
+  const f = { domain: "d", severity: "high", title: "t", body: "b" };
+  const lines = [
+    JSON.stringify({ no_findings: true, domain: "d" }),
+    JSON.stringify(f),
+  ].join("\n");
+  const { findings, parseErrors, noFindingsAck } = parseOutput(lines);
+  assert.equal(findings.length, 1);
+  assert.equal(parseErrors.length, 0);
+  assert.equal(noFindingsAck, true);
+});
+
+test("parseOutput: empty stdout → no ack set", () => {
+  const r = parseOutput("");
+  assert.equal(r.findings.length, 0);
+  assert.equal(r.parseErrors.length, 0);
+  assert.equal(r.noFindingsAck, undefined);
+});
