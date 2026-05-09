@@ -27,6 +27,10 @@ export interface ParseError {
 export interface ParseResult {
   findings: Finding[];
   parseErrors: ParseError[];
+  /** True when the agent emitted at least one explicit no-findings sentinel
+   * (`{"no_findings": true, ...}`). Distinguishes "agent reviewed and found
+   * nothing" from "agent emitted unparseable prose". */
+  noFindingsAck?: boolean;
 }
 
 const VALID_SEVERITIES: ReadonlySet<Severity> = new Set<Severity>([
@@ -170,6 +174,7 @@ function asNumberOrNull(v: unknown): number | null {
 export function parseOutput(stdout: string): ParseResult {
   const findings: Finding[] = [];
   const parseErrors: ParseError[] = [];
+  let noFindingsAck = false;
 
   const agentText = extractAgentText(stdout);
 
@@ -191,6 +196,14 @@ export function parseOutput(stdout: string): ParseResult {
 
     if (!isPlainObject(parsed)) {
       parseErrors.push({ line, reason: "record is not a JSON object" });
+      continue;
+    }
+
+    // No-findings sentinel: explicit ack that the agent reviewed and found
+    // nothing. Distinguishes a clean review from prose noise so the dispatcher
+    // doesn't trip the "unparseable stdout" tier-1 check.
+    if (parsed.no_findings === true) {
+      noFindingsAck = true;
       continue;
     }
 
@@ -268,5 +281,7 @@ export function parseOutput(stdout: string): ParseResult {
     findings.push(finding);
   }
 
-  return { findings, parseErrors };
+  return noFindingsAck
+    ? { findings, parseErrors, noFindingsAck: true }
+    : { findings, parseErrors };
 }
