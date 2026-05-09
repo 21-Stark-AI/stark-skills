@@ -755,11 +755,15 @@ export async function dispatchDomains(opts: DispatchOptions): Promise<DispatchRe
           continue;
         }
         const parsed = port.parseOutput(sp.stdout);
-        // Tier 1 detection: non-empty stdout that yields no findings AND no parse
-        // errors is unparseable prose — route to failed_results, not a silent ok.
+        // Tier 1 detection: non-empty stdout that yields no findings AND no
+        // parse errors AND no explicit no-findings sentinel is unparseable
+        // prose — route to failed_results, not a silent ok. The sentinel
+        // (`{"no_findings":true,...}`) is the agent's explicit clean-review
+        // ack and is the ONLY way to signal "I reviewed and found nothing".
         if (
           parsed.findings.length === 0 &&
           parsed.parseErrors.length === 0 &&
+          !parsed.noFindingsAck &&
           sp.stdout.trim().length > 0
         ) {
           results[idx] = {

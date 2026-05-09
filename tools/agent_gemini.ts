@@ -130,6 +130,7 @@ function asNumberOrNull(v: unknown): number | null {
 export function parseOutput(stdout: string): ParseResult {
   const findings: Finding[] = [];
   const parseErrors: ParseError[] = [];
+  let noFindingsAck = false;
   const text = normalizeOutput(stdout);
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
@@ -141,6 +142,11 @@ export function parseOutput(stdout: string): ParseResult {
     }
     if (!isPlainObject(parsed)) {
       parseErrors.push({ line, reason: "record is not a JSON object" });
+      continue;
+    }
+    // No-findings sentinel: explicit ack of a clean review. See agent_codex.ts.
+    if (parsed.no_findings === true) {
+      noFindingsAck = true;
       continue;
     }
     // A finding MUST have severity and title. Lines with neither are framing
@@ -196,5 +202,7 @@ export function parseOutput(stdout: string): ParseResult {
     if (Object.keys(carriedExtra).length > 0) finding.extra = carriedExtra;
     findings.push(finding);
   }
-  return { findings, parseErrors };
+  return noFindingsAck
+    ? { findings, parseErrors, noFindingsAck: true }
+    : { findings, parseErrors };
 }

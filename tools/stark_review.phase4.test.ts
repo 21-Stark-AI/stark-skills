@@ -228,6 +228,53 @@ test("dispatchDomains: concurrency capped + temp-dir-per-invocation", async () =
   }
 });
 
+test("dispatchDomains: noFindingsAck rescues non-empty-stdout from unparseable tier-1", async () => {
+  // The tier-1 unparseable check fires when stdout is non-empty AND yields no
+  // findings AND no parse errors. The no-findings sentinel must override that:
+  // a clean review with the sentinel is `ok: true` even when the surrounding
+  // stdout contained framing chatter the parser stripped.
+  const config = bareConfig();
+  const ackPort: AgentPort = {
+    buildCommand: (prompt: string) => ({ cmd: "/bin/echo", args: [], stdin: prompt, env: {} }),
+    parseOutput: () => ({ findings: [], parseErrors: [], noFindingsAck: true }),
+  };
+  const ports = new Map([["codex" as const, ackPort]]);
+  const fakeSpawn = async () => ({
+    // Non-empty stdout — old behavior would have flagged this as unparseable.
+    stdout: "I reviewed the diff thoroughly.\n", stderr: "", status: 0,
+  });
+  const results = await dispatchDomains({
+    assignments: [{ domain: "behavior", agent: "codex", prompt: "p" }],
+    ports, config,
+    spawnFn: fakeSpawn as unknown as typeof fakeSpawn,
+  });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].ok, true, `expected ok, got error=${results[0].error}`);
+  assert.equal(results[0].findings.length, 0);
+});
+
+test("dispatchDomains: non-empty stdout WITHOUT sentinel still trips unparseable tier-1", async () => {
+  // Belt-and-braces: the sentinel is the ONLY way to mark a clean review.
+  // Pure prose without the sentinel must continue to fail.
+  const config = bareConfig();
+  const prosePort: AgentPort = {
+    buildCommand: (prompt: string) => ({ cmd: "/bin/echo", args: [], stdin: prompt, env: {} }),
+    parseOutput: () => ({ findings: [], parseErrors: [] }),
+  };
+  const ports = new Map([["codex" as const, prosePort]]);
+  const fakeSpawn = async () => ({
+    stdout: "Looks good to me, no issues!", stderr: "", status: 0,
+  });
+  const results = await dispatchDomains({
+    assignments: [{ domain: "behavior", agent: "codex", prompt: "p" }],
+    ports, config,
+    spawnFn: fakeSpawn as unknown as typeof fakeSpawn,
+  });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].error ?? "", /unparseable/);
+});
+
 test("dispatchDomains: failure of one domain does not abort siblings", async () => {
   const config = bareConfig();
   const fakePort: AgentPort = {

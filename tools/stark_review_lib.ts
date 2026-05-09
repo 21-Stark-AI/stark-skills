@@ -82,9 +82,21 @@ export interface ResolvedConfig {
  */
 export const FINDING_SCHEMA_PROMPT = `## Reviewer Output Contract (CANONICAL)
 
-Emit findings as JSONL — one JSON object per line. Output ONLY the JSONL stream: no prose, no markdown fences, no surrounding array. If you have no findings, emit nothing (zero lines).
+Emit findings as JSONL — one JSON object per line. Output ONLY the JSONL stream: no prose, no markdown fences, no surrounding array, no preamble, no trailing commentary.
 
-Each line MUST be a JSON object with these fields:
+**You MUST emit at least one JSON line.** Output is parsed as JSONL; an empty stdout, or stdout containing only prose, is treated as a parser failure and your review is discarded.
+
+### When you have no findings
+
+Emit EXACTLY ONE line — the no-findings sentinel — and nothing else:
+
+{"no_findings":true,"domain":"<domain-slug>","agent":"<your-agent-name>"}
+
+Use this whenever you reviewed the diff and have nothing to report. Do not write "LGTM", "no issues found", or any prose explanation — the sentinel IS the explanation. Do not omit this line; silence is not a valid no-findings signal.
+
+### When you have findings
+
+Emit one JSON object per finding. Each line MUST be a JSON object with these fields:
 
 - \`id\` (string, required) — stable identifier for this finding within the run (e.g. a short slug or hash)
 - \`domain\` (string, required) — the review domain slug (e.g. \`architecture\`, \`security\`)
@@ -98,11 +110,11 @@ Each line MUST be a JSON object with these fields:
 - \`classification_reason\` (string, optional) — one-sentence justification, paired with \`classification\`.
 - \`extra\` (object, optional) — open-ended metadata for domain-specific fields.
 
-Example line:
+Example finding line:
 
 {"id":"sec-001","domain":"security","agent":"codex","severity":"high","file":"src/api/handler.ts","line":42,"title":"Unvalidated input forwarded to query builder","body":"The handler reads req.query.id and passes it directly to db.raw(...). Validate or parameterize.","extra":{}}
 
-Do NOT emit a JSON array. Do NOT wrap output in code fences. Do NOT include any preamble or trailing commentary.
+Do NOT emit a JSON array. Do NOT wrap output in code fences. Do NOT include any preamble or trailing commentary. If you found nothing, emit the no-findings sentinel — never both findings AND the sentinel in the same run.
 `;
 
 const LEGACY_OUTPUT_PATTERNS: RegExp[] = [
