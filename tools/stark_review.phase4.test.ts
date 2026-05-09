@@ -119,7 +119,7 @@ test("parseCli: --domains beats --quick with warning", () => {
   assert.ok(r.warnings.some((w) => /domains beats/.test(w)));
 });
 
-test("parseCli: --allow-untrusted-fix-loop emits deprecation warning and is inert", () => {
+test("parseCli: --allow-untrusted-fix-loop warns about config requirement (Phase 9)", () => {
   const wt = tmpDir("wt-");
   const cfg = tmpDir("cfg-");
   const r = parseCli([
@@ -128,7 +128,7 @@ test("parseCli: --allow-untrusted-fix-loop emits deprecation warning and is iner
     "--allow-untrusted-fix-loop",
   ]);
   assert.equal(r.config!.allowUntrustedFixLoop, true);
-  assert.ok(r.warnings.some((w) => /fix loop not enabled in V1/i.test(w)));
+  assert.ok(r.warnings.some((w) => /untrusted_fix_loop/.test(w)));
 });
 
 test("parseCli: rejects non-absolute --worktree", () => {
