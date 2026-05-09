@@ -11,7 +11,7 @@ Replace the Python-driven `/stark-review` pipeline with a single dedicated TypeS
 Three motivating constraints from the user:
 
 1. `/stark-review` should be TypeScript-only end to end — no Python on the hot path.
-2. All GitHub interactions go through REST endpoints (`gh api <path>`), never `gh api graphql`.
+2. All GitHub interactions go through REST endpoints (`gh api <path>`), never `gh api graphql`. `gh pr view --json` and `gh pr diff` are permitted because their underlying transport is REST (`gh` shells out to `/repos/.../pulls/{n}` and `/repos/.../pulls/{n}.diff` respectively, never to the GraphQL endpoint). The "no GraphQL" rule is about the wire protocol, not about avoiding `gh pr` subcommands.
 3. Add a `--quick` mode that reviews only the highest-value domains, configured per-repo/org/global.
 
 ## Non-goals
@@ -86,12 +86,34 @@ New files under `tools/`:
 (Total: 6 new files. The three agent ports are intentionally tiny, ≤100 LOC
 each — see §4 — and would otherwise be inlined and untestable.)
 
-**Phasing.** `agent_codex.ts` is the only one required for V1, since codex is
-the default agent and the only one routed to by the shipped `domain_agents`
-config. `agent_claude.ts` and `agent_gemini.ts` are stubs that throw a
-"not yet implemented in TS path; use /stark-team-review" error when invoked
-via `--agent claude` / `--agent gemini`. They land fully implemented in a
-follow-up PR. This bounds V1 scope while keeping the public CLI stable.
+**Phasing.** Three new files land in V1:
+
+- `tools/stark_review.ts`, `tools/stark_review_lib.ts`, `tools/agent_codex.ts`.
+
+Two stub files land in V1 to reserve their public surface:
+
+- `tools/agent_claude.ts`, `tools/agent_gemini.ts` each export the same
+  `buildCommand` / `parseOutput` interface as `agent_codex.ts` but the
+  implementations throw `Error("agent <name> not implemented in the TS path
+  yet; use /stark-team-review for multi-agent review or wait for V1.1")`.
+
+`stark_review.ts` resolves the agent module dynamically; the stubs ensure
+V1 fails fast and clearly when `--agent claude` / `--agent gemini` is passed,
+rather than silently falling through to codex.
+
+**Documented opt-out.** Users who relied on `--agent claude` or
+`--agent gemini` against the old Python path are pointed at
+`/stark-team-review` (which keeps the Python pipeline). The stub error
+message names this skill explicitly. Release notes call out the regression.
+
+V1.1 lands `agent_claude.ts` + `agent_gemini.ts` implementations.
+
+**Fix loop is also V1.1, not V1.** V1 ships with `--no-fix-loop` as the
+default behavior — the flag is accepted but always-on. The
+`--allow-untrusted-fix-loop` flag is parsed but warns "fix loop not enabled
+in V1". This bounds V1 surface area to: dispatch + classify + post + history.
+The trust model, audit log, and authorization gate all remain documented so
+V1.1 is a config flip, not a redesign. V1.1 turns the fix loop on.
 
 `SKILL.md` becomes a thin wrapper (~80 lines):
 preflight → arg parse → `review_setup_worktree.ts` → `stark_review.ts` → `review_cleanup_worktree.ts`.
@@ -103,11 +125,13 @@ The existing worktree setup/cleanup TS tools (`tools/review_setup_worktree.ts`, 
 ```
 node --experimental-strip-types tools/stark_review.ts \
   --pr <N> --repo owner/name --base <branch> --worktree <path> \
-  [--agent claude|codex|gemini]   # default: codex
+  --config-root <path>             # invoker's CWD (trusted source for .code-review/)
+  [--agent claude|codex|gemini]    # default resolved per-domain (see precedence below)
   [--quick]                        # use config.quick_domains
   [--domains a,b,c]                # explicit domain override (escape hatch)
   [--dry-run]                      # no posts, no commits, no push
-  [--no-fix-loop]                  # one round only
+  [--no-fix-loop]                  # disable fix loop entirely
+  [--allow-untrusted-fix-loop]     # opt-in for fork PRs; off by default
   [--max-rounds N]                 # default 3
   [--json]                         # machine-readable receipt to stdout
 ```
@@ -203,7 +227,11 @@ Schema:
 
 ```ts
 type Finding = {
-  id: string;                      // sha256(domain|agent|file|line|title) prefix-12, stable across rounds
+  id: string;                      // sha256(domain|agent|normalized-title) prefix-12.
+                                    // Title-only (file/line excluded) so renames + line-shifts
+                                    // don't break the round-N → round-N+1 "recurring" match.
+                                    // For file:null cross-cutting findings, file/line are
+                                    // already absent so the same hash is used.
   domain: string;
   agent: "claude" | "codex" | "gemini";
   severity: "critical" | "high" | "medium" | "low";
@@ -218,16 +246,29 @@ type Finding = {
 They land in history and the receipt but **are not posted as inline review
 comments** — they go in the review's top-level `body` instead (see §8).
 
-**Fail closed** if any agent invocation exits non-zero or stdout is not valid
-JSON/JSONL. Surface failed `(domain, agent)` pairs in the receipt's
-`failed_results[]` array and exit non-zero. Never report the PR as clean on
-partial failure.
+**Failure semantics — three tiers, no contradiction:**
 
-The reviewer prompts already ask for the schema above; if an agent emits
-fields the parser doesn't recognize, they are preserved in `extra` and the
-finding is still accepted. If required fields (`severity`, `title`, `domain`)
-are missing, the parse fails for that domain only and that domain is added
-to `failed_results[]`.
+1. **Per-domain partial failure** (one agent invocation fails, others succeed):
+   add the `(domain, agent)` to that round's `failed_results[]`, keep the
+   other domains' findings, **continue the round**, and at the end of the
+   round set the process exit code to non-zero. The receipt is `ok: true`
+   in shape but `rounds[i].failed_results.length > 0` — consumers that want
+   "all-or-nothing cleanliness" check this field. The PR is never reported
+   clean while `failed_results` is non-empty.
+
+2. **Total round failure** (every domain failed): emit the failure receipt
+   shape (`ok: false`, `error.code: "dispatch_failure"`) and exit non-zero
+   without proceeding to classification or posting.
+
+3. **Schema parse failure** for a single finding within an otherwise valid
+   stdout: drop the finding, add a record to `parse_errors[]` on that round,
+   keep going. The other findings from that domain are still used.
+
+If an agent emits fields the parser doesn't recognize, they are preserved
+in `extra` and the finding is still accepted. If required fields
+(`severity`, `title`, `domain`) are missing, that finding falls into tier 3.
+If stdout is not parseable JSON/JSONL at all, that's tier 1 (the whole
+domain failed).
 
 Apply `severity_overrides[domain]` after parse.
 
@@ -286,12 +327,23 @@ build a review with inline comments and POST it. File-anchored findings whose
 items (commenting on unchanged files is rejected by the API). Cross-cutting
 findings (`file: null`) and out-of-diff findings appear in the review body.
 
-**Idempotency.** Each round POSTs at most one review. Before posting round N,
-the tool calls `GET /repos/{o}/{r}/pulls/{n}/reviews` (paginated) and looks
-for a previous review whose body contains the marker
-`<!-- stark-review:round=<N>:agent=<agent> -->`. If found, we DELETE/PATCH
-nothing — we just skip posting, and log a duplicate-detected event. New
-rounds get new markers, so successive fix-loop rounds each post once.
+**Idempotency.** Each round POSTs at most one review, gated by both an
+in-process lock and a remote check. Sequence:
+
+1. Acquire the per-PR file lock at
+   `~/.claude/code-review/locks/{org}-{repo}-{pr}.lock` (flock-based,
+   blocking ≤30s, then fail with `error.code: "lock_held"`).
+2. Re-read `GET /repos/{o}/{r}/pulls/{n}/reviews` (paginated) and search for
+   a review whose body contains the marker
+   `<!-- stark-review:round=<N>:agent=<agent>:run=<sha256-of-config-and-domains> -->`.
+   The `run` hash makes the marker unique per (round, agent, config snapshot)
+   so a re-run with different domains posts a new review and isn't
+   misclassified as a duplicate.
+3. If found → skip POST, record `duplicate_detected` event in receipt, release lock.
+4. If not found → POST review, release lock.
+
+The lock collapses the GET→POST race when two concurrent invocations target
+the same PR. Without it the marker check is best-effort, not a guarantee.
 
 ```
 gh api -X POST /repos/{owner}/{repo}/pulls/{n}/reviews \
@@ -345,7 +397,9 @@ GitHub endpoints used (REST only — no GraphQL):
 Authorization: see "Fix-loop authorization gate" in the Trust section. The
 loop is skipped (not failed) when the gate denies it.
 
-If authorized AND any `fix` finding has severity ≥ `critical` or `high`:
+If authorized AND any `fix` finding has severity ≥ `config.fix_threshold`
+(default `medium`; "critical or high" referenced earlier was an example, not
+a hardcode):
 
 1. **Build the fix prompt from structured findings only.** For each finding
    the fixer agent receives `{file, line, severity, title, body}` plus the
@@ -360,8 +414,21 @@ If authorized AND any `fix` finding has severity ≥ `critical` or `high`:
    git add -- <file1> <file2> ...
    ```
 4. **Resolve branch and remote.** From step 1's `GET /pulls/{n}` response we
-   already have `head.ref` (branch) and `head.repo.full_name`. Push target:
-   `origin HEAD:<head.ref>`. For forks, see Trust section — push is gated.
+   already have `head.ref` (branch), `head.repo.full_name`, and
+   `head.repo.clone_url`. Push target:
+   - **Same-repo PR** (`head.repo.fork === false`): push to `origin HEAD:<head.ref>`.
+   - **Fork PR with maintainer-can-modify** (`head.repo.fork === true && maintainer_can_modify === true`):
+     add a transient remote `git remote add stark-fork-push <clone_url>`
+     authenticated with the GitHub App token, push
+     `stark-fork-push HEAD:<head.ref>`, then `git remote remove stark-fork-push`.
+     Pushing to `origin` would target the upstream repo and fail.
+   - **Fork without maintainer-can-modify**: gate denies; never reach this step.
+
+   On non-fast-forward push (someone else committed to the branch
+   concurrently), do NOT force-push. Abort the fix loop, record
+   `error.code: "push_conflict"` in the receipt, and surface a message
+   directing the user to rebase manually. Force-pushing review-bot commits
+   over user work is a category error.
 5. Run `config.test_command` (only trusted source — see Trust section).
    If unset, the fix loop is disabled by the auth gate above and we never
    reach this step.
