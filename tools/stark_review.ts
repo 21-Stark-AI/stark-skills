@@ -6,13 +6,17 @@ import path from "node:path";
 
 import {
   buildMarker,
+  DEFAULT_TEST_ENV_ALLOWLIST,
+  evaluateFixLoopGate,
   findingId,
   loadTrustedConfig,
+  PathRejectedError,
   renderReviewPrompt,
   resolvePromptSources,
   selectDomains,
   resolveAgentsForDomains,
   severityMeetsThreshold,
+  validateStagePaths,
   type AgentName,
   type Finding,
   type ResolvedConfig,
@@ -122,6 +126,10 @@ export interface ParseCliResult {
   errors: string[];
 }
 
+/** Hard ceiling for --max-rounds. Fix loops are bounded to prevent runaway
+ * sessions; values above this are rejected with a CLI error. */
+export const MAX_ROUNDS_CEILING = 5;
+
 export const HELP_TEXT = `Usage: stark_review --pr <N> --repo <owner/repo> --base <branch> \\
                       --worktree <abs path> --config-root <abs path> [options]
 
@@ -139,7 +147,7 @@ Options:
   --dry-run                 Skip POST; record intended payload in receipt
   --no-fix-loop             Disabled in V1 (default)
   --allow-untrusted-fix-loop  Inert in V1 (warning emitted)
-  --max-rounds <int>        Max rounds (default 3)
+  --max-rounds <int>        Max rounds (default 3, ceiling 5)
   --json                    Emit machine receipt to stdout
   --help                    Show this help
 `;
@@ -269,6 +277,10 @@ export function parseCli(argv: string[]): ParseCliResult {
           const n = Number.parseInt(value, 10);
           if (!Number.isFinite(n) || n <= 0) {
             errors.push(`--max-rounds must be a positive integer (got ${JSON.stringify(value)})`);
+          } else if (n > MAX_ROUNDS_CEILING) {
+            errors.push(
+              `--max-rounds exceeds sane ceiling of ${MAX_ROUNDS_CEILING} (got ${n}); fix loops are bounded to prevent runaway sessions`,
+            );
           } else {
             maxRounds = n;
           }
@@ -292,7 +304,9 @@ export function parseCli(argv: string[]): ParseCliResult {
   if (helpRequested) return { helpRequested: true, warnings, errors: [] };
 
   if (allowUntrustedFixLoop) {
-    warnings.push("--allow-untrusted-fix-loop: fix loop not enabled in V1; flag is ignored.");
+    warnings.push(
+      "--allow-untrusted-fix-loop: requires config.untrusted_fix_loop=true to actually run on fork PRs without maintainer_can_modify; otherwise the fix loop will refuse with auth_denied.",
+    );
   }
 
   if (domains && quick) {
@@ -1828,14 +1842,418 @@ export function emitReceipt(
   }
 }
 
+// ─── Phase 9: audit log (Task 9-6) ──────────────────────────────────────────
+
+export type AuditAction = "commit" | "push" | "stage" | "post" | "skip" | "deny" | "test_pass" | "test_fail" | "fixer_run" | "fixer_parse_error";
+
+export interface AuditEvent {
+  ts: string;
+  action: AuditAction;
+  round: number;
+  files?: string[];
+  sha?: string;
+  reason?: string;
+  ref?: string;
+  /** owner/name of the head repo for push events (NEVER the token). */
+  head_repo?: string;
+  [k: string]: unknown;
+}
+
+export interface AppendAuditOpts {
+  home: string;
+  repo: string;
+  pr: number;
+  /** Strings to redact from any audit value before writing. Used for token
+   * values; the writer scrubs each provided substring with `***REDACTED***`. */
+  redactInLogs?: string[];
+}
+
+export function auditLogPath(home: string, repo: string, pr: number): string {
+  const parts = repo.split("/");
+  const base = path.join(home, ".claude", "code-review", "audit");
+  if (parts.length === 2) {
+    return path.join(base, parts[0], parts[1], `${pr}.jsonl`);
+  }
+  return path.join(base, repo, `${pr}.jsonl`);
+}
+
+function redactValue(val: unknown, redactions: string[]): unknown {
+  if (!redactions || redactions.length === 0) return val;
+  if (typeof val === "string") {
+    let out: string = val;
+    for (const s of redactions) {
+      if (s) out = out.split(s).join("***REDACTED***");
+    }
+    return out;
+  }
+  if (Array.isArray(val)) {
+    return val.map((v) => redactValue(v, redactions));
+  }
+  if (val && typeof val === "object") {
+    const o: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      o[k] = redactValue(v, redactions);
+    }
+    return o;
+  }
+  return val;
+}
+
+export function appendAudit(event: Omit<AuditEvent, "ts"> & { ts?: string }, opts: AppendAuditOpts): void {
+  const filePath = auditLogPath(opts.home, opts.repo, opts.pr);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const enriched: AuditEvent = { ts: event.ts ?? new Date().toISOString(), ...event } as AuditEvent;
+  const redacted = redactValue(enriched, opts.redactInLogs ?? []);
+  const fd = fs.openSync(filePath, fs.constants.O_CREAT | fs.constants.O_WRONLY | fs.constants.O_APPEND, 0o600);
+  try {
+    fs.writeSync(fd, JSON.stringify(redacted) + "\n");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// ─── Phase 9: fixer prompt + serial exec (Task 9-2) ─────────────────────────
+
+export interface FixerInput {
+  findings: Array<Pick<Finding, "id" | "domain" | "agent" | "severity" | "file" | "line" | "title" | "body">>;
+}
+
+export interface FixerOutput {
+  modified_files: string[];
+  summary: string;
+}
+
+export class FixerParseError extends Error {
+  code = "fixer_parse_error" as const;
+}
+
+/** Parse the fixer's stdout into the structured shape. Throws FixerParseError
+ * on any deviation. The contract is strict: stdout (after trim) must be exactly
+ * one JSON object with no surrounding prose. Framing chatter is rejected. */
+export function parseFixerOutput(stdout: string): FixerOutput {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    throw new FixerParseError("fixer emitted no output");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new FixerParseError("fixer output not a single JSON object (no framing chatter allowed)");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new FixerParseError("fixer output not a JSON object");
+  }
+  const obj = parsed as Record<string, unknown>;
+  const mf = obj.modified_files;
+  if (!Array.isArray(mf) || !mf.every((s) => typeof s === "string")) {
+    throw new FixerParseError("fixer output: modified_files must be string[]");
+  }
+  const sum = obj.summary;
+  if (typeof sum !== "string") {
+    throw new FixerParseError("fixer output: summary must be string");
+  }
+  return { modified_files: mf, summary: sum };
+}
+
+export interface RunFixerOpts {
+  worktree: string;
+  findings: Finding[];
+  fixerPromptPath: string;
+  config: ResolvedConfig;
+  spawnFn?: typeof spawnCollect;
+  /** Codex model override (mostly for tests); production reads pin from config
+   * elsewhere. */
+  model?: string;
+}
+
+export interface RunFixerResult {
+  output: FixerOutput;
+  durationMs: number;
+}
+
+/** Run the codex-based fixer serially against the given findings. Builds the
+ * structured input shape, runs codex with the allowlisted env (no tokens),
+ * parses the output, and returns it. Throws FixerParseError on bad output. */
+export async function runFixer(opts: RunFixerOpts): Promise<RunFixerResult> {
+  const start = Date.now();
+  const promptText = fs.readFileSync(opts.fixerPromptPath, "utf8");
+  // Contract: stdin carries ONLY {findings:[...]}. The worktree path is passed
+  // explicitly via codex's `-C/--cd` flag (a reviewed CLI mechanism) rather
+  // than smuggled through the untrusted JSON payload. This keeps the
+  // trusted/untrusted boundary clean: argv = trust, stdin = data.
+  const inputJson: FixerInput = {
+    findings: opts.findings.map((f) => ({
+      id: f.id,
+      domain: f.domain,
+      agent: f.agent,
+      severity: f.severity,
+      file: f.file,
+      line: f.line,
+      title: f.title,
+      body: f.body,
+    })),
+  };
+  // Security boundary: pass the trusted prompt text as a positional CLI argument
+  // (instructions), and the structured JSON as the ONLY stdin payload. Codex
+  // appends piped stdin as a `<stdin>` block separate from the prompt arg, so
+  // findings (which are PR-derived data) never get concatenated into the
+  // instruction stream.
+  const stdin = JSON.stringify(inputJson);
+  const allowlist = opts.config.runtime?.subagent_env_allowlist ?? [];
+  const tempPrefix = opts.config.runtime?.temp_dir_prefix ?? "stark-env";
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `${tempPrefix}-fixer-`));
+  try {
+    const env = pickAllowlistedEnv(process.env, allowlist);
+    env.TMPDIR = tempDir;
+    const args = ["exec", "--json", "--reasoning-effort", "high", "-C", opts.worktree];
+    if (opts.model) args.push("-m", opts.model);
+    args.push(promptText);
+    const sp = await (opts.spawnFn ?? spawnCollect)("codex", args, {
+      input: stdin,
+      env,
+      cwd: opts.worktree,
+    });
+    if (sp.status !== 0) {
+      throw new FixerParseError(`fixer exited ${sp.status}: ${sp.stderr.slice(0, 300)}`);
+    }
+    // Codex JSONL framing — extract assistant text via the codex agent port's
+    // normalizer for robustness.
+    const codex = await import("./agent_codex.ts");
+    const text = (codex as { normalizeOutput?: (s: string) => string }).normalizeOutput?.(sp.stdout) ?? sp.stdout;
+    const output = parseFixerOutput(text);
+    return { output, durationMs: Date.now() - start };
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* */ }
+  }
+}
+
+// ─── Phase 9: explicit-path staging (Task 9-3) ──────────────────────────────
+
+export interface StageFilesOpts {
+  worktree: string;
+  paths: string[];
+  spawnFn?: typeof spawnCollect;
+}
+
+/** Validate paths and `git add --` only those paths. NEVER `git add -A`. */
+export async function stageFiles(opts: StageFilesOpts): Promise<{ staged: string[] }> {
+  const cleaned = validateStagePaths(opts.worktree, opts.paths);
+  if (cleaned.length === 0) return { staged: [] };
+  const sp = await (opts.spawnFn ?? spawnCollect)(
+    "git",
+    ["-C", opts.worktree, "add", "--", ...cleaned],
+    { env: process.env },
+  );
+  if (sp.status !== 0) {
+    throw new Error(`git add failed (${sp.status}): ${sp.stderr.slice(0, 300)}`);
+  }
+  return { staged: cleaned };
+}
+
+// ─── Phase 9: trusted test runner (Task 9-5) ────────────────────────────────
+
+export interface RunTrustedTestOpts {
+  worktree: string;
+  testCommand: string;
+  config: ResolvedConfig;
+  spawnFn?: typeof spawnCollect;
+}
+
+export interface RunTrustedTestResult {
+  ok: boolean;
+  exitCode: number;
+  stderr: string;
+}
+
+const TRUSTED_TEST_FORBIDDEN = new Set(["GH_TOKEN", "GITHUB_TOKEN", "STARK_PUSH_TOKEN"]);
+
+export function buildTrustedTestEnv(
+  source: NodeJS.ProcessEnv,
+  config: ResolvedConfig,
+): Record<string, string> {
+  const allowlist = config.runtime?.test_env_allowlist ?? DEFAULT_TEST_ENV_ALLOWLIST;
+  const out: Record<string, string> = {};
+  for (const k of allowlist) {
+    if (TRUSTED_TEST_FORBIDDEN.has(k)) continue;
+    const v = source[k];
+    if (typeof v === "string") out[k] = v;
+  }
+  for (const k of TRUSTED_TEST_FORBIDDEN) delete out[k];
+  return out;
+}
+
+/**
+ * Run config.test_command in the worktree using the trusted test env allowlist.
+ * The command MUST come from trusted config (the caller is responsible) — this
+ * function never reads a test command from the worktree.
+ */
+export async function runTrustedTest(opts: RunTrustedTestOpts): Promise<RunTrustedTestResult> {
+  const env = buildTrustedTestEnv(process.env, opts.config);
+  const sp = await (opts.spawnFn ?? spawnCollect)(
+    "/bin/sh",
+    ["-c", opts.testCommand],
+    { env, cwd: opts.worktree },
+  );
+  return { ok: sp.status === 0, exitCode: sp.status, stderr: sp.stderr };
+}
+
+// ─── Phase 9: push target + GIT_ASKPASS (Task 9-4) ──────────────────────────
+
+export interface PushTarget {
+  /** When 'origin', push to the origin remote of the worktree (same-repo PR).
+   * When 'fork', set up a temporary 'stark-fork-push' remote with GIT_ASKPASS
+   * so the push is authenticated without leaking the token via URL/argv. */
+  kind: "origin" | "fork";
+  /** head ref (branch name) — what we push HEAD to. */
+  ref: string;
+  /** owner/name of the head repo, recorded in the audit log only. */
+  fullName: string;
+  /** clone URL (no embedded credentials) for fork pushes. */
+  cloneUrl?: string;
+}
+
+export interface ResolvePushTargetInput {
+  prHeadIsFork: boolean;
+  prHeadRef: string;
+  prHeadRepoFullName: string;
+  prHeadCloneUrl: string;
+  maintainerCanModify: boolean;
+}
+
+export class PushTargetUnauthorizedError extends Error {
+  code = "push_unauthorized" as const;
+}
+
+/** Pure helper: decide whether to push via origin or via a fork remote. Rejects
+ * fork PRs without `maintainer_can_modify`: V1.1 only implements push for
+ * fork-with-MCM (App-token push via GIT_ASKPASS works because MCM grants the
+ * upstream maintainer push access to the fork branch). No untrusted-fork push
+ * credential path is implemented, so even if the fix-loop gate authorizes the
+ * round, we refuse to push. */
+export function resolvePushTarget(input: ResolvePushTargetInput): PushTarget {
+  if (!input.prHeadIsFork) {
+    return { kind: "origin", ref: input.prHeadRef, fullName: input.prHeadRepoFullName };
+  }
+  if (!input.maintainerCanModify) {
+    throw new PushTargetUnauthorizedError(
+      "fork PR without maintainer_can_modify: no push credential path implemented",
+    );
+  }
+  return {
+    kind: "fork",
+    ref: input.prHeadRef,
+    fullName: input.prHeadRepoFullName,
+    cloneUrl: input.prHeadCloneUrl,
+  };
+}
+
+const FORK_PUSH_REMOTE = "stark-fork-push";
+
+/** Best-effort cleanup of a stale `stark-fork-push` remote from a prior crashed
+ * run. Called once after the per-PR review lock is acquired. */
+export async function cleanupStaleForkRemote(
+  worktree: string,
+  spawnFn: typeof spawnCollect = spawnCollect,
+): Promise<void> {
+  try {
+    const sp = await spawnFn("git", ["-C", worktree, "remote"], { env: process.env });
+    if (sp.status !== 0) return;
+    if (!sp.stdout.split(/\r?\n/).some((l) => l.trim() === FORK_PUSH_REMOTE)) return;
+    await spawnFn("git", ["-C", worktree, "remote", "remove", FORK_PUSH_REMOTE], { env: process.env });
+  } catch { /* best-effort */ }
+}
+
+export interface PushOpts {
+  worktree: string;
+  target: PushTarget;
+  /** GH App installation token. Used for fork pushes via GIT_ASKPASS; NEVER
+   * embedded in a URL or argv. */
+  token?: string;
+  spawnFn?: typeof spawnCollect;
+}
+
+export interface PushResult {
+  ok: boolean;
+  conflict: boolean;
+  stderr: string;
+}
+
+/** Execute the push. Same-repo: `git push origin HEAD:<ref>`. Fork-with-MCM:
+ * add a temporary `stark-fork-push` remote, push via GIT_ASKPASS reading
+ * STARK_PUSH_TOKEN from env, then remove the remote. Never `--force`. */
+export async function pushBranch(opts: PushOpts): Promise<PushResult> {
+  const spawn = opts.spawnFn ?? spawnCollect;
+  if (opts.target.kind === "origin") {
+    const sp = await spawn(
+      "git",
+      ["-C", opts.worktree, "push", "origin", `HEAD:${opts.target.ref}`],
+      { env: process.env },
+    );
+    return analyzePushResult(sp);
+  }
+  // Fork push via askpass.
+  if (!opts.token) {
+    return { ok: false, conflict: false, stderr: "fork push requires token" };
+  }
+  if (!opts.target.cloneUrl) {
+    return { ok: false, conflict: false, stderr: "fork push requires cloneUrl" };
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stark-askpass-"));
+  const askpath = path.join(dir, "askpass.sh");
+  fs.writeFileSync(askpath, '#!/bin/sh\nprintf "%s" "$STARK_PUSH_TOKEN"\n', { mode: 0o700 });
+  fs.chmodSync(askpath, 0o700);
+  try {
+    // Add the fork remote (no embedded credentials in URL).
+    const addSp = await spawn(
+      "git",
+      ["-C", opts.worktree, "remote", "add", FORK_PUSH_REMOTE, opts.target.cloneUrl],
+      { env: process.env },
+    );
+    if (addSp.status !== 0) {
+      return { ok: false, conflict: false, stderr: `remote add failed: ${addSp.stderr.slice(0, 300)}` };
+    }
+    try {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        GIT_ASKPASS: askpath,
+        GIT_TERMINAL_PROMPT: "0",
+        STARK_PUSH_TOKEN: opts.token,
+      };
+      const sp = await spawn(
+        "git",
+        ["-C", opts.worktree, "push", FORK_PUSH_REMOTE, `HEAD:${opts.target.ref}`],
+        { env },
+      );
+      return analyzePushResult(sp);
+    } finally {
+      try {
+        await spawn("git", ["-C", opts.worktree, "remote", "remove", FORK_PUSH_REMOTE], { env: process.env });
+      } catch { /* */ }
+    }
+  } finally {
+    try { fs.unlinkSync(askpath); } catch { /* */ }
+    try { fs.rmdirSync(dir); } catch { /* */ }
+  }
+}
+
+function analyzePushResult(sp: SpawnResult): PushResult {
+  if (sp.status === 0) return { ok: true, conflict: false, stderr: sp.stderr };
+  const conflict = /non-fast-forward|rejected|fetch first|stale info/i.test(sp.stderr);
+  return { ok: false, conflict, stderr: sp.stderr };
+}
+
 // Re-exports for tests / dispatcher consumers
 export {
   buildMarker,
+  evaluateFixLoopGate,
   loadTrustedConfig,
   selectDomains,
   resolveAgentsForDomains,
   renderReviewPrompt,
   resolvePromptSources,
+  validateStagePaths,
+  PathRejectedError,
 };
 
 // ─── CLI orchestration ──────────────────────────────────────────────────────
@@ -1930,190 +2348,457 @@ export async function main(
   const lock = lockHandle.handle;
   lock.startHeartbeat();
 
-  const round1Start = Date.now();
-  const failedResults: Array<{ domain: string; agent: AgentName; error: string }> = [];
-  const parseErrors: ParseError[] = [];
-  const classifierEvents: ClassifyEvent[] = [];
+  // ── Phase 9: clean up any stale fork-push remote from a prior crashed run.
+  try { await cleanupStaleForkRemote(cli.worktree); } catch { /* best-effort */ }
+
   const unposted: Array<{ round: number; reason: string }> = [];
   const historyFiles: string[] = [];
+  const receiptRounds: ReceiptRound[] = [];
+  const home = os.homedir();
   let commentsPosted = 0;
-  let allFindings: Finding[] = [];
+  let fixesPushed = 0;
+
+  // Round-invariant inputs for runReviewPass.
+  const passDeps: PassDeps = { ghJsonFn: ghJsonD, ghTextFn: ghTextD, ghJsonOnceFn: ghJsonOnceD };
+  if (spawnD) passDeps.spawnFn = spawnD;
+  const passCtx: PassCtx = {
+    cli, config, repo, pr, domains, agentsResolved, promptRoot, home,
+  };
 
   try {
-    // ── PR metadata ────────────────────────────────────────────────────────
-    let prHeadSha = "";
-    let prTitle = "";
-    let prBody = "";
-    let prDiff = "";
-    let changedFiles = new Set<string>();
-    try {
-      const meta = await ghJsonD(`/repos/${repo}/pulls/${pr}`);
-      const m = meta.data as Record<string, unknown>;
-      prHeadSha = (m?.head as { sha?: string } | undefined)?.sha ?? "";
-      prTitle = (m?.title as string) ?? "";
-      prBody = (m?.body as string) ?? "";
-      const filesRes = await ghJsonD(`/repos/${repo}/pulls/${pr}/files`);
-      if (Array.isArray(filesRes.data)) {
-        for (const f of filesRes.data) {
-          const name = (f as Record<string, unknown>)?.filename;
-          if (typeof name === "string") changedFiles.add(name);
+    let lastPass: PassResult | null = null;
+    let terminalCode: { code: string; message: string } | null = null;
+
+    for (let round = 1; round <= cli.maxRounds; round++) {
+      // Re-issue GH App tokens at the start of each round (~1h lifetime).
+      if (round > 1) _resetTokenCacheForTests();
+
+      const pass = await runReviewPass(passCtx, passDeps);
+      lastPass = pass;
+      if (pass.kind === "terminal") {
+        terminalCode = { code: pass.code, message: pass.message };
+        if (pass.partial) {
+          receiptRounds.push(pass.partial);
+          if (pass.historyPath) historyFiles.push(pass.historyPath);
         }
+        break;
       }
-      prDiff = await ghTextD(["pr", "diff", String(pr), "--repo", repo]);
-    } catch (err) {
-      return finalizeAndRelease(lock, repo, pr, "pr_fetch_failed", (err as Error).message, cli.json);
-    }
-
-    // ── Run hash (marker is built later, after round allocation) ──────────
-    const runHash = computeRunHash({
-      pr_head_sha: prHeadSha,
-      domains,
-      agents_resolved: agentsResolved,
-      severity_overrides: config.severity_overrides ?? {},
-      fix_threshold: config.fix_threshold,
-    });
-    // Resolve the posting agent once — the same identity must be used for
-    // marker construction, marker check, and POST. Otherwise duplicate
-    // detection scans for a marker that differs from the one we'd post.
-    const classifierAgent: AgentName = cli.agent ?? config.default_agent ?? "codex";
-
-    // ── Build assignments and dispatch ─────────────────────────────────────
-    const assignments: DomainAssignment[] = [];
-    for (const domain of domains) {
-      const agent = agentsResolved[domain];
-      try {
-        const sources = resolvePromptSources({
-          agent, domain,
-          promptRoots: { global: promptRoot, shared: path.join(promptRoot, "domains") },
-          baseRef: cli.base, repoRoot: cli.worktree,
-        });
-        const prompt = renderReviewPrompt({
-          agent, domain, promptSources: sources, prTitle, prBody, prDiff,
-        });
-        assignments.push({ domain, agent, prompt });
-      } catch (err) {
-        failedResults.push({ domain, agent, error: (err as Error).message });
+      receiptRounds.push(buildRound(
+        pass.round, pass.allFindings, pass.failedResults, pass.parseErrors,
+        pass.classifierEvents, pass.durationMs,
+      ));
+      historyFiles.push(pass.historyPath);
+      commentsPosted += pass.commentsPosted;
+      if (pass.unpostedReason) unposted.push({ round: pass.round, reason: pass.unpostedReason });
+      if (pass.classifierAborted) {
+        terminalCode = { code: "classifier_aborted", message: "classifier aborted after 5 errors; POST skipped" };
+        break;
       }
-    }
 
-    let ports: Map<AgentName, AgentPort>;
-    try {
-      ports = await resolveAgentPorts(agentsResolved);
-    } catch (err) {
-      return finalizeAndRelease(
-        lock, repo, pr, "agent_port_load_failed", (err as Error).message, cli.json,
-      );
-    }
-    const results = await dispatchDomains({
-      assignments, ports, config,
-      ...(spawnD ? { spawnFn: spawnD } : {}),
-    });
-    for (const r of results) {
-      if (!r.ok) {
-        failedResults.push({ domain: r.domain, agent: r.agent, error: r.error ?? "unknown" });
-      }
-      parseErrors.push(...r.parseErrors);
-      allFindings.push(...r.findings);
-    }
-    allFindings = applySeverityOverrides(allFindings, config.severity_overrides);
-    const tier = classifyDispatchTier(results);
-    if (tier === "tier2_total") {
-      return finalizeAndRelease(lock, repo, pr, "dispatch_failure", "all domains failed", cli.json);
-    }
-
-    // ── Classifier ─────────────────────────────────────────────────────────
-    if (!ports.has(classifierAgent)) {
-      try {
-        ports.set(classifierAgent, await loadAgentPort(classifierAgent));
-      } catch { /* fall through; classifyOne will fail-safe to fix */ }
-    }
-    const cls = await runClassifier(allFindings, {
-      worktree: cli.worktree,
-      classifierAgent,
-      ports,
-      classifierPrompt: "Classify each finding as fix|false_positive|noise|ignored.",
-      config,
-      ...(spawnD ? { spawnFn: spawnD } : {}),
-    });
-    classifierEvents.push(...cls.events);
-    allFindings = cls.findings;
-
-    // ── Allocate round + write history (atomic, inside lock) ──────────────
-    const allocated = allocateAndWriteRoundHistory({
-      home: os.homedir(),
-      repo, pr,
-      mode: "single",
-      domain_agents: agentsResolved,
-      results: domains.map((domain) => {
-        const r = results.find((rr) => rr.domain === domain);
-        return {
-          agent: agentsResolved[domain],
-          model: null,
-          domain,
-          duration_s: r ? r.durationMs / 1000 : 0,
-          error: r && !r.ok ? (r.error ?? "unknown") : null,
-          api_key_fallback: false,
-          findings: allFindings.filter((f) => f.domain === domain),
-        };
-      }),
-    });
-    historyFiles.push(allocated.path);
-
-    // ── Resolve posting bot identity (must match marker tuple) ────────────
-    // The marker tuple (round, agent, runHash) MUST match the one postReview
-    // uses to build the body; otherwise reruns scan for the wrong marker and
-    // can double-post. Compute postingAgent BEFORE the marker check.
-    //
-    // Majority is calculated over allFindings (same set the body renders),
-    // so the X/Y note in the body matches the actual findings in the round.
-    const findingAgents = new Set(allFindings.map((f) => f.agent));
-    const majorityAgent = selectPostingAgent(allFindings) ?? classifierAgent;
-    const postingAgent: AgentName = majorityAgent;
-    const mixedFindingAgents = findingAgents.size > 1;
-    const postingAgentNote = mixedFindingAgents
-      ? `_Posted under stark-${postingAgent}[bot] (majority of findings: ${allFindings.filter((f) => f.agent === postingAgent).length}/${allFindings.length}); per-domain agents in agents_resolved._`
-      : undefined;
-
-    // ── Idempotency marker check (after round allocation) ─────────────────
-    const marker = buildMarker(allocated.round, postingAgent, runHash);
-    let alreadyPosted = false;
-    try {
-      alreadyPosted = await findExistingMarker({ repo, pr, marker, ghJsonFn: ghJsonD });
-    } catch { /* swallow — proceed to post */ }
-
-    // ── Post review ────────────────────────────────────────────────────────
-    if (cls.aborted) {
-      const errMsg = "classifier aborted after 5 errors; POST skipped";
-      return finalizeAndRelease(lock, repo, pr, "classifier_aborted", errMsg, cli.json, {
-        round: allocated.round, findings: allFindings, failedResults, parseErrors,
-        classifierEvents, durationMs: Date.now() - round1Start,
-        unposted, historyFiles,
+      // ── Fix-loop authorization gate (Phase 9 task 1) ─────────────────────
+      const gate = evaluateFixLoopGate({
+        testCommand: config.test_command ?? null,
+        prHeadIsFork: pass.prHeadIsFork,
+        maintainerCanModify: pass.maintainerCanModify,
+        cliAllowUntrustedFixLoop: cli.allowUntrustedFixLoop,
+        configUntrustedFixLoop: !!config.untrusted_fix_loop,
+        noFixLoop: cli.noFixLoop,
       });
-    }
-    if (alreadyPosted) {
-      // Idempotent skip — duplicate_detected already implied by marker presence.
-    } else {
-      // Skip token resolution entirely in dry-run; no POST is attempted, so
-      // requiring App credentials would change dry-run semantics.
-      let posterToken: string | undefined;
-      if (!cli.dryRun) {
+      if (!gate.allow) {
+        appendAudit({ action: "deny", round: pass.round, reason: gate.reason }, { home, repo, pr });
+        if (gate.terminal) {
+          terminalCode = { code: "auth_denied", message: `fix loop authorization denied: ${gate.reason}` };
+        }
+        break;
+      }
+      if (round === cli.maxRounds) break;
+
+      const fixCandidates = pass.allFindings.filter(
+        (f) => f.classification === "fix" && severityMeetsThreshold(f.severity, config.fix_threshold),
+      );
+      if (fixCandidates.length === 0) {
+        appendAudit({ action: "skip", round: pass.round, reason: "no_fix_candidates" }, { home, repo, pr });
+        break;
+      }
+
+      // Resolve and validate push target BEFORE mutating the worktree. If
+      // there's no implemented push path (e.g. fork-PR-without-MCM even when
+      // both opt-ins are true), bail terminally before the fixer touches any
+      // files. This keeps a worktree from being left with a local commit for
+      // a flow that cannot push.
+      let pushTarget: PushTarget;
+      try {
+        pushTarget = resolvePushTarget({
+          prHeadIsFork: pass.prHeadIsFork,
+          prHeadRef: pass.prHeadRef,
+          prHeadRepoFullName: pass.prHeadRepoFullName,
+          prHeadCloneUrl: pass.prHeadCloneUrl,
+          maintainerCanModify: pass.maintainerCanModify,
+        });
+      } catch (err) {
+        const reason = err instanceof PushTargetUnauthorizedError ? err.message : (err as Error).message;
+        appendAudit({ action: "deny", round: pass.round, reason: `push_unauthorized: ${reason}` }, { home, repo, pr });
+        terminalCode = { code: "push_unauthorized", message: reason };
+        break;
+      }
+
+      // ── Phase 9 fix-loop step (between rounds) ──────────────────────────
+      const fixerPromptPath = path.join(promptRoot, "codex", "fixer.md");
+      let fixerOutput: FixerOutput;
+      try {
+        const fr = await runFixer({
+          worktree: cli.worktree,
+          findings: fixCandidates,
+          fixerPromptPath,
+          config,
+          ...(spawnD ? { spawnFn: spawnD } : {}),
+        });
+        fixerOutput = fr.output;
+        appendAudit({ action: "fixer_run", round: pass.round, files: fixerOutput.modified_files, reason: fixerOutput.summary.slice(0, 240) }, { home, repo, pr });
+      } catch (err) {
+        const reason = err instanceof FixerParseError ? err.message : (err as Error).message;
+        appendAudit({ action: "skip", round: pass.round, reason: `fixer_parse_error: ${reason}` }, { home, repo, pr });
+        terminalCode = { code: "fixer_parse_error", message: reason };
+        break;
+      }
+      if (fixerOutput.modified_files.length === 0) {
+        appendAudit({ action: "skip", round: pass.round, reason: "fixer_no_changes" }, { home, repo, pr });
+        break;
+      }
+
+      // Validate + stage
+      let stagedPaths: string[];
+      try {
+        const r = await stageFiles({
+          worktree: cli.worktree,
+          paths: fixerOutput.modified_files,
+          ...(spawnD ? { spawnFn: spawnD } : {}),
+        });
+        stagedPaths = r.staged;
+        appendAudit({ action: "stage", round: pass.round, files: stagedPaths }, { home, repo, pr });
+      } catch (err) {
+        const reason = err instanceof PathRejectedError ? err.message : (err as Error).message;
+        appendAudit({ action: "deny", round: pass.round, reason: `path_rejected: ${reason}` }, { home, repo, pr });
+        terminalCode = { code: "path_rejected", message: reason };
+        break;
+      }
+
+      // Trusted test
+      const testRes = await runTrustedTest({
+        worktree: cli.worktree,
+        testCommand: config.test_command as string,
+        config,
+        ...(spawnD ? { spawnFn: spawnD } : {}),
+      });
+      if (!testRes.ok) {
+        appendAudit({ action: "test_fail", round: pass.round, reason: `exit ${testRes.exitCode}` }, { home, repo, pr });
+        terminalCode = { code: "test_failure", message: `tests failed (exit ${testRes.exitCode})` };
+        break;
+      }
+      appendAudit({ action: "test_pass", round: pass.round }, { home, repo, pr });
+
+      // Commit
+      const commitMsg = `fix: address review findings (round ${pass.round})`;
+      const commitSp = await (spawnD ?? spawnCollect)("git", [
+        "-C", cli.worktree, "commit", "-m", commitMsg,
+      ], { env: process.env });
+      if (commitSp.status !== 0) {
+        const reason = commitSp.stderr.slice(0, 300);
+        appendAudit({ action: "skip", round: pass.round, reason: `commit_failed: ${reason}` }, { home, repo, pr });
+        terminalCode = { code: "commit_failed", message: reason };
+        break;
+      }
+      // Capture the new SHA for the audit log.
+      const shaSp = await (spawnD ?? spawnCollect)("git", ["-C", cli.worktree, "rev-parse", "HEAD"], { env: process.env });
+      const newSha = shaSp.status === 0 ? shaSp.stdout.trim() : "";
+      appendAudit({ action: "commit", round: pass.round, sha: newSha, files: stagedPaths }, { home, repo, pr });
+
+      // Push (gh app token for fork-with-MCM; redact in audit). pushTarget was
+      // resolved up-front (before the fixer ran) so we know a push path exists.
+      let pushToken: string | undefined;
+      if (pushTarget.kind === "fork") {
         try {
-          posterToken = await tokenForAgent(postingAgent, {
+          pushToken = await tokenForAgent(pass.postingAgent, {
             repo,
             ...(spawnD ? { spawnFn: spawnD } : {}),
           });
         } catch (err) {
-          unposted.push({
-            round: allocated.round,
-            reason: `token_resolution_failed: ${(err as Error).message}`,
-          });
+          const reason = (err as Error).message;
+          appendAudit({ action: "skip", round: pass.round, reason: `push_token_failed: ${reason}` }, { home, repo, pr });
+          terminalCode = { code: "push_token_failed", message: reason };
+          break;
         }
       }
-      if (!posterToken && !cli.dryRun) {
-        // No silent degrade to inherited GH_TOKEN — that would post under the
-        // wrong identity. Surface as unposted_reviews and skip the POST.
-      } else {
-        try {
+      const pushRes = await pushBranch({
+        worktree: cli.worktree,
+        target: pushTarget,
+        ...(pushToken ? { token: pushToken } : {}),
+        ...(spawnD ? { spawnFn: spawnD } : {}),
+      });
+      const auditOpts: AppendAuditOpts = { home, repo, pr };
+      if (pushToken) auditOpts.redactInLogs = [pushToken];
+      if (!pushRes.ok) {
+        appendAudit({
+          action: "skip", round: pass.round,
+          reason: pushRes.conflict ? "push_conflict" : `push_failed: ${pushRes.stderr.slice(0, 240)}`,
+          head_repo: pushTarget.fullName, ref: pushTarget.ref,
+        }, auditOpts);
+        terminalCode = {
+          code: pushRes.conflict ? "push_conflict" : "push_failed",
+          message: pushRes.stderr.slice(0, 300) || "push failed",
+        };
+        break;
+      }
+      appendAudit({
+        action: "push", round: pass.round, sha: newSha,
+        head_repo: pushTarget.fullName, ref: pushTarget.ref,
+      }, auditOpts);
+      fixesPushed += stagedPaths.length;
+    }
+
+    // ── Best-effort prune (separate lock) ──────────────────────────────────
+    try {
+      pruneHistory({
+        home,
+        retentionDays: config.history_retention_days ?? 0,
+        lockTtlMinutes: config.runtime?.lock_ttl_minutes ?? config.lock_ttl_minutes ?? 30,
+      });
+    } catch { /* best-effort */ }
+
+    if (terminalCode) {
+      const r: FailureReceipt = {
+        ok: false, schema_version: 1, repo, pr,
+        error: { code: terminalCode.code, message: terminalCode.message },
+        rounds: receiptRounds,
+      };
+      emitReceipt(r, cli.json);
+      return { receipt: r, exitCode: 1 };
+    }
+
+    const receipt: SuccessReceipt = {
+      ok: true, schema_version: 1, repo, pr,
+      agent: cli.agent, agents_resolved: agentsResolved, domains,
+      rounds: receiptRounds,
+      fixes_pushed: fixesPushed,
+      comments_posted: commentsPosted,
+      unposted_reviews: unposted,
+      history_files: historyFiles,
+    };
+    if (lastPass && lastPass.kind === "ok") {
+      // commentsPosted included; nothing else to merge.
+    }
+    emitReceipt(receipt, cli.json);
+    return { receipt, exitCode: computeExitCode(receipt) };
+  } finally {
+    try { lock.release(); } catch { /* */ }
+  }
+}
+
+// ─── Per-round pipeline pass (extracted from main for fix-loop) ─────────────
+
+interface PassCtx {
+  cli: CliConfig;
+  config: ResolvedConfig;
+  repo: string;
+  pr: number;
+  domains: string[];
+  agentsResolved: Record<string, AgentName>;
+  promptRoot: string;
+  home: string;
+}
+
+interface PassDeps {
+  ghJsonFn: typeof ghJson;
+  ghTextFn: typeof ghText;
+  ghJsonOnceFn: typeof ghJsonOnce;
+  spawnFn?: typeof spawnCollect;
+}
+
+type PassResult =
+  | {
+      kind: "ok";
+      round: number;
+      historyPath: string;
+      allFindings: Finding[];
+      failedResults: Array<{ domain: string; agent: AgentName; error: string }>;
+      parseErrors: ParseError[];
+      classifierEvents: ClassifyEvent[];
+      classifierAborted: boolean;
+      durationMs: number;
+      commentsPosted: number;
+      unpostedReason?: string;
+      postingAgent: AgentName;
+      prHeadSha: string;
+      prHeadIsFork: boolean;
+      prHeadRef: string;
+      prHeadRepoFullName: string;
+      prHeadCloneUrl: string;
+      maintainerCanModify: boolean;
+    }
+  | { kind: "terminal"; code: string; message: string; partial?: ReceiptRound; historyPath?: string };
+
+async function runReviewPass(ctx: PassCtx, deps: PassDeps): Promise<PassResult> {
+  const { cli, config, repo, pr, domains, agentsResolved, promptRoot, home } = ctx;
+  const start = Date.now();
+  const failedResults: Array<{ domain: string; agent: AgentName; error: string }> = [];
+  const parseErrors: ParseError[] = [];
+  const classifierEvents: ClassifyEvent[] = [];
+
+  // PR metadata
+  let prHeadSha = "";
+  let prTitle = "";
+  let prBody = "";
+  let prDiff = "";
+  let prHeadIsFork = false;
+  let prHeadRef = "";
+  let prHeadRepoFullName = "";
+  let prHeadCloneUrl = "";
+  let maintainerCanModify = false;
+  const changedFiles = new Set<string>();
+  try {
+    const meta = await deps.ghJsonFn(`/repos/${repo}/pulls/${pr}`);
+    const m = meta.data as Record<string, unknown>;
+    const head = (m?.head as Record<string, unknown> | undefined) ?? {};
+    prHeadSha = (head.sha as string | undefined) ?? "";
+    prHeadRef = (head.ref as string | undefined) ?? "";
+    const headRepo = (head.repo as Record<string, unknown> | undefined) ?? {};
+    prHeadIsFork = headRepo.fork === true;
+    prHeadRepoFullName = (headRepo.full_name as string | undefined) ?? "";
+    prHeadCloneUrl = (headRepo.clone_url as string | undefined) ?? "";
+    maintainerCanModify = (m?.maintainer_can_modify as boolean | undefined) === true;
+    prTitle = (m?.title as string) ?? "";
+    prBody = (m?.body as string) ?? "";
+    const filesRes = await deps.ghJsonFn(`/repos/${repo}/pulls/${pr}/files`);
+    if (Array.isArray(filesRes.data)) {
+      for (const f of filesRes.data) {
+        const name = (f as Record<string, unknown>)?.filename;
+        if (typeof name === "string") changedFiles.add(name);
+      }
+    }
+    prDiff = await deps.ghTextFn(["pr", "diff", String(pr), "--repo", repo]);
+  } catch (err) {
+    return { kind: "terminal", code: "pr_fetch_failed", message: (err as Error).message };
+  }
+
+  const runHash = computeRunHash({
+    pr_head_sha: prHeadSha,
+    domains,
+    agents_resolved: agentsResolved,
+    severity_overrides: config.severity_overrides ?? {},
+    fix_threshold: config.fix_threshold,
+  });
+  const classifierAgent: AgentName = cli.agent ?? config.default_agent ?? "codex";
+
+  // Build assignments
+  const assignments: DomainAssignment[] = [];
+  for (const domain of domains) {
+    const agent = agentsResolved[domain];
+    try {
+      const sources = resolvePromptSources({
+        agent, domain,
+        promptRoots: { global: promptRoot, shared: path.join(promptRoot, "domains") },
+        baseRef: cli.base, repoRoot: cli.worktree,
+      });
+      const prompt = renderReviewPrompt({
+        agent, domain, promptSources: sources, prTitle, prBody, prDiff,
+      });
+      assignments.push({ domain, agent, prompt });
+    } catch (err) {
+      failedResults.push({ domain, agent, error: (err as Error).message });
+    }
+  }
+
+  let ports: Map<AgentName, AgentPort>;
+  try {
+    ports = await resolveAgentPorts(agentsResolved);
+  } catch (err) {
+    return { kind: "terminal", code: "agent_port_load_failed", message: (err as Error).message };
+  }
+  const results = await dispatchDomains({
+    assignments, ports, config,
+    ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+  });
+  let allFindings: Finding[] = [];
+  for (const r of results) {
+    if (!r.ok) {
+      failedResults.push({ domain: r.domain, agent: r.agent, error: r.error ?? "unknown" });
+    }
+    parseErrors.push(...r.parseErrors);
+    allFindings.push(...r.findings);
+  }
+  allFindings = applySeverityOverrides(allFindings, config.severity_overrides);
+  const tier = classifyDispatchTier(results);
+  if (tier === "tier2_total") {
+    return { kind: "terminal", code: "dispatch_failure", message: "all domains failed" };
+  }
+
+  if (!ports.has(classifierAgent)) {
+    try {
+      ports.set(classifierAgent, await loadAgentPort(classifierAgent));
+    } catch { /* */ }
+  }
+  const cls = await runClassifier(allFindings, {
+    worktree: cli.worktree,
+    classifierAgent,
+    ports,
+    classifierPrompt: "Classify each finding as fix|false_positive|noise|ignored.",
+    config,
+    ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+  });
+  classifierEvents.push(...cls.events);
+  allFindings = cls.findings;
+
+  const allocated = allocateAndWriteRoundHistory({
+    home,
+    repo, pr,
+    mode: "single",
+    domain_agents: agentsResolved,
+    results: domains.map((domain) => {
+      const r = results.find((rr) => rr.domain === domain);
+      return {
+        agent: agentsResolved[domain],
+        model: null,
+        domain,
+        duration_s: r ? r.durationMs / 1000 : 0,
+        error: r && !r.ok ? (r.error ?? "unknown") : null,
+        api_key_fallback: false,
+        findings: allFindings.filter((f) => f.domain === domain),
+      };
+    }),
+  });
+
+  const findingAgents = new Set(allFindings.map((f) => f.agent));
+  const postingAgent: AgentName = selectPostingAgent(allFindings) ?? classifierAgent;
+  const mixedFindingAgents = findingAgents.size > 1;
+  const postingAgentNote = mixedFindingAgents
+    ? `_Posted under stark-${postingAgent}[bot] (majority of findings: ${allFindings.filter((f) => f.agent === postingAgent).length}/${allFindings.length}); per-domain agents in agents_resolved._`
+    : undefined;
+
+  const marker = buildMarker(allocated.round, postingAgent, runHash);
+  let alreadyPosted = false;
+  try {
+    alreadyPosted = await findExistingMarker({ repo, pr, marker, ghJsonFn: deps.ghJsonFn });
+  } catch { /* */ }
+
+  let commentsPosted = 0;
+  let unpostedReason: string | undefined;
+
+  if (cls.aborted) {
+    appendAudit({ action: "skip", round: allocated.round, reason: "classifier_aborted" }, { home, repo, pr });
+  } else if (!alreadyPosted) {
+    let posterToken: string | undefined;
+    if (!cli.dryRun) {
+      try {
+        posterToken = await tokenForAgent(postingAgent, {
+          repo,
+          ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+        });
+      } catch (err) {
+        unpostedReason = `token_resolution_failed: ${(err as Error).message}`;
+      }
+    }
+    if ((posterToken || cli.dryRun) && !unpostedReason) {
+      try {
         const pr_ = await postReview({
           repo, pr, round: allocated.round,
           agent: postingAgent,
@@ -2125,44 +2810,47 @@ export async function main(
           prHeadSha,
           dryRun: cli.dryRun,
           agentsResolved,
-          postingAgentNote,
-          posterToken,
-          ghJsonFn: ghJsonD,
-          ghJsonOnceFn: ghJsonOnceD,
+          ...(postingAgentNote ? { postingAgentNote } : {}),
+          ...(posterToken ? { posterToken } : {}),
+          ghJsonFn: deps.ghJsonFn,
+          ghJsonOnceFn: deps.ghJsonOnceFn,
         });
-        if (pr_.posted && !pr_.unposted) commentsPosted = pr_.payloadSummary.inlineCount;
-        if (pr_.unposted) {
-          unposted.push({ round: allocated.round, reason: pr_.unpostedReason ?? "post failed" });
+        if (pr_.posted && !pr_.unposted) {
+          commentsPosted = pr_.payloadSummary.inlineCount;
+          appendAudit({
+            action: "post", round: allocated.round,
+            ...(pr_.reviewId ? { reason: `review_id=${pr_.reviewId}` } : {}),
+          }, { home, repo, pr });
         }
+        if (pr_.unposted) unpostedReason = pr_.unpostedReason ?? "post failed";
       } catch (err) {
-        unposted.push({ round: allocated.round, reason: (err as Error).message });
-      }
+        unpostedReason = (err as Error).message;
       }
     }
-
-    // ── Best-effort prune (separate lock) ──────────────────────────────────
-    try {
-      pruneHistory({
-        home: os.homedir(),
-        retentionDays: config.history_retention_days ?? 0,
-        lockTtlMinutes: config.runtime?.lock_ttl_minutes ?? config.lock_ttl_minutes ?? 30,
-      });
-    } catch { /* best-effort */ }
-
-    const receipt: SuccessReceipt = {
-      ok: true, schema_version: 1, repo, pr,
-      agent: cli.agent, agents_resolved: agentsResolved, domains,
-      rounds: [buildRound(allocated.round, allFindings, failedResults, parseErrors, classifierEvents, Date.now() - round1Start)],
-      fixes_pushed: 0,
-      comments_posted: commentsPosted,
-      unposted_reviews: unposted,
-      history_files: historyFiles,
-    };
-    emitReceipt(receipt, cli.json);
-    return { receipt, exitCode: computeExitCode(receipt) };
-  } finally {
-    try { lock.release(); } catch { /* */ }
+  } else {
+    appendAudit({ action: "skip", round: allocated.round, reason: "duplicate_marker" }, { home, repo, pr });
   }
+
+  return {
+    kind: "ok",
+    round: allocated.round,
+    historyPath: allocated.path,
+    allFindings,
+    failedResults,
+    parseErrors,
+    classifierEvents,
+    classifierAborted: cls.aborted,
+    durationMs: Date.now() - start,
+    commentsPosted,
+    ...(unpostedReason !== undefined ? { unpostedReason } : {}),
+    postingAgent,
+    prHeadSha,
+    prHeadIsFork,
+    prHeadRef,
+    prHeadRepoFullName,
+    prHeadCloneUrl,
+    maintainerCanModify,
+  };
 }
 
 function buildRound(
@@ -2203,28 +2891,6 @@ function finalizeFailure(
   return { receipt: r, exitCode: 1 };
 }
 
-function finalizeAndRelease(
-  lock: LockHandle, repo: string, pr: number, code: string, message: string, json: boolean,
-  partial?: {
-    round: number; findings: Finding[];
-    failedResults: Array<{ domain: string; agent: AgentName; error: string }>;
-    parseErrors: ParseError[]; classifierEvents: ClassifyEvent[];
-    durationMs: number;
-    unposted: Array<{ round: number; reason: string }>;
-    historyFiles: string[];
-  },
-): { receipt: Receipt; exitCode: number } {
-  const r: FailureReceipt = {
-    ok: false, schema_version: 1, repo, pr,
-    error: { code, message },
-    rounds: partial
-      ? [buildRound(partial.round, partial.findings, partial.failedResults, partial.parseErrors, partial.classifierEvents, partial.durationMs)]
-      : [],
-  };
-  emitReceipt(r, json);
-  try { lock.release(); } catch { /* */ }
-  return { receipt: r, exitCode: 1 };
-}
 
 async function tryAcquireLock(
   repo: string, pr: number, config: ResolvedConfig,
