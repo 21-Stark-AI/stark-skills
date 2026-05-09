@@ -33,7 +33,24 @@ export interface RuntimeConfig {
   large_pr_file_threshold: number;
   large_pr_line_threshold: number;
   large_pr_timeout_s: number;
+  /** Env allowlist for the trusted test_command runner (Phase 9 task 5). Distinct
+   * from subagent_env_allowlist: test runners legitimately need broader
+   * toolchain env (NODE_*, GOPATH, etc.) than reviewer agents do. Tokens
+   * (GH_TOKEN, GITHUB_TOKEN, STARK_PUSH_TOKEN) are stripped regardless of
+   * what this allowlist contains. */
+  test_env_allowlist?: string[];
 }
+
+export const DEFAULT_TEST_ENV_ALLOWLIST: readonly string[] = Object.freeze([
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "SHELL",
+  "TMPDIR",
+  "USER",
+  "LOGNAME",
+]);
 
 /**
  * Resolved view of merged global/org/repo config consumed by the TS pipeline.
@@ -421,6 +438,144 @@ export function loadTrustedConfig(opts: {
   merged = deepMerge(merged, repoCfg);
 
   return merged as unknown as ResolvedConfig;
+}
+
+// ─── Phase 9: fix-loop authorization gate ───────────────────────────────────
+
+export type FixLoopDenyReason =
+  | "no_fix_loop"
+  | "no_test_command"
+  | "fork_no_mcm"
+  | "auth_denied";
+
+export interface FixLoopGateInput {
+  testCommand: string | null | undefined;
+  prHeadIsFork: boolean;
+  maintainerCanModify: boolean;
+  cliAllowUntrustedFixLoop: boolean;
+  configUntrustedFixLoop: boolean;
+  noFixLoop: boolean;
+}
+
+export interface FixLoopGateResult {
+  allow: boolean;
+  reason: string;
+  /** When true, this is a hard auth failure that must surface as a non-zero
+   * exit and an `error.code` on the receipt. When false, the caller skips the
+   * fix loop quietly (soft skip) — the PR review still posts. */
+  terminal: boolean;
+}
+
+/**
+ * Pure decision function: should we enter the fix loop for this PR?
+ *
+ * Rule precedence (first match wins):
+ *  a) noFixLoop=true                           → soft skip (no_fix_loop)
+ *  b) testCommand is null/empty                → soft skip (no_test_command)
+ *  c) same-repo PR                             → allow
+ *  d) fork PR + maintainer_can_modify          → allow
+ *  e) fork PR, no MCM, no CLI opt-in           → soft skip (fork_no_mcm)
+ *  f) fork PR, CLI opt-in but config disabled  → terminal auth_denied
+ *  g) fork PR, both opt-ins                    → allow
+ *
+ * test_command MUST be sourced from trusted config — never from CLAUDE.md or
+ * package.json or any PR-controlled file.
+ */
+export function evaluateFixLoopGate(input: FixLoopGateInput): FixLoopGateResult {
+  if (input.noFixLoop) {
+    return { allow: false, terminal: false, reason: "no_fix_loop" };
+  }
+  const tc = input.testCommand;
+  if (tc === null || tc === undefined || tc === "" || (typeof tc === "string" && tc.trim() === "")) {
+    return { allow: false, terminal: false, reason: "no_test_command" };
+  }
+  if (!input.prHeadIsFork) {
+    return { allow: true, terminal: false, reason: "same_repo" };
+  }
+  if (input.maintainerCanModify) {
+    return { allow: true, terminal: false, reason: "fork_with_mcm" };
+  }
+  if (!input.cliAllowUntrustedFixLoop) {
+    return { allow: false, terminal: false, reason: "fork_no_mcm" };
+  }
+  if (!input.configUntrustedFixLoop) {
+    return { allow: false, terminal: true, reason: "auth_denied" };
+  }
+  return { allow: true, terminal: false, reason: "fork_untrusted_authorized" };
+}
+
+// ─── Phase 9: stage path validation ─────────────────────────────────────────
+
+export class PathRejectedError extends Error {
+  code = "path_rejected" as const;
+  badPath: string;
+  constructor(badPath: string, msg: string) {
+    super(msg);
+    this.badPath = badPath;
+  }
+}
+
+/**
+ * Validate that every path is a worktree-relative path that — once realpath'd
+ * with all ancestor directories — stays inside the worktree. Returns the
+ * cleaned (forward-slash, normalized-relative) list. Throws PathRejectedError
+ * on first violation; the caller MUST treat any rejection as a terminal abort
+ * for the round (no commit, no push).
+ *
+ * Checks:
+ *  - reject absolute paths
+ *  - reject any '..' segment
+ *  - realpathSync the worktree
+ *  - for each path, walk every ancestor directory under the worktree and
+ *    realpath each one; reject if any ancestor's realpath escapes the worktree
+ *  - realpath the leaf when it exists; reject if it escapes the worktree
+ *
+ * The ancestor walk catches the symlink-as-intermediate-dir attack: a path
+ * like `subdir/file.ts` where `subdir` is a symlink pointing to `/etc`.
+ */
+export function validateStagePaths(worktree: string, paths: string[]): string[] {
+  const realWorktree = fs.realpathSync(worktree);
+  const cleaned: string[] = [];
+  for (const raw of paths) {
+    if (typeof raw !== "string" || raw.length === 0) {
+      throw new PathRejectedError(String(raw), `empty path`);
+    }
+    if (path.isAbsolute(raw)) {
+      throw new PathRejectedError(raw, `absolute path rejected: ${raw}`);
+    }
+    const parts = raw.split(/[\\/]/u).filter((s) => s.length > 0);
+    if (parts.some((s) => s === "..")) {
+      throw new PathRejectedError(raw, `traversal segment rejected: ${raw}`);
+    }
+    if (parts.some((s) => s === ".")) {
+      // Disallow '.' segments to keep the contract simple; real paths from the
+      // fixer should never need them.
+      throw new PathRejectedError(raw, `dot segment rejected: ${raw}`);
+    }
+    // Walk ancestors AND leaf, realpathing each existing entry.
+    let cursorAbs = realWorktree;
+    for (let i = 0; i < parts.length; i++) {
+      cursorAbs = path.join(cursorAbs, parts[i]);
+      if (fs.existsSync(cursorAbs) || fs.lstatSync(cursorAbs, { throwIfNoEntry: false })) {
+        try {
+          const real = fs.realpathSync(cursorAbs);
+          if (real !== realWorktree && !real.startsWith(realWorktree + path.sep)) {
+            throw new PathRejectedError(raw, `path escapes worktree via ${cursorAbs}: realpath=${real}`);
+          }
+        } catch (err) {
+          if (err instanceof PathRejectedError) throw err;
+          // Non-existent intermediate: fall through; resolved-relative check
+          // below catches naive escapes that don't yet exist.
+        }
+      }
+    }
+    const resolved = path.resolve(realWorktree, raw);
+    if (resolved !== realWorktree && !resolved.startsWith(realWorktree + path.sep)) {
+      throw new PathRejectedError(raw, `resolved path escapes worktree: ${resolved}`);
+    }
+    cleaned.push(parts.join("/"));
+  }
+  return cleaned;
 }
 
 // ─── Prompt resolution & review-prompt rendering ────────────────────────────
