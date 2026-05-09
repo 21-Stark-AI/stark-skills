@@ -42,6 +42,20 @@ test("FINDING_SCHEMA_PROMPT spells out the JSONL/body contract", () => {
   assert.doesNotMatch(FINDING_SCHEMA_PROMPT, /"suggestion"/);
 });
 
+test("FINDING_SCHEMA_PROMPT requires the no-findings sentinel for clean reviews", () => {
+  // The sentinel is the only valid clean-review signal. The contract must
+  // (a) name the sentinel key, (b) show the literal example, and (c) NOT tell
+  // agents to be silent on no-findings — silence trips the dispatcher's
+  // unparseable-stdout check.
+  assert.match(FINDING_SCHEMA_PROMPT, /no_findings/, "must mention no_findings");
+  assert.match(FINDING_SCHEMA_PROMPT, /"no_findings"\s*:\s*true/, "must show sentinel JSON literal");
+  assert.doesNotMatch(
+    FINDING_SCHEMA_PROMPT,
+    /emit nothing/i,
+    "must NOT instruct agents to emit nothing — that triggers tier-1 unparseable",
+  );
+});
+
 test("stripLegacyOutputSection is idempotent", () => {
   const clean = "# Title\n\nBody only.\n";
   assert.equal(stripLegacyOutputSection(clean), clean);
