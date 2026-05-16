@@ -9,7 +9,7 @@ from dataclasses import asdict
 import red_team_audit
 import red_team_backfill
 import red_team_insights
-import stark_red_team as rt
+import red_team_types as rt
 
 
 TS_LEGACY = "2026-04-01T00:00:00Z"

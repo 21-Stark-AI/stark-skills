@@ -61,9 +61,11 @@ def now_ts() -> float:
 class CostAccumulator:
     """Tracks cumulative cost across a red-team cycle with per-subsystem breakdown.
 
-    Used by stark_red_team.py to sum red-team + stability + regen + inner-review
-    costs so the cost circuit breaker covers the whole cascade the red team
-    triggers (design spec rt5 + rt_b4).
+    Used to sum red-team + stability + regen + inner-review costs so the
+    cost circuit breaker covers the whole cascade the red team triggers
+    (design spec rt5 + rt_b4). The Python dispatcher was deleted in Phase 4
+    of the 2026-05-16 TS migration; the live red-team accumulator is now in
+    `tools/red_team_lib.ts`.
     """
 
     total_usd: float = 0.0

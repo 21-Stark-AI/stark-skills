@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * `/stark-red-team-design` TS dispatcher (Phase 2 of the migration plan).
+ * `/stark-red-team-design` TS dispatcher.
  *
- * Thin wrapper around `tools/red_team_lib.ts`. Replaces the Python
- * `scripts/red_team_design_dispatch.py` for everyday use; the Python file
- * stays in tree but is marked deprecated and is no longer wired into the
- * skill.
+ * Thin wrapper around `tools/red_team_lib.ts`. The former Python entry
+ * (`scripts/red_team_design_dispatch.py`) was deleted in Phase 4 of the
+ * 2026-05-16 TS migration.
  *
  * Usage:
  *   node --experimental-strip-types tools/red_team_design.ts \

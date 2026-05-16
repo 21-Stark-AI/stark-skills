@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<plan-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: 0026c1167b6544f8034e4a1785408477b42150dc
-revision_date: 2026-05-16T13:48:50Z
+revision: ea469ff2911993abd010f53e1a09085e5f015d0a
+revision_date: 2026-05-16T16:52:06Z
 ---
 
 # stark-red-team-plan
@@ -106,9 +106,9 @@ clear error — surface it as the failure mode.
 ### 2.1 Run the dispatcher
 
 ```bash
-# Phase 2/3 of the red-team TS migration (2026-05-16) replaces the Python
-# dispatcher with `tools/red_team_plan.ts`. The Python file stays in tree
-# but is deprecated and no longer wired here.
+# Red-team dispatcher lives at `tools/red_team_plan.ts` (Phases 3/4 of
+# the 2026-05-16 TS migration). The former Python dispatcher has been
+# deleted.
 flags=()
 [ -n "$source_spec" ] && flags+=(--source-spec "$source_spec")
 [ -n "$model_override" ] && flags+=(--model "$model_override")
@@ -128,7 +128,8 @@ output=$(node --experimental-strip-types "$TOOLS/red_team_plan.ts" \
 The dispatcher:
 
 1. Loads `red_team.*` config (model, personas, timeout, budget, severity floor).
-2. Calls `stark_red_team.run_red_team(stage="plan", ...)` once.
+2. Runs the committee once via `red_team_lib.ts` (one Codex Responses-API call
+   per persona, capped by `red_team.max_concurrent_personas`).
 3. Resolves fix-plan status. By default this is `skipped_disabled` because
    `red_team.fix_plan.enabled` is `false`.
 4. Writes a `<stem>.red-team.md` sidecar (unless `--no-sidecar`).

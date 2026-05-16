@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterable
 
 import red_team_audit
 import red_team_insights
-import stark_red_team as rt
+import red_team_types as rt
 
 Scope = str
 EnqueueFn = Callable[[dict[str, Any]], Any]

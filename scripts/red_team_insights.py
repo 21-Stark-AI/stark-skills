@@ -11,7 +11,7 @@ import sys
 from dataclasses import asdict
 from typing import Any
 
-import stark_red_team as rt
+import red_team_types as rt
 
 _DEDUPE_PREFIXES = {"run", "finding", "fix_plan", "call"}
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import red_team_audit
 import red_team_human_review as hr
-import stark_red_team as rt
+import red_team_types as rt
 
 
 def _seed_finding(db, *, stable_key: str, run_id: str = "run1", concern_hash: str = "abc"):
