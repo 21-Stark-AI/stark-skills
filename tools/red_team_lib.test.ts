@@ -7,6 +7,7 @@
 // SQLite DB), and the live `dispatch()` flow with a mocked codex.
 
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1208,6 +1209,10 @@ test("buildRunPayload counts severities and threads fix_plan_status", () => {
   assert.equal(payload.fix_plan_status, "skipped_disabled");
   assert.deepEqual(payload.warnings, ["w1"]);
   assert.equal(payload.repo, "unknown");
+  // Caller must match what the audit-row writer reports for the same run
+  // (see auditPersistRun) — otherwise insights and audit rows disagree on
+  // run identity and downstream joins break.
+  assert.equal(payload.caller, "stark-red-team-ts");
 });
 
 test("buildFindingPayload redacts free-text fields and computes stable_key", () => {
@@ -1264,6 +1269,85 @@ test("enqueueInsightsEvent writes to the queue and is idempotent on dedupe_key",
   const second = enqueueInsightsEvent("red_team_run", payload, dedupeKey);
   assert.equal(second.ok, true);
   assert.equal(second.duplicate, true);
+});
+
+test("dispatch() actually emits insights events to the queue end-to-end", () => {
+  // STARK_QUEUE_DIR is isolated at module load. Run a real dispatch
+  // (mocked codex, real audit + emit-queue CLI), then peek at the queue
+  // and confirm the three documented event types landed.
+  const db = tmpDb();
+  const docPath = tmpDoc(
+    `---
+classification:
+  level: internal
+---
+# Insights wiring fixture
+`,
+  );
+  const ctx = buildRunContext({
+    stage: "design",
+    artifactPath: docPath,
+    sourceSpecPath: null,
+    dbPath: db,
+  });
+  const prompts = loadPersonaPrompts();
+  dispatch({
+    ctx,
+    prompts,
+    personas: ["data", "security-trust"],
+    artifact: fs.readFileSync(docPath, "utf8"),
+    sourceSpec: fs.readFileSync(docPath, "utf8"),
+    model: "gpt-5.5-pro",
+    timeoutMs: 10_000,
+    dbPath: db,
+    noSidecar: true, // exercise insights even when the sidecar write is off
+    codexFn: () => ({
+      raw_output: JSON.stringify([
+        {
+          persona: "data",
+          severity: "high",
+          concern: "Insights wiring smoke — single blocking finding",
+          consequence: "Tests assert insights wiring only",
+          counter_proposal: "Wire emitRun + emitFinding through the queue",
+          trade_off: "One extra shell-out per finding",
+        },
+      ]),
+      duration_s: 0.01,
+      input_tokens: 1,
+      output_tokens: 1,
+      error: null,
+    }),
+  });
+  // Peek at the queue via the same CLI the dispatcher uses, so we exercise
+  // the real cross-language seam rather than poking SQLite directly.
+  const peek = spawnSync(
+    "python3",
+    [
+      path.join(REPO_ROOT, "scripts", "red_team_emit_queue_cli.py"),
+      "peek",
+      "--source",
+      "pending",
+      "--limit",
+      "200",
+    ],
+    { encoding: "utf8", env: process.env as Record<string, string> },
+  );
+  assert.equal(peek.status, 0, `peek stderr: ${peek.stderr}`);
+  const parsed = JSON.parse(peek.stdout) as {
+    rows: Array<{ event: { type: string; payload: Record<string, unknown> } }>;
+  };
+  const eventsForThisRun = parsed.rows
+    .map((r) => r.event)
+    .filter((e) => (e.payload as { run_id?: string }).run_id === ctx.run_id);
+  const typesSeen = new Set(eventsForThisRun.map((e) => e.type));
+  // red_team_run + red_team_finding are mandatory; red_team_fix_plan does
+  // not land because fix_plan defaults to disabled in config.
+  assert.ok(typesSeen.has("red_team_run"), `expected red_team_run; saw ${[...typesSeen].join(",")}`);
+  assert.ok(typesSeen.has("red_team_finding"), `expected red_team_finding; saw ${[...typesSeen].join(",")}`);
+  assert.ok(!typesSeen.has("red_team_fix_plan"), "fix-plan should not emit when disabled");
+  // Caller must match the audit row, not be left as "manual" or empty.
+  const runEvent = eventsForThisRun.find((e) => e.type === "red_team_run")!;
+  assert.equal((runEvent.payload as { caller: string }).caller, "stark-red-team-ts");
 });
 
 test("emitFixPlan no-ops on non-success status or when fix-plan carries an error", () => {

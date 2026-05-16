@@ -2312,12 +2312,20 @@ function worstSeverity(result: RedTeamResult): Severity | null {
   );
 }
 
+/** Match the audit row writer's `caller` field (see `auditPersistRun` /
+ *  `makeBlocked`). Mismatched callers across the two sinks would surface
+ *  as the same run reporting two identities, which breaks downstream joins.
+ *  Blocked / errored runs early-return before insights fire, so the
+ *  reason-suffixed variant from `makeBlocked` never reaches here. */
+const INSIGHTS_CALLER = "stark-red-team-ts";
+
 export function buildRunPayload(args: {
   ctx: RedTeamRunContext;
   result: RedTeamResult;
   model: string;
   fixPlanStatus: FixPlanStatus | null;
   runWarnings: string[];
+  caller?: string;
 }): Record<string, unknown> {
   const { ctx, result, model, fixPlanStatus, runWarnings } = args;
   const repoLabel = ctx.repo ?? "unknown";
@@ -2325,7 +2333,7 @@ export function buildRunPayload(args: {
     run_id: ctx.run_id,
     stage: ctx.stage,
     model,
-    caller: "manual",
+    caller: args.caller ?? INSIGHTS_CALLER,
     final_status: deriveStatus(result),
     worst_severity: worstSeverity(result),
     passed: deriveStatus(result) === "clean",
