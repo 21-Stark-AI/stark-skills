@@ -7,7 +7,7 @@ from pathlib import Path
 
 import emit_queue
 import red_team_insights as insights
-import stark_red_team as rt
+import red_team_types as rt
 
 
 TS = "2026-05-01T12:34:56Z"

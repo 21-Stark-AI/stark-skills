@@ -1,10 +1,11 @@
 /**
- * Red-team dispatcher core (Phase 1b of the TS migration).
+ * Red-team dispatcher core.
  *
- * Mirror of `scripts/red_team_dispatch_common.py` + `scripts/stark_red_team.py`
- * (the user-facing subset). Shared by `tools/red_team_design.ts` and
- * `tools/red_team_plan.ts`. No I/O at the top level; functions that touch
- * disk or spawn subprocesses take explicit roots so they're unit-testable.
+ * Shared by `tools/red_team_design.ts` and `tools/red_team_plan.ts`. Owns
+ * the full red-team flow that previously lived in the Python dispatcher
+ * (deleted in Phase 4 of the 2026-05-16 migration). No I/O at the top
+ * level; functions that touch disk or spawn subprocesses take explicit
+ * roots so they're unit-testable.
  *
  * What this lib owns:
  *   - persona / prompt resolution from `global/prompts/red-team/`
@@ -15,12 +16,14 @@
  *   - pre-dispatch sensitive-data gate + post-write redaction
  *   - data-classification gate (frontmatter-driven)
  *
- * What this lib explicitly does NOT own (yet — those land with later phases):
- *   - the fix-loop / multi-round refinement (the Python stays authoritative
- *     until Phase 1c). The TS lib runs **one** round with all personas;
- *     stability testing + verification rounds are a follow-up.
- *   - the fix-plan generator (only the read-side of an existing plan).
+ * What this lib explicitly does NOT own (yet — Phase 5 follow-ups):
+ *   - the fix-loop / multi-round refinement. The TS lib runs **one** round
+ *     with all personas; stability testing + verification rounds were never
+ *     ported (the Python equivalent was deleted in Phase 4).
  *   - PR posting (rendered body is returned; the caller posts).
+ *   - excerpt-mode retention on free-text fields (`retention_mode: "full"`
+ *     is hard-coded for both audit + insights writes; `redact()` is the
+ *     defense-in-depth backstop).
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -336,10 +339,10 @@ export function preDispatchSensitiveGate(payload: string): string[] {
 
 // ── Sandbox ──────────────────────────────────────────────────────────────
 //
-// Mirror of `scripts/red_team_sandbox.py::scrub_env` — strip every host env
-// var that isn't on the explicit allowlist before handing the subprocess
-// off to codex. HOME is intentionally absent; isolateHome() supplies a
-// synthetic directory with a symlink to ~/.codex only.
+// scrub_env — strip every host env var that isn't on the explicit
+// allowlist before handing the subprocess off to codex. HOME is
+// intentionally absent; isolateHome() supplies a synthetic directory
+// with a symlink to ~/.codex only.
 
 const SANDBOX_ENV_ALLOWLIST = [
   "PATH",

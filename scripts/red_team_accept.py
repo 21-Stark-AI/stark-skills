@@ -15,9 +15,9 @@ The acceptance flow:
    (``--no-confirm`` skips when scripting).
 4. Persist one ``red_team_human_review_accepts`` row per accepted key.
 
-The persisted accepts are honored by ``red_team_dispatch_common`` on the
-next dispatcher invocation: any human-review finding whose stable_key
-matches an accept row no longer counts toward the halt decision.
+The persisted accepts are honored by `tools/red_team_lib.ts` on the next
+dispatcher invocation: any human-review finding whose stable_key matches
+an accept row no longer counts toward the halt decision.
 """
 
 from __future__ import annotations
