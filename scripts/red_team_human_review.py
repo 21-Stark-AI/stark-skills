@@ -155,7 +155,7 @@ def accept_finding(
     accept in repo A cannot suppress a halt in repo B (the audit DB is
     shared across the operator's workspace).
     """
-    import stark_red_team as rt
+    import red_team_types as rt
 
     accept_key = rt.compute_accept_key(
         stage=stage, persona=persona, concern_hash=concern_hash, repo=repo
@@ -239,7 +239,7 @@ def filter_human_review_findings(
     are no longer part of the match — they only flow through to the audit
     row when this gets called from a live dispatch.
     """
-    import stark_red_team as rt
+    import red_team_types as rt
 
     del run_id, round_num  # accepted for back-compat; not part of the match
 
