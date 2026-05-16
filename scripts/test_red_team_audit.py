@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import asdict
 
 import red_team_audit
-import stark_red_team as rt
+import red_team_types as rt
 
 
 def _schema_bytes(db):
