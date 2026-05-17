@@ -23,21 +23,38 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+// Full event-type allowlist — kept in lockstep with
+// `scripts/emit_queue.py::_VALID_TYPES`. When the TS lib was a red-team-only
+// subset, this set was just six entries; expanded to match Python because
+// Phase 2 of the emit-queue → TS migration starts routing other producers
+// through this lib (statusline, /stark-session, install.sh).
 const VALID_TYPES: ReadonlySet<string> = new Set([
-  // Subset relevant to the red-team subsystem (matches the entries in
-  // emit_queue.py::_VALID_TYPES). If TS callers ever start emitting
-  // event types outside this list, the validate() check below will
-  // refuse and we'll fail loud.
-  "red_team_run",
-  "red_team_finding",
-  "red_team_fix_plan",
-  "red_team_call_start",
-  "red_team_call_end",
+  "skill_invocation", "review_finding", "review_quality",
+  "agent_dispatch", "prompt", "correction", "memory_write",
+  "code_change", "bug_fix", "pr_event", "tool_usage", "ci_signal",
+  "tournament_result",
+  "preflight_check", "approach_contract",
+  "validation_result", "heal_attempt",
+  // Workflow-improvement v2 spec names (docs/specs/2026-04-03-*.md).
+  "context_compaction", "learning_captured", "skill_recommendation",
+  // Pre-v2 aliases kept for back-compat so existing producers don't break
+  // mid-migration. Prefer the v2 names in new code.
+  "learning_capture", "skill_suggestion",
+  // Red-team config: locked-field override rejection. Spec §6 requires a
+  // durable audit signal so a downstream pipeline can spot bypass attempts
+  // that an operator might miss in stderr noise.
   "red_team_override_rejected",
+  "red_team_run", "red_team_finding", "red_team_fix_plan",
+  // FU-rt11 — Per-call telemetry.
+  "red_team_call_start", "red_team_call_end",
 ]);
 
 const VALID_CLIS: ReadonlySet<string> = new Set(["claude", "codex", "gemini"]);
-const VALID_SOURCES: ReadonlySet<string> = new Set(["skill", "hook", "subagent"]);
+// Matches `scripts/emit_queue.py::_VALID_SOURCES`. Replaces the prior
+// red-team-only subset (skill/hook/subagent) — `subagent` is dropped on
+// purpose (no caller left), `scraper` + `backfill` added for parity with
+// the Python set.
+const VALID_SOURCES: ReadonlySet<string> = new Set(["skill", "hook", "scraper", "backfill"]);
 
 const REQUIRED_FIELDS: readonly string[] = [
   "type", "timestamp", "cli", "source", "schema_version", "payload",
@@ -266,6 +283,125 @@ export function enqueue(event: EmitEvent, env: NodeJS.ProcessEnv = process.env):
     };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
+  } finally {
+    db.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Queue introspection (consumed by the --health CLI + /stark-session SKILL)
+// ---------------------------------------------------------------------------
+
+export function pendingCount(env: NodeJS.ProcessEnv = process.env): number {
+  const db = openQueueDb(queueDbPath(env));
+  try {
+    const row = db.prepare("SELECT COUNT(*) AS c FROM pending").get() as { c: number };
+    return Number(row.c);
+  } finally {
+    db.close();
+  }
+}
+
+export function deadLetterCount(env: NodeJS.ProcessEnv = process.env): number {
+  const db = openQueueDb(queueDbPath(env));
+  try {
+    const row = db.prepare("SELECT COUNT(*) AS c FROM dead_letter").get() as { c: number };
+    return Number(row.c);
+  } finally {
+    db.close();
+  }
+}
+
+export interface QueueHealth {
+  pending_count: number;
+  max_created_at: string | null;
+}
+
+export function health(env: NodeJS.ProcessEnv = process.env): QueueHealth {
+  const db = openQueueDb(queueDbPath(env));
+  try {
+    const row = db
+      .prepare("SELECT COUNT(*) AS c, MAX(created_at) AS m FROM pending")
+      .get() as { c: number; m: string | null };
+    return { pending_count: Number(row.c), max_created_at: row.m ?? null };
+  } finally {
+    db.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Context velocity (consumed by config/statusline-command.sh)
+// ---------------------------------------------------------------------------
+
+export function ctxHistoryPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(queueDir(env), "ctx-history");
+}
+
+/**
+ * Record a context-window % reading and return a trend indicator.
+ *
+ * Mirrors `scripts/emit_queue.py::record_context_pct`:
+ *   - Persists `<unix-ts>\t<pct>` tab-rows into ~/.stark-insights/ctx-history
+ *   - Keeps the last 10 entries (older rows trimmed)
+ *   - Compares the latest reading to the OLDEST kept entry (== ~last 10 ticks)
+ *   - Returns "▲" when delta >= 5 percentage points, "▸" when delta >= 1, else ""
+ *   - Atomic via tmp + rename so a concurrent statusline tick can't see a half-write
+ *
+ * Schema MUST stay in lockstep with Python: same file path, same row format,
+ * same trend thresholds. The Python and TS implementations may both write
+ * during the Phase 3 migration window.
+ */
+export function recordContextPct(
+  pct: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const dir = queueDir(env);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = ctxHistoryPath(env);
+  const now = Math.floor(Date.now() / 1000);
+
+  const entries: Array<[number, number]> = [];
+  try {
+    const raw = fs.readFileSync(file, "utf8").trim();
+    for (const line of raw.split("\n")) {
+      const parts = line.split("\t");
+      if (parts.length !== 2) continue;
+      const ts = Number(parts[0]);
+      const p = Number(parts[1]);
+      if (Number.isFinite(ts) && Number.isFinite(p)) entries.push([ts, p]);
+    }
+  } catch {
+    // Missing/unreadable file is the first-call case.
+  }
+
+  entries.push([now, pct]);
+  const kept = entries.slice(-10);
+
+  const tmp = file + ".tmp";
+  try {
+    fs.writeFileSync(tmp, kept.map(([ts, p]) => `${ts}\t${p}`).join("\n") + "\n");
+    fs.renameSync(tmp, file);
+  } catch {
+    // Silently drop the write; the trend value the caller already has is fine.
+  }
+
+  if (kept.length < 2) return "";
+  const prev = kept[0][1];
+  const delta = pct - prev;
+  if (delta >= 5) return "▲"; // ▲
+  if (delta >= 1) return "▸"; // ▸
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Schema bootstrap (consumed by install.sh)
+// ---------------------------------------------------------------------------
+
+export function initSchema(env: NodeJS.ProcessEnv = process.env): string {
+  const dbPath = queueDbPath(env);
+  const db = openQueueDb(dbPath);
+  try {
+    return dbPath;
   } finally {
     db.close();
   }
