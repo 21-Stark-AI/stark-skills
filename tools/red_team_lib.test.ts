@@ -1224,6 +1224,9 @@ test("buildFindingPayload redacts free-text fields and computes stable_key", () 
     trade_off: null,
     reason_for_uncertainty: null,
   });
+  // Excerpt mode (the new shipped default after Phase 5a — global config
+  // doesn't set retain_full_text=true so insights events carry redacted
+  // excerpts + pairing hashes, not verbatim text).
   const payload = buildFindingPayload({
     ctx: mkCtx(),
     finding,
@@ -1234,7 +1237,32 @@ test("buildFindingPayload redacts free-text fields and computes stable_key", () 
   assert.doesNotMatch(payload.concern as string, /sk-abcdefghijklmnopqrstuvwx/);
   assert.match(payload.concern as string, /sk-\[REDACTED\]/);
   assert.equal(payload.is_human_review, false);
+  assert.equal(payload.retention_mode, "excerpt");
+  // Pairing hash now present in excerpt mode (SHA-256 of original text).
+  assert.equal(typeof payload.concern_excerpt_hash, "string");
+  assert.match(payload.concern_excerpt_hash as string, /^[0-9a-f]{64}$/);
+});
+
+test("buildFindingPayload honors an explicit full-retention policy override", () => {
+  const finding = mkFinding({
+    id: "rt7",
+    concern: "leaked token: sk-abcdefghijklmnopqrstuvwx0123",
+    consequence: "Customer rows deleted",
+    counter_proposal: "Verify",
+    trade_off: null,
+    reason_for_uncertainty: null,
+  });
+  const payload = buildFindingPayload({
+    ctx: mkCtx(),
+    finding,
+    roundNum: 2,
+    policy: { retainFullText: true, excerptMaxChars: 240 },
+  });
   assert.equal(payload.retention_mode, "full");
+  // Full mode → stored text is redacted but not excerpted; no pairing hash.
+  assert.equal(payload.concern_excerpt_hash, null);
+  // Still redacts secrets even in full mode.
+  assert.match(payload.concern as string, /sk-\[REDACTED\]/);
 });
 
 test("buildFixPlanPayload collects addressed IDs across moves", () => {
