@@ -59,12 +59,8 @@ def _log(entry: dict) -> None:
 
 
 def _emit_event(payload: dict) -> None:
-    try:
-        import emit_queue
-        event = emit_queue.make_event("heal_attempt", payload)
-        emit_queue.enqueue(event)
-    except Exception:
-        pass
+    from _emit import emit_event
+    emit_event("heal_attempt", payload)
 
 
 # ---------------------------------------------------------------------------

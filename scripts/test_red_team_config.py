@@ -292,25 +292,19 @@ def test_get_red_team_config_rejects_security_critical_overrides(
 
 def test_locked_override_emits_audit_event(tmp_path, capsys, monkeypatch):
     """Spec §6 requires `red_team_override_rejected` for locked org/repo
-    overrides. Use the *real* emit_queue.validate so the event survives
-    schema enforcement (round-2 finding 6/7: the previous event name was
-    rejected by emit_queue.validate(), silently dropped, and the test
-    only passed because it was monkeypatched onto a fake queue)."""
-    import emit_queue
+    overrides. Captures via the new `_EMIT_EVENT` shim attribute — the
+    TS lib's `enqueue` does the schema validation, so the test only
+    needs to confirm the event type + payload shape reach the emit path."""
 
     captured: list[dict] = []
 
-    def capture_enqueue(event, *_, **__):
-        # Round-trip through the real validator — if the event type isn't
-        # in _VALID_TYPES, this will raise and we'll see it as a hard
-        # failure rather than a silent stderr noise.
-        errors = emit_queue.validate(event)
-        assert errors == [], f"event failed real validate(): {errors}"
-        captured.append(event)
-        return True
+    def capture_emit(event_type, payload, **kw):
+        # Reconstruct an event-envelope shape so the existing assertions
+        # (`e["type"]`, `e["payload"]["field"]`) keep working after the
+        # cutover to subprocess-based emission.
+        captured.append({"type": event_type, "payload": payload, **kw})
 
-    monkeypatch.setattr(emit_queue, "enqueue", capture_enqueue)
-    monkeypatch.setattr(config_loader, "_EMIT_QUEUE", emit_queue)
+    monkeypatch.setattr(config_loader, "_EMIT_EVENT", capture_emit)
 
     global_cfg = tmp_path / "global.json"
     global_cfg.write_text(json.dumps({"red_team": {"model": "o3"}}))
@@ -403,18 +397,12 @@ def test_locked_override_emits_audit_event(tmp_path, capsys, monkeypatch):
 def test_get_red_team_config_rejects_locked_fix_plan_overrides(
     tmp_path, capsys, monkeypatch, key, global_value, repo_attempted_value,
 ):
-    import emit_queue
-
     captured: list[dict] = []
 
-    def capture_enqueue(event, *_, **__):
-        errors = emit_queue.validate(event)
-        assert errors == [], f"event failed real validate(): {errors}"
-        captured.append(event)
-        return True
+    def capture_emit(event_type, payload, **kw):
+        captured.append({"type": event_type, "payload": payload, **kw})
 
-    monkeypatch.setattr(emit_queue, "enqueue", capture_enqueue)
-    monkeypatch.setattr(config_loader, "_EMIT_QUEUE", emit_queue)
+    monkeypatch.setattr(config_loader, "_EMIT_EVENT", capture_emit)
 
     global_cfg = tmp_path / "global.json"
     global_cfg.write_text(json.dumps({"red_team": {"fix_plan": {key: global_value}}}))
