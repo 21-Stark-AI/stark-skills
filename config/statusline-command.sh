@@ -108,20 +108,18 @@ if [ -n "$cwd" ]; then
   fi
 fi
 
-# ── Python: context trend + cost (single call) ──────────────────────────
-ctx_trend="" session_cost=""
-IFS=$'\t' read -r ctx_trend session_cost < <(python3 - "$used_pct" "$model_id" "$tokens_in" "$tokens_out" <<'PYEOF'
-import sys, os
-_, pct_s, mid, tin, tout = sys.argv
+# ── Context trend (TS CLI) + cost (Python, no emit_queue dependency) ───
+ctx_trend=""
+if [ -n "$used_pct" ]; then
+    ctx_trend=$(node --experimental-strip-types --no-warnings \
+        "$HOME/.claude/code-review/tools/emit_queue_cli.ts" \
+        record-context-pct "$used_pct" 2>/dev/null || true)
+fi
 
-trend = ""
-if pct_s:
-    try:
-        sys.path.insert(0, os.path.expanduser("~/Code/Playground/stark-skills/scripts"))
-        from emit_queue import record_context_pct
-        trend = record_context_pct(float(pct_s))
-    except Exception:
-        pass
+session_cost=""
+session_cost=$(python3 - "$model_id" "$tokens_in" "$tokens_out" <<'PYEOF'
+import sys
+_, mid, tin, tout = sys.argv
 
 cost = ""
 if tin and tout and mid:
@@ -139,7 +137,7 @@ if tin and tout and mid:
     except Exception:
         pass
 
-print(f"{trend}\t{cost}")
+print(cost)
 PYEOF
 2>/dev/null)
 
