@@ -33,6 +33,13 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import { loadAuditPolicy } from "./red_team_audit_lib.ts";
+import {
+  applyToField,
+  policyMode,
+  type AuditRetentionPolicy,
+} from "./red_team_audit_text_lib.ts";
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 export type Severity = "critical" | "high" | "medium" | "low";
@@ -2363,14 +2370,22 @@ export function buildFindingPayload(args: {
   ctx: RedTeamRunContext;
   finding: RedTeamFinding;
   roundNum: number;
+  /** Optional policy override for tests / calibration. Production callers
+   *  pass undefined and let the function load it from global/config.json. */
+  policy?: AuditRetentionPolicy;
 }): Record<string, unknown> {
   const { ctx, finding, roundNum } = args;
   const repoLabel = ctx.repo ?? "unknown";
   const stableKey = `${ctx.run_id}:${ctx.stage}:${roundNum}:${finding.persona}:${finding.id}:${finding.concern_hash}`;
-  // Apply redact() so insights events can't carry sensitive content even if
-  // a finding's free-text fields slipped past upstream gates. TS dispatch
-  // has no retention-policy mode yet (Python's `red_team_audit_text.policy_from_config`);
-  // when that lands, swap redact() for the policy-aware version.
+  // Resolve the FU-rt6 retention policy. Default ships as excerpt mode so
+  // the metrics queue never carries verbatim model output unless an
+  // operator explicitly flips `red_team.audit.retain_full_text` to true.
+  const policy = args.policy ?? loadAuditPolicy(REPO_ROOT);
+  const concern = applyToField(finding.concern, policy);
+  const consequence = applyToField(finding.consequence, policy);
+  const counter = applyToField(finding.counter_proposal, policy);
+  const tradeOff = applyToField(finding.trade_off, policy);
+  const reason = applyToField(finding.reason_for_uncertainty, policy);
   return {
     run_id: ctx.run_id,
     stage: ctx.stage,
@@ -2383,18 +2398,17 @@ export function buildFindingPayload(args: {
     risk_key: finding.risk_key,
     affected_component: finding.affected_component,
     failure_mode: finding.failure_mode,
-    retention_mode: "full",
-    concern: redact(finding.concern),
-    consequence: redact(finding.consequence),
-    counter_proposal: redact(finding.counter_proposal),
-    trade_off: finding.trade_off === null ? null : redact(finding.trade_off),
-    reason_for_uncertainty:
-      finding.reason_for_uncertainty === null ? null : redact(finding.reason_for_uncertainty),
-    concern_excerpt_hash: null,
-    consequence_excerpt_hash: null,
-    counter_proposal_excerpt_hash: null,
-    trade_off_excerpt_hash: null,
-    reason_for_uncertainty_excerpt_hash: null,
+    retention_mode: policyMode(policy),
+    concern: concern.stored,
+    consequence: consequence.stored,
+    counter_proposal: counter.stored ?? finding.counter_proposal,
+    trade_off: tradeOff.stored,
+    reason_for_uncertainty: reason.stored,
+    concern_excerpt_hash: concern.hash,
+    consequence_excerpt_hash: consequence.hash,
+    counter_proposal_excerpt_hash: counter.hash,
+    trade_off_excerpt_hash: tradeOff.hash,
+    reason_for_uncertainty_excerpt_hash: reason.hash,
     is_human_review: isHumanReviewFinding(finding),
     repo: repoLabel,
     pr_number: ctx.pr_number,
