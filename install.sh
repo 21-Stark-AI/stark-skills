@@ -113,24 +113,17 @@ provision_infrastructure() {
 
     info "Created local directories"
 
-    # Delegate queue.db schema creation to emit_queue.py — the runtime owns
-    # the canonical schema, so installing via its own initializer keeps
-    # install.sh from drifting. buffer.db is owned by stark-insights (its
-    # own installer creates it).
-    REPO_DIR="$REPO_DIR" python3 - <<'PY'
-import os
-import sys
-from pathlib import Path
+    # Delegate queue.db schema creation to the TS emit-queue CLI — the lib
+    # owns the canonical schema (mirrored from scripts/emit_queue.py), so
+    # installing via its own initializer keeps install.sh from drifting.
+    # buffer.db is owned by stark-insights (its own installer creates it).
+    node --experimental-strip-types --no-warnings \
+        "$REPO_DIR/tools/emit_queue_cli.ts" --init-schema
 
-sys.path.insert(0, str(Path(os.environ["REPO_DIR"]) / "scripts"))
-import emit_queue  # noqa: E402
-
-connection = emit_queue._get_db()
-connection.close()
-
-if emit_queue.QUEUE_DB.exists():
-    os.chmod(emit_queue.QUEUE_DB, 0o600)
-PY
+    queue_db="${STARK_QUEUE_DIR:-$HOME/.stark-insights}/queue.db"
+    if [ -f "$queue_db" ]; then
+        chmod 600 "$queue_db"
+    fi
 
     info "Provisioned queue.db"
 }
