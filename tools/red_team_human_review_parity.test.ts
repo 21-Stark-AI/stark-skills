@@ -433,3 +433,126 @@ test("lookupFindingMetadata returns the row data the accept CLI displays", () =>
   const missing = lookupFindingMetadata({ stableKey: "no-such-key", dbPath });
   assert.equal(missing, null);
 });
+
+// ── Cross-language interop (key evidence that Phase 5a writers + readers
+//    can mix safely until Phase 5b cutover deletes Python) ───────────────
+
+test("interop: TS-accepted halt is honored by Python's listing", () => {
+  const dbPath = tmpDb("interop-ts-to-py");
+  initRedTeamTables(dbPath);
+  // Seed via TS (writer parity already proven separately).
+  recordRedTeamRun(
+    {
+      run_id: "interop", stage: "design", rounds_used: 1,
+      final_status: "halted_human_review",
+      total_findings: 1, critical_count: 0, high_count: 0,
+      medium_count: 0, human_review_count: 1,
+      duration_s: 0.1, cost_usd: 0,
+      model: "gpt-5.5-pro", caller: "stark-red-team-ts",
+      repo: "Evinced/foo", artifact_relative_path: "d.md", pr_number: 1,
+      fix_plan_status: "skipped_disabled", fix_plan_md: null,
+      fix_plan_json: null, fix_plan_cost_usd: null,
+      created_at: "2026-05-17T11:00:00Z",
+    },
+    dbPath,
+  );
+  recordFindings(
+    [
+      {
+        run_id: "interop", stage: "design", round_num: 1, finding_id: "rt1",
+        persona: "data", severity: "high", concern: "c", consequence: "c",
+        counter_proposal: "REQUEST_HUMAN_REVIEW",
+        trade_off: null, reason_for_uncertainty: "x",
+        stable_key: "interop:design:1:data:rt1:interop-hash",
+        concern_hash: "interop-hash",
+        risk_key: null, affected_component: null, failure_mode: null,
+      },
+    ],
+    dbPath,
+    policyFromConfig({ retain_full_text: true }),
+  );
+  // Confirm Python sees the row.
+  const before = JSON.parse(
+    runPython(
+      `
+import red_team_human_review as hr
+halts = hr.list_pending_halts(db_path=${JSON.stringify(dbPath)})
+sys.stdout.write(json.dumps([{"stable_key": h.stable_key} for h in halts]))
+`,
+    ),
+  );
+  assert.equal(before.length, 1);
+  // Accept via TS.
+  acceptFinding({
+    stableKey: "interop:design:1:data:rt1:interop-hash",
+    runId: "interop", stage: "design", roundNum: 1,
+    persona: "data", findingId: "rt1",
+    concernHash: "interop-hash", concernExcerpt: null,
+    repo: "Evinced/foo", dbPath,
+  });
+  // Python's listing must now be empty — same accept_key, same SQL.
+  const after = JSON.parse(
+    runPython(
+      `
+import red_team_human_review as hr
+halts = hr.list_pending_halts(db_path=${JSON.stringify(dbPath)})
+sys.stdout.write(json.dumps([{"stable_key": h.stable_key} for h in halts]))
+`,
+    ),
+  );
+  assert.deepEqual(after, []);
+});
+
+test("interop: Python-accepted halt is honored by TS's listing", () => {
+  const dbPath = tmpDb("interop-py-to-ts");
+  initRedTeamTables(dbPath);
+  recordRedTeamRun(
+    {
+      run_id: "interop2", stage: "design", rounds_used: 1,
+      final_status: "halted_human_review",
+      total_findings: 1, critical_count: 0, high_count: 0,
+      medium_count: 0, human_review_count: 1,
+      duration_s: 0.1, cost_usd: 0,
+      model: "gpt-5.5-pro", caller: "py",
+      repo: "Evinced/foo", artifact_relative_path: "d.md", pr_number: 2,
+      fix_plan_status: "skipped_disabled", fix_plan_md: null,
+      fix_plan_json: null, fix_plan_cost_usd: null,
+      created_at: "2026-05-17T11:00:00Z",
+    },
+    dbPath,
+  );
+  recordFindings(
+    [
+      {
+        run_id: "interop2", stage: "design", round_num: 1, finding_id: "rt2",
+        persona: "data", severity: "high", concern: "c", consequence: "c",
+        counter_proposal: "REQUEST_HUMAN_REVIEW",
+        trade_off: null, reason_for_uncertainty: "x",
+        stable_key: "interop2:design:1:data:rt2:interop2-hash",
+        concern_hash: "interop2-hash",
+        risk_key: null, affected_component: null, failure_mode: null,
+      },
+    ],
+    dbPath,
+    policyFromConfig({ retain_full_text: true }),
+  );
+  // Confirm TS sees the row.
+  const before = listPendingHalts({ dbPath });
+  assert.equal(before.length, 1);
+  // Accept via Python.
+  runPython(
+    `
+import red_team_human_review as hr
+hr.accept_finding(
+    "interop2:design:1:data:rt2:interop2-hash",
+    run_id="interop2", stage="design", round_num=1,
+    persona="data", finding_id="rt2",
+    concern_hash="interop2-hash", concern_excerpt=None,
+    repo="Evinced/foo", db_path=${JSON.stringify(dbPath)},
+)
+`,
+  );
+  // TS listing must now be empty.
+  const after = listPendingHalts({ dbPath });
+  assert.deepEqual(after, []);
+});
