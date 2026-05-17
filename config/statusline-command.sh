@@ -280,7 +280,7 @@ fi
 # Cost: real session cost + per-hour burn rate, merged into one segment.
 if _on cost && [ -n "$session_cost" ]; then
   c="${PEACH}\U0001f4b0 ${session_cost}${R}"
-  [ -n "$cost_rate" ] && c="${c} ${DIM}· ${cost_rate}${R}"
+  _on cost_rate && [ -n "$cost_rate" ] && c="${c} ${DIM}· ${cost_rate}${R}"
   seg2 "$c"
 fi
 

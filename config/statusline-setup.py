@@ -68,10 +68,30 @@ def load_config() -> dict[str, bool]:
     states = {s[0]: True for s in SEGMENTS}
     if SEGMENTS_JSON.exists():
         try:
-            states.update(json.loads(SEGMENTS_JSON.read_text()))
+            on_disk = json.loads(SEGMENTS_JSON.read_text())
+            states.update(_migrate_config(on_disk))
         except (json.JSONDecodeError, OSError):
             pass
     return states
+
+
+def _migrate_config(on_disk: dict[str, bool]) -> dict[str, bool]:
+    """Migrate renamed segment keys so existing user configs keep their intent.
+
+    `tokens` used to mean "cumulative session totals" — that role is now
+    `tokens_total`, and the `tokens` key has been repurposed to mean
+    "per-turn token flow". A user who previously set `tokens: false` to
+    suppress the noisy cumulative counter would otherwise silently lose
+    the per-turn flow segment instead.
+
+    Strategy: if a stale `tokens` value is present, carry it over to
+    `tokens_total` (only when `tokens_total` is not already set), then
+    drop the `tokens` key so it cannot mask the new per-turn meaning.
+    """
+    if "tokens" in on_disk:
+        prior = on_disk.pop("tokens")
+        on_disk.setdefault("tokens_total", prior)
+    return on_disk
 
 
 def save_config(states: dict[str, bool]) -> None:
