@@ -7,7 +7,6 @@
 // SQLite DB), and the live `dispatch()` flow with a mocked codex.
 
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

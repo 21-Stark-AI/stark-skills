@@ -18,7 +18,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -199,7 +199,6 @@ function defaultDedupeKey(args: {
   // Red-team callers always pass an explicit dedupe_key (run/finding/fix_plan
   // keys), so this path is rare for the red-team subsystem; included for
   // parity with Python event creation in case a caller skips it.
-  const { createHash } = require("node:crypto") as typeof import("node:crypto");
   const canonical = `${args.source}|${args.cli}|${args.sessionId}|${args.eventType}|${JSON.stringify(args.payload)}`;
   return `auto-${createHash("sha1").update(canonical, "utf8").digest("hex").slice(0, 16)}`;
 }
