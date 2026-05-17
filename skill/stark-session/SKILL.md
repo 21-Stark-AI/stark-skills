@@ -5,8 +5,8 @@ description: >-
 argument-hint: "[start|end]"
 disable-model-invocation: true
 model: opus
-revision: 7c91ffda1c063674729d3d8dddcf530bb937db53
-revision_date: 2026-05-14T07:49:39Z
+revision: 052ea19e44da89f888d628798524d9ce02663a6c
+revision_date: 2026-05-17T10:21:10Z
 ---
 
 ## Preflight
@@ -106,18 +106,18 @@ Run each `session.health_checks` command. Report pass/fail — non-fatal.
 
 **Built-in: telemetry queue health:**
 ```bash
-python3 ~/.claude/code-review/scripts/emit_queue.py --health 2>/dev/null || true
+node --experimental-strip-types --no-warnings \
+    ~/.claude/code-review/tools/emit_queue_cli.ts --health 2>/dev/null || true
 ```
-Display `queue_depth` and `last_event_timestamp`. Also check for dead-lettered events:
+Display `pending_count` and `max_created_at`. Also check for dead-lettered events:
 ```bash
-python3 -c "
-import sys; sys.path.insert(0, '$HOME/Code/Playground/stark-skills/scripts')
-from emit_queue import pending_count, dead_letter_count
-p, d = pending_count(), dead_letter_count()
-if d > 0: print(f'WARN: {d} dead-lettered events, {p} pending')
-elif p > 10: print(f'WARN: {p} events pending drain')
-else: print(f'OK: queue healthy ({p} pending, {d} dead)')
-" 2>/dev/null || true
+p=$(node --experimental-strip-types --no-warnings \
+    ~/.claude/code-review/tools/emit_queue_cli.ts pending-count 2>/dev/null || echo 0)
+d=$(node --experimental-strip-types --no-warnings \
+    ~/.claude/code-review/tools/emit_queue_cli.ts dead-letter-count 2>/dev/null || echo 0)
+if [ "$d" -gt 0 ]; then echo "WARN: $d dead-lettered events, $p pending"
+elif [ "$p" -gt 10 ]; then echo "WARN: $p events pending drain"
+else echo "OK: queue healthy ($p pending, $d dead)"; fi
 ```
 
 If `~/.claude/code-review/healer.jsonl` exists, show top-5 failure categories:
