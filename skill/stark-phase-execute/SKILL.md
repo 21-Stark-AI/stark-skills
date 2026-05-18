@@ -6,8 +6,8 @@ argument-hint: "<plan-slug-or-path> [--dry-run] [--skip-deploy] [--skip-release]
 disable-model-invocation: true
 context: fork
 model: opus
-revision: 85c2a5f6bd3b50c77abfd49f38e09e42214eccde
-revision_date: 2026-05-18T10:47:47Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 ## Preflight
@@ -55,6 +55,7 @@ After all tasks: regression tests, version bump, deploy, dashboard, memory updat
 
 ```bash
 SCRIPTS="${STARK_REVIEW_SCRIPTS:-$HOME/.claude/code-review/scripts}"
+TOOLS="${STARK_REVIEW_TOOLS:-$HOME/.claude/code-review/tools}"
 PYTHON="$SCRIPTS/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 HISTORY="$HOME/.claude/code-review/history"
@@ -82,7 +83,7 @@ git status --porcelain          # must be empty
 git branch --show-current       # must be main
 which gh claude codex gemini    # all must exist
 gh auth status                  # must show active account
-$PYTHON $SCRIPTS/github_app.py --app stark-claude token >/dev/null
+node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token >/dev/null
 ```
 
 If any check fails → stop and report.
@@ -231,7 +232,7 @@ git worktree add /tmp/review-${REPO}-pr${PR_NUM} -b review/pr-${PR_NUM} FETCH_HE
 6. Commit and push from worktree with message `fix: address review findings (round {N}) (#{NUMBER})`
 7. If round >= MAX_ROUNDS → stop.
 
-After loop, post review summary via stark-claude[bot]: `export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)`, use `pr_review()`, then unset GH_TOKEN.
+After loop, post review summary via stark-claude[bot]: `export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)`, use `pr_review()`, then unset GH_TOKEN.
 
 **Clean up worktree:** `git worktree remove /tmp/review-${REPO}-pr${PR_NUM} && git branch -D review/pr-${PR_NUM}`
 
