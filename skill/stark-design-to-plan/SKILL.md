@@ -5,8 +5,8 @@ description: >-
 argument-hint: "<path> [--agents claude,codex,gemini] [--timeout N] [--dry-run] [--force]"
 disable-model-invocation: true
 model: opus
-revision: ab6a41c8d94c419a963eaac3902148f6961b723f
-revision_date: 2026-05-17T10:33:06Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 ## Preflight
@@ -43,6 +43,7 @@ Fills the pipeline gap: `/stark-review-design` → **`/stark-design-to-plan`** �
 
 ```bash
 SCRIPTS="${STARK_REVIEW_SCRIPTS:-$HOME/.claude/code-review/scripts}"
+TOOLS="${STARK_REVIEW_TOOLS:-$HOME/.claude/code-review/tools}"
 PYTHON="$SCRIPTS/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 ```
@@ -75,7 +76,7 @@ Store for Phase 5 if present.
 ### 1.3 Authenticate (only if PR detected)
 
 ```bash
-export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)
+export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)
 ```
 
 Auth failure → warn, continue without PR posting.
@@ -215,7 +216,7 @@ Contents:
 Post the scorecard and synthesis summary under stark-claude:
 
 ```bash
-$PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number --comment --body "$summary"
+node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude pr review $pr_number --comment --body "$summary"
 ```
 
 ### 5e. Save history

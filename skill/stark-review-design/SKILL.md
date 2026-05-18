@@ -7,8 +7,8 @@ description: >-
 argument-hint: "<path> [--rounds N] [--dry-run] [--force] [--codex-concurrent N]"
 disable-model-invocation: true
 model: opus
-revision: d7c1488267da3be7c0e3f893e442a78eda7a49f1
-revision_date: 2026-05-16T09:36:12Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 Thin wrapper. All review/fix logic lives in `tools/stark_review_doc.ts`. The
@@ -57,8 +57,6 @@ Answers the question: **"Is this the right system?"**
 TOOLS="${STARK_REVIEW_TOOLS:-$HOME/.claude/code-review/tools}"
 PROMPTS_BASE="${STARK_REVIEW_PROMPTS_BASE:-$HOME/.claude/code-review/prompts}"
 SCRIPTS="${STARK_REVIEW_SCRIPTS:-$HOME/.claude/code-review/scripts}"
-PYTHON="$SCRIPTS/.venv/bin/python3"
-[ -x "$PYTHON" ] || PYTHON=python3
 ```
 
 To call the dispatcher:
@@ -99,7 +97,7 @@ token only when `GH_TOKEN` is unset (never overwrite a caller-provided token):
 
 ```bash
 if [ -z "${GH_TOKEN:-}" ]; then
-    if GH_TOKEN_TMP=$("$PYTHON" "$SCRIPTS/github_app.py" --app stark-claude token 2>/dev/null); then
+    if GH_TOKEN_TMP=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token 2>/dev/null); then
         export GH_TOKEN="$GH_TOKEN_TMP"
     fi
 fi
@@ -193,12 +191,12 @@ If a PR was detected (Phase 2) and `--dry-run` was not set, post:
 - **Codex raw findings** under the `stark-codex[bot]` identity — one comment summarizing the lead reviewer's findings (table of severity / domain / section / title from the first review-fix round and the final round).
 - **Wing summary** under the `stark-claude[bot]` identity — the consolidated summary above plus the per-round `git diff` of the design file.
 
-Use the existing `scripts/github_app.py` helper:
+Use the existing `tools/github_app.ts` helper:
 
 ```bash
-$PYTHON $SCRIPTS/github_app.py --app stark-codex pr review $pr_number \
+node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-codex pr review $pr_number \
     --comment --body "$codex_findings_md"
-$PYTHON $SCRIPTS/github_app.py --app stark-claude pr review $pr_number \
+node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude pr review $pr_number \
     --comment --body "$summary_md"
 ```
 

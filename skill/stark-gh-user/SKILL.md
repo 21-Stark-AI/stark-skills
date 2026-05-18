@@ -5,8 +5,8 @@ description: >-
   invocations to dodge per-user GraphQL/REST rate limits. Tokens live in macOS
   Keychain (service `stark-gh-token`).
 argument-hint: "[show|primary|secondary|swap|limits] [--kind fine|classic|auto]"
-revision: 4b006a079c0abfed2a332bb38f70e5180bfdfec1
-revision_date: 2026-05-09T12:58:43Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 # stark-gh-user
@@ -16,7 +16,7 @@ Toggle the GitHub user identity used by `gh` so rate-limited GraphQL/REST traffi
 - **primary** → `aryeh-evinced`
 - **secondary** → `aryeh-admin`
 
-Bot calls (App installation tokens minted by `github_app.py`) are unaffected — they get their own pool per app.
+Bot calls (App installation tokens minted by `tools/github_app.ts`) are unaffected — they get their own pool per app.
 
 ## Arguments
 

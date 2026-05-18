@@ -6,8 +6,8 @@ argument-hint: "<path-to-spec> [--dry-run] [--cleanup <slug>] [--agents codex,ge
 disable-model-invocation: true
 context: fork
 model: opus
-revision: ab6a41c8d94c419a963eaac3902148f6961b723f
-revision_date: 2026-05-17T10:33:06Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 # stark-plan-to-tasks
@@ -27,6 +27,7 @@ Decompose a spec/design document into phased GitHub issues. Three LLM passes: qu
 
 ```bash
 SCRIPTS="${STARK_REVIEW_SCRIPTS:-$HOME/.claude/code-review/scripts}"
+TOOLS="${STARK_REVIEW_TOOLS:-$HOME/.claude/code-review/tools}"
 PYTHON="$SCRIPTS/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 ```
@@ -60,7 +61,7 @@ Set `ORG`, `REPO`, `ORG_REPO`.
 ### 1.4 GitHub App auth
 
 ```bash
-export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)
+export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)
 ```
 
 Fail if non-zero exit or empty token. Check that key `STARK_CLAUDE_PRIVATE_KEY` is in macOS Keychain and app is installed on `{ORG_REPO}`.
