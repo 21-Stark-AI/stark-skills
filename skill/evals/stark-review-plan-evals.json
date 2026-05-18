@@ -24,7 +24,7 @@
         {"name": "single_round_only", "check": "Runs exactly one dispatch round, no fix loop"},
         {"name": "no_file_edits", "check": "Does not modify the plan file"},
         {"name": "no_review_file", "check": "Does not write .review.md in dry-run mode"},
-        {"name": "no_pr_posting", "check": "Does not call github_app.py to post to PR"}
+        {"name": "no_pr_posting", "check": "Does not call github_app.ts to post to PR"}
       ]
     },
     {
