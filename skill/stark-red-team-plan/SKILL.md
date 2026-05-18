@@ -8,8 +8,8 @@ description: >-
 argument-hint: "<plan-path> [--source-spec <path>] [--model <id>] [--dry-run] [--no-pr-comment]"
 disable-model-invocation: true
 model: opus
-revision: d999a7e78187c70724cc35edb0b72188f2e68909
-revision_date: 2026-05-17T04:49:07Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 # stark-red-team-plan
@@ -31,6 +31,8 @@ to execute it?"**
 
 ```bash
 SCRIPTS="${STARK_RED_TEAM_SCRIPTS:-$HOME/.claude/code-review/scripts}"
+TOOLS="${STARK_RED_TEAM_TOOLS:-$HOME/.claude/code-review/tools}"
+[ -d "$TOOLS" ] || TOOLS="$(dirname "$SCRIPTS")/tools"
 PYTHON="$SCRIPTS/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
 "$PYTHON" "$SCRIPTS/preflight.py" --workflow stark-red-team-plan --json
@@ -89,7 +91,7 @@ having a PR is fine.
 ### 1.3 Authenticate (only if PR detected)
 
 ```bash
-export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)
+export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)
 ```
 
 Auth failure → warn, skip PR posting, continue.
@@ -116,9 +118,7 @@ flags=()
 [ -n "$classification_override" ] && flags+=(--classification-override "$classification_override")
 [ -n "$replay_transcript" ] && flags+=(--replay-transcript "$replay_transcript")
 
-TOOLS="${STARK_RED_TEAM_TOOLS:-$HOME/.claude/code-review/tools}"
-[ -d "$TOOLS" ] || TOOLS="$(dirname "$SCRIPTS")/tools"
-
+# TOOLS was set in the preflight preamble alongside SCRIPTS.
 output=$(node --experimental-strip-types "$TOOLS/red_team_plan.ts" \
     --plan "$plan_path" \
     "${flags[@]}" \
@@ -240,7 +240,7 @@ else
   # would never show up in the issues-comments API used for the lookup
   # above, so a `pr review --comment` create branch silently broke the
   # FU-rt9 "one updatable comment per run" invariant on every rerun.
-  $PYTHON $SCRIPTS/github_app.py --app stark-claude pr comment "$pr_number" \
+  node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude pr comment "$pr_number" \
     --body "$body"
 fi
 ```

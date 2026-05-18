@@ -12,7 +12,7 @@ done
 ```
 
 If `.github/project-config.json` exists, also update the project board:
-1. `export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)`
+1. `export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)`
 2. Find project item: `github_projects.find_item_for_issue(...)`
 3. Update Status field to "Agent Working"
 4. `unset GH_TOKEN`
@@ -33,7 +33,7 @@ done
 ```
 
 If `.github/project-config.json` exists, also update the project board:
-1. `export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)`
+1. `export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)`
 2. Find project item and update Status to "Done"
 3. `unset GH_TOKEN`
 
