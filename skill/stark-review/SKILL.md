@@ -6,8 +6,8 @@ description: >-
 argument-hint: "[PR_NUMBER] [--agent claude|codex|gemini] [--quick] [--domains a,b,c] [--dry-run] [--repo ORG/REPO]"
 disable-model-invocation: false
 model: opus[1m]
-revision: ab6a41c8d94c419a963eaac3902148f6961b723f
-revision_date: 2026-05-17T10:33:06Z
+revision: 7d4eb375d131624ff59927945d448856858d621c
+revision_date: 2026-05-18T16:33:25Z
 ---
 
 Single-agent PR review path. Keep this skill thin: do preflight, capture the
@@ -42,8 +42,6 @@ gh pr list --json number,title,headRefName --jq '.[] | "#\(.number) \(.title) (\
 ```bash
 SCRIPTS="${STARK_REVIEW_SCRIPTS:-$HOME/.claude/code-review/scripts}"
 TOOLS="${STARK_REVIEW_TOOLS:-$HOME/.claude/code-review/tools}"
-PYTHON="$SCRIPTS/.venv/bin/python3"
-[ -x "$PYTHON" ] || PYTHON=python3
 ```
 
 ## Configuration
@@ -92,13 +90,13 @@ one — never overwrite a caller-provided token.
 
 ```bash
 if [ -z "${GH_TOKEN:-}" ]; then
-    if GH_TOKEN_TMP=$("$PYTHON" "$SCRIPTS/github_app.py" --app stark-claude token 2>/dev/null); then
+    if GH_TOKEN_TMP=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token 2>/dev/null); then
         export GH_TOKEN="$GH_TOKEN_TMP"
     else
         if [ -n "${DRY_RUN:-}" ]; then
-            warn "GH_TOKEN not set and github_app.py token failed; --dry-run continues without posting auth"
+            warn "GH_TOKEN not set and github_app.ts token failed; --dry-run continues without posting auth"
         else
-            error "GH_TOKEN not set and github_app.py token failed; cannot post review"
+            error "GH_TOKEN not set and github_app.ts token failed; cannot post review"
             exit 1
         fi
     fi
@@ -366,4 +364,4 @@ See [../../standards/observability.md](../../standards/observability.md).
 | Worktree creation fails                          | Stop; do not fall back to the main checkout |
 | Repo mismatch                                    | Stop and ask to run from the matching local checkout |
 | Fork PR                                          | Review-only; no fix-loop |
-| `GH_TOKEN` unset and `github_app.py token` fails | `--dry-run` continues with a warning; otherwise stop |
+| `GH_TOKEN` unset and `github_app.ts token` fails | `--dry-run` continues with a warning; otherwise stop |

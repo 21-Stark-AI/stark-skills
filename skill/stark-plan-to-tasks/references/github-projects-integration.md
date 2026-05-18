@@ -11,7 +11,7 @@ At the start of this step, check for `.github/project-config.json` in the target
 Switch back to bot token. Project field mutations require the GitHub App token:
 
 ```bash
-export GH_TOKEN=$($PYTHON $SCRIPTS/github_app.py --app stark-claude token)
+export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)
 ```
 
 ## Per-issue steps
