@@ -6,7 +6,7 @@
 | Dirty working tree | Stash automatically, log warning |
 | Task implementation produces no changes | Log as skipped, continue |
 | PR creation fails | Retry once after push; if still fails, log and continue |
-| multi_review.py dispatch fails | Log agent failures, proceed with available findings |
+| multi_review.ts dispatch fails | Log agent failures, proceed with available findings |
 | Worktree already exists (crashed session) | Reuse existing: `cd /tmp/review-*` |
 | Merge conflict | Rebase on main, resolve, re-push, retry merge |
 | Merge fails (checks, permissions) | Force with `--admin`; if still fails, log and continue |

@@ -124,7 +124,7 @@ Invoke Skill: stark-plan-to-tasks ${PLAN_FILE}
 ### 0.3b Approach Contract
 
 ```bash
-python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file <plan_path> --force-confirm
+node --experimental-strip-types --no-warnings ~/.claude/code-review/tools/approach_contract.ts --plan-file <plan_path> --force-confirm
 ```
 
 ### 0.4 Phase briefing
@@ -194,11 +194,11 @@ If subagent reports ambiguity and project config is loaded: use bot token, trans
 ### 1.2b Validation chain
 
 ```bash
-python3 $SCRIPTS/validation_gate.py --json --repo-root $(pwd)
+node --experimental-strip-types --no-warnings "$TOOLS/validation_gate.ts" --json --repo-root $(pwd)
 ```
 
 - `overall=pass` → continue to 1.3.
-- `overall=fail` → classify: `python3 $SCRIPTS/failure_classifier.py --stderr-file $STDERR_PATH --json`
+- `overall=fail` → classify: `node --experimental-strip-types --no-warnings "$TOOLS/failure_classifier.ts" --stderr-file $STDERR_PATH --json`
   - If `pattern_id` non-null: attempt heal (max 2 attempts): `node --experimental-strip-types --no-warnings $HOME/.claude/code-review/tools/self_healer.ts --pattern-id $PATTERN_ID --stderr-file $STDERR_PATH --mode auto --json`. Re-run validation after each attempt.
   - After 2 failed heal attempts: escalate, set task status `blocked`, stop the phase.
   - If `pattern_id` null (UNCLASSIFIED): log and continue — agent code issue, not environment.
@@ -222,9 +222,9 @@ git fetch origin refs/pull/${PR_NUM}/head
 git worktree add /tmp/review-${REPO}-pr${PR_NUM} -b review/pr-${PR_NUM} FETCH_HEAD
 ```
 
-**The round loop is managed by this skill, not by multi_review.py.** For round = 1 to MAX_ROUNDS:
+**The round loop is managed by this skill, not by multi_review.ts.** For round = 1 to MAX_ROUNDS:
 
-1. Dispatch review: `$PYTHON $SCRIPTS/multi_review.py --pr $PR_NUM --base $merge_base --json-only --dry-run`
+1. Dispatch review: `node --experimental-strip-types --no-warnings "$TOOLS/multi_review.ts" --pr $PR_NUM --base $merge_base --json-only --dry-run`
 2. Classify each finding: `fix` (severity >= medium, issue exists), `false_positive`, `noise` (single-agent, style), `ignored` (low severity)
 3. **Stop check:** zero `fix` findings or all FP/noise/ignored → stop (clean). Otherwise fix and continue.
 4. Fix all `fix` findings. Spawn subagent for complex fixes.
@@ -367,7 +367,7 @@ Standard observability: create task, emit timestamped progress logs, record metr
 
 ## Dry Run Mode
 
-When `--dry-run`: fetch and display all tasks, print branch/title/labels/steps for each, verify `multi_review.py --help`, show planned review config and release/deploy preview. Do NOT create branches, PRs, or make any changes.
+When `--dry-run`: fetch and display all tasks, print branch/title/labels/steps for each, verify `multi_review.ts --help`, show planned review config and release/deploy preview. Do NOT create branches, PRs, or make any changes.
 
 ---
 
