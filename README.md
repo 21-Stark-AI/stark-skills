@@ -154,8 +154,11 @@ stark-skills/
 │   ├── stark-persona/SKILL.md
 │   └── ...
 ├── scripts/                      ← → ~/.claude/code-review/scripts/
-│   ├── multi_review.py           ← review orchestrator (ThreadPoolExecutor, 3×9)
-│   └── github_app.py             ← multi-app GitHub auth
+│   ├── register_triggers.sh      ← automation-fleet trigger registration
+│   └── *.{sh,json}               ← shell helpers + JSON schemas
+├── tools/                        ← → ~/.claude/code-review/tools/
+│   ├── multi_review.ts           ← PR review orchestrator (TypeScript)
+│   └── ...                       ← dispatch infra, agent CLIs, meta-tooling
 ├── global/                       ← → ~/.claude/code-review/
 │   ├── config.json               ← global defaults
 │   └── prompts/{claude,codex,gemini}/  ← per-agent × per-domain review prompts (9 domains)

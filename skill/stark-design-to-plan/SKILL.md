@@ -95,7 +95,7 @@ Auth failure → warn, continue without PR posting.
 
 Before dispatching the lead/wing loop, confirm the approach:
 ```bash
-python3 "$SCRIPTS/approach_contract.py" --plan-file <path> --force-confirm
+node --experimental-strip-types --no-warnings ~/.claude/code-review/tools/approach_contract.ts --plan-file <path> --force-confirm
 ```
 
 ## Phase 2: Lead/Wing Loop

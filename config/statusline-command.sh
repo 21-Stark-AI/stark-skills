@@ -42,7 +42,7 @@ SAP="\033[38;5;117m"   RED="\033[38;5;211m" TEAL="\033[38;5;158m"
 MAR="\033[38;5;217m"   MAUVE="\033[38;5;141m" SKY="\033[38;5;117m"
 SEP=" ${DIM}|${R} "
 
-# ── Segment visibility (from statusline-setup.py config) ────────────────
+# ── Segment visibility (from statusline-setup config) ───────────────────
 # Single jq pass replaces a 3-fork grep|cut|tr chain.
 _skip=""
 _cfg="$HOME/.claude/statusline-segments.json"
