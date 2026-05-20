@@ -1,6 +1,6 @@
 # stark-skills
 
-A multi-agent AI engineering system. 28 skills that take you from a napkin idea to production code, with adversarial review at every stage.
+A multi-agent AI engineering system. 17 skills that take you from a napkin idea to production code, with adversarial review at every stage.
 
 ## The Pipeline
 
@@ -30,15 +30,13 @@ Designs are produced by `superpowers:brainstorm` (outside this repo). From there
 
 The pipeline handles the happy path from idea to code. The remaining skills handle everything around it.
 
-**Workflow** — `/stark-pr-flow` does the push-create-review-merge dance in one command. `/stark-session` manages work sessions (briefing on start, cleanup on end). `/stark-release` cuts versioned releases with changelog and tags. `/stark-tournament` runs LLM competitions when you need to compare approaches. `/stark-persona` adds character voices to sessions — weighted selection, date-aware combos, and catchphrases.
+**Adversarial review** — `/stark-red-team-design` and `/stark-red-team-plan` put a design or execution plan through a committee of adversarial personas, surfacing challenges the domain reviews miss. Challenge-only — no fix loop.
 
-**Documentation** — `/stark-init-docs` scaffolds a docs structure. `/stark-extract-docs` pulls durable knowledge out of specs and reviews into ADRs and retrospectives. `/stark-generate-docs` produces the HTML/Mermaid/PNG visualizations you're looking at. `/stark-claude-md-improver` audits and improves CLAUDE.md files.
+**Workflow** — `/stark-session` manages work sessions (briefing on start, cleanup on end). `/stark-release` cuts versioned releases with changelog and tags. `/stark-persona` adds character voices to sessions — weighted selection, date-aware combos, and catchphrases. `/stark-gh-user` switches the active GitHub identity to dodge per-user API rate limits.
 
-**Project setup** — `/stark-onboard-project` bootstraps a new repo end-to-end (git, GitHub, apps, CLAUDE.md). `/stark-rename-project` renames across local + GitHub + sibling repos.
+**Maintenance** — `/stark-housekeeping` audits stale issues, dead branches, and worktree remnants. `/stark-review-improvement` tunes review prompts based on false-positive analysis; `/stark-review-design-improvement` does the same for design-review prompts.
 
-**Maintenance** — `/stark-update-deps` audits and updates dependency versions across all manifest formats. `/stark-review-improvement` tunes review prompts based on false positive analysis. `/stark-review-design-improvement` does the same for design review prompts.
-
-**Analytics** — `/stark-metrics` aggregates performance across all skill runs. `/stark-pr-status` is a PR analytics dashboard. `/stark-skill-analytics` tracks skill usage and adoption. `/stark-session-insights` mines session history for patterns and corrections.
+**Documentation** — `/stark-init-docs` scaffolds a docs structure (ADRs, runbooks, MkDocs config).
 
 ## Detailed Docs
 
