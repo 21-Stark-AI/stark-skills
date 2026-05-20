@@ -222,9 +222,9 @@ git fetch origin refs/pull/${PR_NUM}/head
 git worktree add /tmp/review-${REPO}-pr${PR_NUM} -b review/pr-${PR_NUM} FETCH_HEAD
 ```
 
-**The round loop is managed by this skill, not by multi_review.py.** For round = 1 to MAX_ROUNDS:
+**The round loop is managed by this skill, not by multi_review.ts.** For round = 1 to MAX_ROUNDS:
 
-1. Dispatch review: `$PYTHON $SCRIPTS/multi_review.py --pr $PR_NUM --base $merge_base --json-only --dry-run`
+1. Dispatch review: `node --experimental-strip-types --no-warnings "$TOOLS/multi_review.ts" --pr $PR_NUM --base $merge_base --json-only --dry-run`
 2. Classify each finding: `fix` (severity >= medium, issue exists), `false_positive`, `noise` (single-agent, style), `ignored` (low severity)
 3. **Stop check:** zero `fix` findings or all FP/noise/ignored → stop (clean). Otherwise fix and continue.
 4. Fix all `fix` findings. Spawn subagent for complex fixes.
@@ -367,7 +367,7 @@ Standard observability: create task, emit timestamped progress logs, record metr
 
 ## Dry Run Mode
 
-When `--dry-run`: fetch and display all tasks, print branch/title/labels/steps for each, verify `multi_review.py --help`, show planned review config and release/deploy preview. Do NOT create branches, PRs, or make any changes.
+When `--dry-run`: fetch and display all tasks, print branch/title/labels/steps for each, verify `multi_review.ts --help`, show planned review config and release/deploy preview. Do NOT create branches, PRs, or make any changes.
 
 ---
 

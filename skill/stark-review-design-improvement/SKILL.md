@@ -16,7 +16,7 @@ Improve design/spec review prompts based on assessment feedback from `/stark-rev
 This is a wrapper around `/stark-review-improvement` that:
 1. Sets `--prompts-dir design-review` (targets `global/prompts/design-review/{agent}/`)
 2. Looks for assessments in `~/.claude/code-review/history/design-reviews/` or in conversation context (the "Prompt Improvement Assessment" section from a `/stark-review-design` run)
-3. Uses `plan_review_dispatch.py` as the orchestrator (not `multi_review.py`)
+3. Uses `plan_review_dispatch.py` as the orchestrator (not `multi_review.ts`)
 
 ## Usage
 
@@ -58,7 +58,7 @@ When the delegated skill presents action items for confirmation, add context abo
 
 - **Domain prompts** are at `global/prompts/design-review/{claude,codex,gemini}/01-completeness.md` through `08-test-plan.md`
 - **Agent preamble** is at `global/prompts/design-review/{agent}/agent.md`
-- **Dispatch script** is `scripts/plan_review_dispatch.py` (not `multi_review.py`)
+- **Dispatch script** is `scripts/plan_review_dispatch.py` (not `multi_review.ts`)
 - **8 domains:** completeness, security, scope, api-design, data-modeling, consistency, accessibility, test-plan
 
 ### Common design review improvements

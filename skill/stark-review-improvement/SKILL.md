@@ -38,7 +38,7 @@ When `--prompts-dir` is set:
 
 ```
 PROMPT_ROOT = $PROMPTS/{prompts-dir}/{agent}/   # e.g., $PROMPTS/design-review/claude/
-ORCHESTRATOR = $SCRIPTS/plan_review_dispatch.py  # instead of multi_review.py
+ORCHESTRATOR = $SCRIPTS/plan_review_dispatch.py  # instead of multi_review.ts
 HISTORY_SUB  = design-reviews                    # history subdirectory
 ```
 
@@ -46,7 +46,7 @@ When `--prompts-dir` is NOT set (default — PR code review):
 
 ```
 PROMPT_ROOT = $PROMPTS/{agent}/                  # e.g., $PROMPTS/claude/
-ORCHESTRATOR = $SCRIPTS/multi_review.py
+ORCHESTRATOR = $TOOLS/multi_review.ts
 HISTORY_SUB  = (org/repo/pr structure)
 ```
 
@@ -137,7 +137,7 @@ Read the target prompt file. Apply the minimum edit needed.
 
 Read the relevant function. Apply targeted fix. The orchestrator depends on `--prompts-dir`:
 
-**For PR code review (`multi_review.py`):**
+**For PR code review (`multi_review.ts`):**
 
 | Issue                            | Where                           | Fix                                          |
 | -------------------------------- | ------------------------------- | -------------------------------------------- |
