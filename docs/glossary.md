@@ -17,7 +17,7 @@
 
 **PreFlightResult** — Structured JSON output from preflight containing `overall` status, `recommended_mode`, per-check details, and remediation messages. The contract between preflight.py and all consuming skills.
 
-**Approach contract** — Pre-execution confirmation step (`scripts/approach_contract.py`) that displays the derived goal, approach, and constraints from a plan before long-running skills begin execution. Requires Y/n/edit in interactive mode.
+**Approach contract** — Pre-execution confirmation step (`tools/approach_contract.ts`) that displays the derived goal, approach, and constraints from a plan before long-running skills begin execution. Requires Y/n/edit in interactive mode.
 
 **Validation gate** — Post-code-generation quality check (`tools/validation_gate.ts`) that runs lint, typecheck, and test commands. Returns structured results consumed by the failure classifier. Introduced in Workflow Improvement P1.
 

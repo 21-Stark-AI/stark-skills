@@ -124,7 +124,7 @@ Invoke Skill: stark-plan-to-tasks ${PLAN_FILE}
 ### 0.3b Approach Contract
 
 ```bash
-python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file <plan_path> --force-confirm
+node --experimental-strip-types --no-warnings ~/.claude/code-review/tools/approach_contract.ts --plan-file <plan_path> --force-confirm
 ```
 
 ### 0.4 Phase briefing
