@@ -241,7 +241,7 @@ Build validation envelope JSON (plan_markdown + breakdown + plan_hash), write to
 ```bash
 agents_args=()
 [ -n "${VALIDATION_AGENTS:-}" ] && agents_args=(--agents "$VALIDATION_AGENTS")
-$PYTHON $SCRIPTS/plan_to_tasks_validate.py "$PLAN_FILE" "$BREAKDOWN_FILE" --timeout 300 "${agents_args[@]}"
+node --experimental-strip-types --no-warnings "$TOOLS/plan_to_tasks_validate.ts" "$PLAN_FILE" "$BREAKDOWN_FILE" --timeout 300 "${agents_args[@]}"
 ```
 
 This script handles envelope construction, agent dispatch (uses `--agents` when supplied, otherwise falls back to configured `validation_agents`), output normalization, and structured JSON output. Expect output: `{"schema_version": 1, "approved": true|false, "issues": [...]}`. If malformed, retry once with stronger prompt. If still malformed → treat as validation failure.

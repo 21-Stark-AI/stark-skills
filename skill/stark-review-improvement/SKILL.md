@@ -38,7 +38,7 @@ When `--prompts-dir` is set:
 
 ```
 PROMPT_ROOT = $PROMPTS/{prompts-dir}/{agent}/   # e.g., $PROMPTS/design-review/claude/
-ORCHESTRATOR = $SCRIPTS/plan_review_dispatch.py  # instead of multi_review.ts
+ORCHESTRATOR = $TOOLS/plan_review_dispatch.ts  # instead of multi_review.ts
 HISTORY_SUB  = design-reviews                    # history subdirectory
 ```
 
@@ -145,7 +145,7 @@ Read the relevant function. Apply targeted fix. The orchestrator depends on `--p
 | No file exclusion filtering      | `_run_subagent()` or new helper | Filter diff output before passing to agents  |
 | Missing post-processing (dedup)  | After `_parse_findings()`       | Add cross-agent dedup by file+line proximity |
 
-**For design/plan review (`plan_review_dispatch.py`):**
+**For design/plan review (`plan_review_dispatch.ts`):**
 
 | Issue                                      | Where                                 | Fix                                                                                    |
 | ------------------------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------- |
