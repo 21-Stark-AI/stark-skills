@@ -17,11 +17,11 @@
 
 **PreFlightResult** — Structured JSON output from preflight containing `overall` status, `recommended_mode`, per-check details, and remediation messages. The contract between preflight.py and all consuming skills.
 
-**Approach contract** — Pre-execution confirmation step (`scripts/approach_contract.py`) that displays the derived goal, approach, and constraints from a plan before long-running skills begin execution. Requires Y/n/edit in interactive mode.
+**Approach contract** — Pre-execution confirmation step (`tools/approach_contract.ts`) that displays the derived goal, approach, and constraints from a plan before long-running skills begin execution. Requires Y/n/edit in interactive mode.
 
-**Validation gate** — Post-code-generation quality check (`scripts/validation_gate.py`) that runs lint, typecheck, and test commands. Returns structured results consumed by the failure classifier. Introduced in Workflow Improvement P1.
+**Validation gate** — Post-code-generation quality check (`tools/validation_gate.ts`) that runs lint, typecheck, and test commands. Returns structured results consumed by the failure classifier. Introduced in Workflow Improvement P1.
 
-**Failure classifier** — Error categorization module (`scripts/failure_classifier.py`) that maps stderr output to one of 8 canonical error codes and pattern IDs used by the self-healer.
+**Failure classifier** — Error categorization module (`tools/failure_classifier.ts`) that maps stderr output to one of 8 canonical error codes and pattern IDs used by the self-healer.
 
 **Self-healer** — Auto-remediation system (`scripts/self_healer.py`) that applies pattern-based fixes for classified failures. Operates in `suggest` mode (display fix) or `auto` mode (apply fix). Per-pattern circuit breaker reverts individual patterns to suggest mode on failures.
 

@@ -173,7 +173,7 @@ If `--dry-run`, stop here.
 Only when `plan_path` is set (plan-file or issue-driven mode that originated from a plan file). Inline mode skips this step.
 
 ```bash
-[ -n "$plan_path" ] && python3 ~/.claude/code-review/scripts/approach_contract.py --plan-file "$plan_path" --force-confirm
+[ -n "$plan_path" ] && node --experimental-strip-types --no-warnings ~/.claude/code-review/tools/approach_contract.ts --plan-file "$plan_path" --force-confirm
 ```
 
 ## Phase 2: Execute Steps
