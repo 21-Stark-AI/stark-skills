@@ -9,14 +9,14 @@ Multi-agent PR code review system. Claude and Codex are enabled by default; Gemi
 This is a **personal playground**, not production. No customers depend on it; the only user is the author.
 
 - **No rollout ceremony.** Skip soaking, gating, smoking, canary, and gradual-rollout patterns. Ship straight to main.
-- **Language preference:** Go for backend, TypeScript for scripts. **Avoid Python at all costs** — do not introduce new Python; when touching existing Python (orchestrators under `scripts/`), prefer rewriting in TypeScript (`tools/`) over extending the Python.
+- **Language preference:** Go for backend, TypeScript for scripts. **Avoid Python at all costs** — the repo's tooling is now TypeScript-only (`tools/`); the former Python orchestrators + dispatch infra under `scripts/` were migrated out. Do not introduce new Python.
 - **Test live.** Local-only verification is not enough. If a flow touches GCP, exercise the real GCP surface.
 - **Always update documentation.** Any change that affects behavior, structure, commands, env vars, or operations must update the relevant docs (this file and `CLAUDE.md` included) in the same change.
 
 ## Repo Layout
 
 - `global/` — global config + prompts, installed to `~/.claude/code-review/`
-- `scripts/` — Python orchestrators, installed to `~/.claude/code-review/scripts/`
+- `scripts/` — shell helpers + JSON schemas (`register_triggers.sh`, `skill-telemetry.sh`, `event_schema.json`, `healer_patterns.json`); installed to `~/.claude/code-review/scripts/`. The orchestrators + dispatch infra were migrated to `tools/` (TypeScript).
 - `skill/` — all skills (`skill/stark-*/SKILL.md`, 17 skills), symlinked to Claude and copied to `~/.codex/skills/`
 - `org/evinced/` — Evinced org config, installed to `~/Code/.code-review/`
 - `data/` — persona roster, review coverage HTML, generated showcase pages
@@ -29,20 +29,20 @@ This is a **personal playground**, not production. No customers depend on it; th
 ## Key Files
 
 ### Dispatchers & orchestration
-- `scripts/dispatcher_base.py` — shared base: config discovery, model resolution, domain/prompt resolution
-- `scripts/multi_review.py` — PR review orchestrator (ThreadPoolExecutor, parallel sub-agents)
-- `scripts/plan_review_dispatch.py` — plan/design review dispatch (N agents × M domains)
+- `tools/dispatcher_base_lib.ts` — shared dispatch base: hierarchical review-config discovery, model resolution, agent registry, domain/prompt resolution
+- `tools/multi_review.ts` + `multi_review_lib.ts` — PR review orchestrator (parallel agent×domain sub-agent dispatch)
+- `tools/plan_review_dispatch.ts` + `plan_review_dispatch_lib.ts` — plan/spec document review dispatch (N agents × M domains)
 
 ### Agent utilities
-- `scripts/claude_utils.py` — Claude CLI dispatch helpers (Vertex AI env, model pinning)
-- `scripts/codex_utils.py` — Codex CLI dispatch helpers (JSONL parsing, reasoning config)
-- `scripts/gemini_utils.py` — Gemini CLI dispatch helpers (session isolation, API key fallback)
+- `tools/claude_utils_lib.ts` — Claude CLI dispatch helpers (clean env, headless command builder, model pinning)
+- `tools/codex_utils_lib.ts` — Codex CLI dispatch helpers (JSONL parsing, reasoning-effort config)
+- `tools/gemini_utils_lib.ts` — Gemini CLI dispatch helpers (session isolation, Vertex-AI env, API-key fallback)
 
 ### Infrastructure
-- `scripts/config_loader.py` — central config with lru_cache, typed section accessors, deep merge
-- `scripts/runtime_env.py` — isolated subprocess env builder (allowlist, token injection, temp dirs)
+- `tools/stark_config_lib.ts` — full config reader (DEFAULT_* sections, per-section accessors, deep merge, red_team locked-field enforcement)
+- `tools/runtime_env_lib.ts` — isolated subprocess env builder (allowlist, GitHub App token injection, temp dirs)
 - `tools/github_projects_lib.ts` + `tools/github_projects.ts` — GitHub Projects V2 GraphQL operations (TS; replaces the deleted `scripts/github_projects.py`)
-- `tools/emit_queue_lib.ts` + `tools/emit_queue_cli.ts` — SQLite-backed durable event queue (producer side). Python consumers reach it via `scripts/_emit.py`, a thin subprocess wrapper. The drain side lives in stark-insights.
+- `tools/emit_queue_lib.ts` + `tools/emit_queue_cli.ts` — SQLite-backed durable event queue (producer side); all producers are TypeScript. The drain side lives in stark-insights.
 
 ### Dispatch tools (TS)
 - `tools/copilot_dispatch.ts` — `/stark-copilot` lead/wing implementation dispatcher (replaces former `scripts/copilot_dispatch.py`). Owns the worktree + diff + review→fix loop + JSON verdict parsing. Also the canonical home for shared agent-dispatch primitives now imported by `plan_dispatch.ts`: `run`, `buildAgentEnv`, `setupGeminiHome`, `makeGeminiEnv`, `tryGeminiApiKeyFallback`, `releaseAgentTempDir`, plus the verdict parsers.
@@ -63,7 +63,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 - `tools/red_team_status.ts` / `tools/red_team_accept.ts` — operator CLIs for listing / accepting human-review halts.
 - `tools/red_team_backfill_lib.ts` + `tools/red_team_backfill.ts` — historical-row backfill into the insights queue.
 - `tools/red_team_db_resolver.ts` — Canonical audit DB resolver (`--db` > env > config > default), matches Python `Path.resolve()` symlink semantics on macOS.
-- `tools/emit_queue_lib.ts` — canonical TS implementation of the producer queue (`makeEvent` + `enqueue` + `validate` + `health` + `pendingCount` + `deadLetterCount` + `recordContextPct` + `initSchema`). Writes to `~/.stark-insights/queue.db`. Python consumers reach it through `tools/emit_queue_cli.ts` via `scripts/_emit.py`.
+- `tools/emit_queue_lib.ts` — canonical TS implementation of the producer queue (`makeEvent` + `enqueue` + `validate` + `health` + `pendingCount` + `deadLetterCount` + `recordContextPct` + `initSchema`). Writes to `~/.stark-insights/queue.db`. All producers are TypeScript and import `enqueue`/`makeEvent` directly.
 - `tools/stark_persona_lib.ts` + `tools/stark_persona.ts` — pure-TypeScript `/stark-persona` (replaces the deleted `scripts/stark_persona.py`). Library: roster grammar, active.json, weight math, fuzzy match, SQLite schema, selection / combo / rating / survey / add. CLI: 11 subcommands (`select` / `deactivate` / `rate` / `survey` / `survey-answer` / `add` / `stats` / `history` / `print-roster` / `print-weights` / `session-end`). Insights events emit straight to `~/.stark-insights/queue.db` via `tools/emit_queue_lib.ts` as `persona_event`.
 - `tools/session_id_lib.ts` + `tools/session_id.ts` — pure-TS session ID resolver (replaces the deleted `scripts/session_id.py`). Three-tier: CLAUDE_SESSION_ID > newest-mtime marker in `~/.claude/projects/` > uuid4. Consumed by `tools/emit_queue_lib.ts`, `tools/session_state_lib.ts`, and `tools/context_compactor_lib.ts`.
 - `tools/session_state_lib.ts` + `tools/session_state.ts` — pure-TS session state machine (replaces the deleted `scripts/session_state.py`). Same on-disk JSON shape, same path sanitization. CLI: `[--session-id ID] [--json]` (Python parity) + `set --field <name|start_head|last_checkpoint> --value VAL` for the SKILL.md mutators.

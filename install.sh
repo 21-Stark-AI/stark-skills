@@ -18,10 +18,8 @@ set -euo pipefail
 # Files stay in the repo — symlinks point to them. Updating the repo
 # updates the installed system. No copying, no drift.
 
-# REPO_DIR can be pre-set by a caller (e.g. ``scripts/test_install_deps.py``
-# sourcing this script to exercise ``check_python_deps`` against a scratch
-# repo). When unset, derive it from ``$0`` / ``$BASH_SOURCE`` so direct
-# execution still works.
+# REPO_DIR can be pre-set by a caller. When unset, derive it from
+# ``$0`` / ``$BASH_SOURCE`` so direct execution still works.
 if [ -z "${REPO_DIR:-}" ]; then
     SCRIPT="${BASH_SOURCE[0]:-$0}"
     [ -L "$SCRIPT" ] && SCRIPT="$(readlink "$SCRIPT")"
@@ -56,37 +54,6 @@ validate_json_config() {
 
     rm -f /tmp/stark-install-config.err
     info "Config JSON: valid"
-}
-
-# Validate Python deps in the scripts venv. Called from both install()
-# and status() so fresh installs see missing packages immediately instead
-# of discovering them at first review run. Each entry is pip_name:import_name
-# because pip and import names differ (PyJWT → jwt).
-check_python_deps() {
-    echo ""
-    echo "Checking Python dependencies..."
-    local py="$REPO_DIR/scripts/.venv/bin/python3"
-    if [ ! -x "$py" ]; then
-        warn "No venv at scripts/.venv/ — run: python3 -m venv $REPO_DIR/scripts/.venv && $REPO_DIR/scripts/.venv/bin/pip install PyJWT requests anthropic google-auth"
-        return 1
-    fi
-    info "venv: $py"
-    local missing=0
-    # anthropic + google-auth: required by forge_fix_loop SDK dispatch.
-    for pair in "PyJWT:jwt" "requests:requests" "anthropic:anthropic" "google-auth:google.auth"; do
-        local pip_name="${pair%%:*}"
-        local import_name="${pair##*:}"
-        if "$py" -c "import $import_name" 2>/dev/null; then
-            info "  $pip_name: installed"
-        else
-            error "  $pip_name: missing — run: $py -m pip install $pip_name"
-            missing=$((missing + 1))
-        fi
-    done
-    if [ "$missing" -gt 0 ]; then
-        return 1
-    fi
-    return 0
 }
 
 provision_infrastructure() {
@@ -585,11 +552,6 @@ interactive() {
 
     provision_infrastructure
 
-    # Surface missing Python deps immediately — forge fix-dispatch needs
-    # the anthropic SDK and the CLI fallback was removed in PR #312, so a
-    # fresh install without anthropic silently halts at the first fix round.
-    check_python_deps || warn "Some Python dependencies are missing — see above and install before running review commands."
-
     echo ""
     info "Installation complete. Verify with: ./install.sh --status"
     echo ""
@@ -788,11 +750,6 @@ install() {
             error "$key: not found in keychain"
         fi
     done
-
-    # Guard with || warn so a missing venv or package on a fresh install
-    # surfaces as a warning instead of aborting the run via ``set -e``.
-    # ``interactive()`` already uses the same pattern.
-    check_python_deps || warn "Some Python dependencies are missing — see above and install before running review commands."
 }
 
 uninstall() {
@@ -960,17 +917,10 @@ status() {
         info "Automation fleet: not installed"
     fi
 
-    # ``--status`` is informational — never abort just because a dep
-    # is missing. ``check_python_deps`` returns non-zero on failure
-    # so suppress that with ``|| true`` to keep ``set -e`` happy.
-    check_python_deps || true
     echo ""
 }
 
 # Only run the top-level dispatcher when the script is executed directly.
-# When sourced (e.g. by ``scripts/test_install_deps.py``), skip dispatch so
-# callers can invoke individual helpers like ``check_python_deps`` in
-# isolation.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         --uninstall) uninstall ;;
