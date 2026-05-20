@@ -10,7 +10,7 @@ The core of stark-skills is a 6-step pipeline where each skill's output feeds th
 
 Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to independently produce a document, then have each agent cross-review the other two — 3 competing outputs, 6 adversarial reviews, one synthesized winner. **Review** skills (orange) dispatch N agents across M specialized domains in parallel, classify the findings, fix the document, and repeat until clean.
 
-Designs are produced by `superpowers:brainstorm` (outside this repo). From there:
+Designs are produced by `superpowers:brainstorming` (outside this repo). From there:
 
 **Step 1 — `/stark-review-design`** puts that design through 12 domain specialists (general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility, test-plan) running across 2-3 agents. It fixes issues autonomously for up to 3 rounds, then runs a final review-only pass.
 
