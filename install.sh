@@ -752,7 +752,7 @@ install() {
     link_dir "$REPO_DIR/config/settings.json" "$CLAUDE_DIR/settings.json" "Settings"
     link_dir "$REPO_DIR/config/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh" "Status line"
     link_dir "$REPO_DIR/config/output-styles/concrete.md" "$CLAUDE_DIR/output-styles/concrete.md" "Output style: Concrete"
-    link_dir "$REPO_DIR/config/statusline-setup.py" "$HOME/.local/bin/statusline-setup" "Status line setup CLI"
+    link_dir "$REPO_DIR/tools/statusline_setup.ts" "$HOME/.local/bin/statusline-setup" "Status line setup CLI"
 
     provision_infrastructure
 
