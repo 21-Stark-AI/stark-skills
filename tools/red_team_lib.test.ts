@@ -1126,7 +1126,7 @@ test("assembleFixPlanPrompt wraps every required input in a guarded envelope", (
   assert.equal(out.fitsSafely, true);
 });
 
-test("dispatch() includes fix_plan_status=skipped_disabled by default in its receipt", () => {
+test("dispatch() includes fix_plan_status=skipped_disabled when cfg.enabled=false", () => {
   const db = tmpDb();
   const docPath = tmpDoc(
     `---
@@ -1154,6 +1154,15 @@ Content for the dispatch-with-fix-plan smoke.
     timeoutMs: 10_000,
     dbPath: db,
     noAudit: true,
+    fixPlanCfg: {
+      enabled: false,
+      model: "gpt-5.5-pro",
+      reasoning_effort: "xhigh",
+      timeout_s: 1200,
+      min_moves: 1,
+      max_moves: 8,
+      max_input_chars: 200_000,
+    },
     codexFn: () => ({
       raw_output: JSON.stringify([
         {
@@ -1171,7 +1180,6 @@ Content for the dispatch-with-fix-plan smoke.
       error: null,
     }),
   });
-  // Default config ships enabled=false → skipped_disabled even with blocking findings.
   assert.equal(result.fix_plan_status, "skipped_disabled");
   assert.equal(result.fix_plan, null);
   assert.ok(result.sidecar_path);

@@ -186,7 +186,8 @@ export type FixPlanStatus =
   | "skipped_human_review_only"
   | "skipped_clean"
   | "skipped_budget_exhausted"
-  | "skipped_input_too_large";
+  | "skipped_input_too_large"
+  | "skipped_replay";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -1070,6 +1071,9 @@ export interface DispatchArgs {
   /** Mock the fix-plan codex call separately from the challenge codex.
    *  Falls back to `codexFn` when unset (tests typically share the mock). */
   fixPlanCodexFn?: ResolveFixPlanArgs["codexFn"];
+  /** Optional fix-plan config override. Tests use this to pin behavior
+   *  independent of the on-disk `red_team.fix_plan` defaults. */
+  fixPlanCfg?: FixPlanConfig;
 }
 
 /**
@@ -1160,15 +1164,20 @@ export function dispatch(args: DispatchArgs): DispatchResult {
   }
 
   // Resolve fix-plan (gated by config + kill switch; default skipped_disabled).
-  const fixPlanResolution = resolveFixPlan({
-    ctx,
-    challenge: result,
-    artifact,
-    sourceSpec,
-    enableForCalibration: args.enableFixPlanForCalibration,
-    perRunBudgetUsd: args.perRunBudgetUsd,
-    codexFn: args.fixPlanCodexFn ?? args.codexFn,
-  });
+  // Replay runs reproduce a captured transcript and must not call codex — skip
+  // resolveFixPlan entirely so its codexFn never fires.
+  const fixPlanResolution = args.replayTranscript
+    ? { status: "skipped_replay" as FixPlanStatus, fixPlan: null, runWarnings: [] }
+    : resolveFixPlan({
+        ctx,
+        challenge: result,
+        artifact,
+        sourceSpec,
+        enableForCalibration: args.enableFixPlanForCalibration,
+        perRunBudgetUsd: args.perRunBudgetUsd,
+        codexFn: args.fixPlanCodexFn ?? args.codexFn,
+        cfg: args.fixPlanCfg,
+      });
 
   // Render sidecar (now including the fix-plan section).
   const sidecarBody = renderSidecarMarkdown({
