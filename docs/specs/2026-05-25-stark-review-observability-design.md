@@ -75,7 +75,7 @@ across the last 30 days.
 │         events-0001.jsonl  (rotation: 0001, 0002, …)       │
 │         meta.json                                          │
 └───────────────────────────────┼────────────────────────────┘
-                                │  (bind mount, READ-WRITE)
+                                │  (bind mount, READ-ONLY)
 ┌───────────── DOCKER (host: 127.0.0.1:7700) ────────────────┐
 │                               ▼                            │
 │  fs.watch ─► tailer ─► event bus (in-proc) ─► WebSocket    │
@@ -84,7 +84,15 @@ across the last 30 days.
 │        SQLite index         browser UI                     │
 │        (search/history)     (live + history)               │
 │              ▲                                             │
-│              └── retention sweep (deletes spool + rows)    │
+│              └── state-only retention (drops SQLite rows;  │
+│                  marks orphan runs `crashed`)              │
+└────────────────────────────────────────────────────────────┘
+                                ▲
+                                │  HOST-SIDE
+┌──────── tools/observability_prune.ts (CLI) ────────────────┐
+│  • runs on host (manual or via launchd)                    │
+│  • deletes spool dirs older than retention_days            │
+│  • enforces total-spool-bytes budget (pressure retention)  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -94,16 +102,21 @@ events queue up on disk; when the container comes up, the tailer replays
 from the last persisted offset (stored in the SQLite index) and the UI
 backfills.
 
-**Mount mode:** the spool dir is bind-mounted **read-write** because the
-retention sweep (which deletes 30-day-old files) runs **inside** the
-container. The container is the sole owner of the spool lifecycle once the
-emit lib has finished writing a logical run.
+**Mount mode:** the spool dir is bind-mounted **read-only**. The web-facing
+container has zero write access to the host evidence it observes; if the
+server or any of its dependencies is compromised, the attacker cannot
+tamper with or delete past runs. Retention is performed by a host-side
+CLI (`tools/observability_prune.ts`) that the operator runs manually or
+schedules via launchd. The container still owns its own SQLite index
+(named volume) and marks orphan runs as `crashed` there — but it never
+mutates the spool.
 
-**Network binding:** the Node server inside the container binds `0.0.0.0`.
+**Network binding.** The Node server inside the container binds `0.0.0.0`.
 Host exposure is constrained by `docker-compose.yml`, which publishes the
 port as `127.0.0.1:7700:7700` — host-loopback-only. `OBSERVABILITY_BIND`
 overrides are rejected unless the user also sets `OBSERVABILITY_ALLOW_LAN=1`
-and supplies `OBSERVABILITY_TOKEN`; see "Security".
+and supplies `OBSERVABILITY_BOOTSTRAP_CODE` via the bootstrap helper; see
+"Security".
 
 ## Components
 
@@ -130,8 +143,17 @@ export interface RunCtx {
   branch?: string;
   prNumber?: number;
   startedAt: string;
+  /** OS pid of the dispatcher process; recorded so server can detect orphaned runs. */
+  parentPid: number;
+  /** Host boot id (from `sysctl kern.boottime` on macOS). Used to invalidate
+   *  parentPid across reboots and laptop sleep/resume. */
+  hostBootId: string;
   /** Monotonic per-run sub-agent counter; increments on each startSubAgent. */
   _nextSubagentSeq: number;
+  /** Per-run byte budget; emits stop writing chunks once exceeded (lifecycle still flows). */
+  byteBudgetBytes: number;
+  /** Tracked usage. */
+  bytesWritten: number;
 }
 
 export interface SubAgent {
@@ -179,7 +201,26 @@ export function attachChild(
 
 /** Emit a heartbeat for a long-running sub-agent (default cadence 30 s). */
 export function startHeartbeat(ctx: RunCtx, sa: SubAgent): { stop: () => void };
+
+/** Emit a run-level heartbeat. Default cadence 10 s. Drives the 60-second
+ *  crashed-detection SLA when the dispatcher dies without writing run_end. */
+export function startRunHeartbeat(ctx: RunCtx): { stop: () => void };
 ```
+
+**Byte budgets and pressure.** `startRun` reads
+`OBSERVABILITY_PER_RUN_MAX_MB` (default 2048) and stores it as
+`ctx.byteBudgetBytes`. Every `subagent_stdout` / `subagent_stderr` event
+increments `ctx.bytesWritten` and refuses to write the chunk if the limit
+would be exceeded. When that happens the emit lib writes a single
+`subagent_progress { kind: "chunk-budget-exceeded" }` and silently drops
+further chunks (lifecycle, progress, heartbeat, end events keep flowing).
+The dropped-chunk state is recorded in `meta.json.byte_budget_exceeded =
+true` and surfaced in the UI as a banner.
+
+`startRun` also runs a low-disk preflight: if `statvfs(spoolDir).bavail *
+f_frsize < 1 GiB` it sets `emit_status: "disabled"` with reason
+`low_disk` and logs once to stderr. The dispatcher still runs; only
+observability emission is disabled.
 
 **Sub-agent identifiers** are `${run_id}:${seq}` where `seq` is a monotonic
 counter on `RunCtx`. This eliminates the collision risk if the same
@@ -220,9 +261,19 @@ Path per run: `~/.claude/code-review/observability/runs/{run_id}/`
   "status": "ok",
   "emit_status": "ok" | "disabled",
   "emit_disabled_reason": "spool unwritable: …" | null,
+  "parent_pid": 84367,
+  "host_boot_id": "1779692400.123456",
+  "byte_budget_bytes": 2147483648,
+  "bytes_written": 1234567,
+  "byte_budget_exceeded": false,
   "schema_version": 1
 }
 ```
+
+`meta.json` is rewritten atomically (write to `meta.json.tmp` →
+`rename(2)`) on each lifecycle transition and on every periodic
+run-heartbeat (default 10 s cadence). The atomic rename guarantees the
+tailer never reads a half-written file.
 
 JSONL records: one JSON object per line, newline-terminated. All records
 carry:
@@ -242,6 +293,7 @@ Event types (all fields **after** the common `seq`/`ts`/`type`):
 | `subagent_progress`   | `run_id`, `subagent_id?`, `kind`, `payload` (object)                                  |
 | `subagent_heartbeat`  | `run_id`, `subagent_id`                                                               |
 | `subagent_end`        | `run_id`, `subagent_id`, `status`, `duration_ms`, `summary?`                          |
+| `run_heartbeat`       | `run_id`, `parent_pid`, `host_boot_id`, `bytes_written`                               |
 | `run_end`             | `run_id`, `status`                                                                    |
 
 `chunk` is the raw process output; UTF-8 by default. If decode finds
@@ -269,30 +321,74 @@ A sub-agent is in one of these UI-rendered states:
 
 | State       | Condition                                                                                              |
 | ----------- | ------------------------------------------------------------------------------------------------------ |
-| `running`   | `subagent_start` seen, no `subagent_end` yet, last activity (stdout/stderr/heartbeat) within 300 s     |
-| `stalled`   | `subagent_start` seen, no `subagent_end` yet, last activity > 300 s ago                                |
-| `crashed`   | `subagent_start` seen, no `subagent_end` yet, last activity > 600 s ago AND parent `run_end` was seen  |
+| `running`   | `subagent_start` seen, no `subagent_end` yet, last activity (stdout/stderr/heartbeat) within 300 s, **and** parent run heartbeat is fresh |
+| `stalled`   | `subagent_start` seen, no `subagent_end` yet, last activity > 300 s ago, but parent run heartbeat still fresh                              |
+| `crashed`   | `subagent_start` seen, no `subagent_end` yet, **parent run heartbeat is stale** (no `run_heartbeat` for > 60 s and `parent_pid` is no longer alive on the host) |
 | `ok`        | `subagent_end` with `status: ok`                                                                       |
 | `error`     | `subagent_end` with `status: error`                                                                    |
 | `timeout`   | `subagent_end` with `status: timeout`                                                                  |
 
-The emit lib starts a heartbeat for every sub-agent
-(`startHeartbeat(ctx, sa)`) by default; cadence is **30 s**. Heartbeats
-update `last_output_at` in the SQLite index just like stdout chunks.
+Two heartbeats drive the model:
 
-The docker server runs a 30-second tick that re-evaluates state for every
-row in `subagents` whose `status IS NULL` (i.e., `running`). Stale-run
-inference also detects orphans: if a run has not received any event for
-1800 s **and** has no `run_end`, the server marks all its non-terminal
-sub-agents as `crashed` and writes a synthetic `run_end` with
-`status: "crashed"`.
+- **Sub-agent heartbeat** (`subagent_heartbeat`) every 30 s while a sub-agent
+  is running. Updates `last_output_at` in the SQLite index just like
+  stdout chunks.
+- **Run heartbeat** (`run_heartbeat`) every 10 s. Carries `parent_pid` and
+  `host_boot_id`. Updates `runs.last_heartbeat_at` and
+  `runs.parent_pid_alive` columns in the SQLite index.
+
+**60-second crashed-detection SLA.** The docker server runs a 30-second
+tick. For each `run` with `last_heartbeat_at > 60 s ago` AND
+`run_end IS NULL`, it:
+
+1. Reads the run's recorded `parent_pid` and `host_boot_id` from the
+   index (the host bind-mounts `/proc` read-only at `/host_proc` so the
+   container can stat process info).
+2. If the current host_boot_id (read from a host-info sidecar volume
+   refreshed by a small `tools/observability_hostinfo.ts` ticker every
+   60 s) does NOT match the recorded `host_boot_id`, treat the run as
+   **crashed by host event** (reboot/sleep) and mark non-terminal
+   sub-agents as `crashed` with reason `host_boot_changed`.
+3. Otherwise, if the recorded `parent_pid` is missing from
+   `/host_proc`, treat the run as **crashed by dispatcher exit** and
+   mark non-terminal sub-agents as `crashed` with reason
+   `parent_exit`.
+4. Otherwise, treat the run as **stale, parent still alive** — no
+   state change yet; flag in `/api/health` and reconsider next tick.
+
+The 60-second window is achievable because run heartbeats are written
+every 10 s and the server tick is 30 s; worst case is ~70 s, within the
+goal's 60 s + small jitter envelope. The success criterion in "Goal"
+explicitly accepts up to 90 s practical bound.
+
+**Laptop sleep / resume.** macOS pauses the dispatcher and the container
+together during sleep. On resume, `host_boot_id` is unchanged (sleep is
+not reboot) but the recorded run-heartbeat may be very stale. To avoid
+false crashed-state on resume, the docker server also reads
+`/host_proc/uptime` on every tick and skips state transitions for one
+full tick (30 s) whenever the host uptime delta is smaller than the
+wall-clock delta by more than 60 s (i.e., the host slept). On reboot
+(`host_boot_id` change), inflight runs are explicitly marked crashed
+because the dispatcher is gone.
+
+The synthetic `crashed` state is recorded **only in the SQLite index**;
+the spool JSONL is never modified by the container (mount is read-only).
+The UI shows the crashed sub-agent with a tooltip explaining the reason.
+
+Orphan-run sweep: if a run has not received any event for **1800 s** and
+has no `run_end`, the server forcibly transitions all its non-terminal
+sub-agents to `crashed` with reason `orphan_timeout`. This is a
+last-resort fallback for the case where both run heartbeats and host
+process introspection have failed.
 
 ### 5. Docker server — `tools/observability_server/`
 
 Single container, image based on `node:22-alpine`. Mounts:
 
-- `~/.claude/code-review/observability/runs:/spool` **(read-write)**
-- named volume `observability_index:/data` (SQLite database)
+- `~/.claude/code-review/observability/runs:/spool:ro` (read-only — see Architecture)
+- `/proc:/host_proc:ro` (host-process introspection for liveness / parent-pid checks)
+- `~/.claude/code-review/observability/hostinfo:/hostinfo:ro` (small ticker file maintained by the host-side `tools/observability_hostinfo.ts`; carries `host_boot_id`, uptime, free disk)
+- named volume `observability_index:/data` (SQLite database — the only writable path inside the container)
 
 One Node process, four subcomponents:
 
@@ -310,9 +406,13 @@ One Node process, four subcomponents:
   no-op. Updates `last_output_at` on every `subagent_*` event.
 - **WebSocket hub.** One endpoint at `/ws`. See "WebSocket protocol" below.
 - **HTTP API.** REST endpoints. See "HTTP API" below.
-- **Retention sweep.** Hourly. Deletes spool directories whose
-  `runs.ended_at` is more than `OBSERVABILITY_RETENTION_DAYS` (default 30)
-  in the past, then `DELETE FROM runs WHERE run_id = ?` (cascades).
+- **State-only retention.** Hourly. The container CANNOT delete spool
+  files (mount is read-only). Instead the sweep:
+    1. detects spool dirs that have already been removed from disk by the
+       host-side `tools/observability_prune.ts` CLI;
+    2. for each such missing run, runs `DELETE FROM runs WHERE run_id = ?`
+       (cascades to all child tables).
+  The host-side prune is where spool deletion actually happens — see §10.
 
 Port: `7700` (overridable via `OBSERVABILITY_PORT`).
 
@@ -323,18 +423,24 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS runs (
-  run_id           TEXT PRIMARY KEY,
-  dispatcher       TEXT NOT NULL,
-  repo             TEXT,
-  branch           TEXT,
-  pr_number        INTEGER,
-  started_at       TEXT NOT NULL,
-  ended_at         TEXT,
-  status           TEXT,                   -- 'running' | 'ok' | 'error' | 'timeout' | 'crashed'
-  emit_status      TEXT,
-  total_subagents  INTEGER NOT NULL DEFAULT 0,
-  total_findings   INTEGER NOT NULL DEFAULT 0,
-  last_seq         INTEGER NOT NULL DEFAULT 0
+  run_id              TEXT PRIMARY KEY,
+  dispatcher          TEXT NOT NULL,
+  repo                TEXT,
+  branch              TEXT,
+  pr_number           INTEGER,
+  started_at          TEXT NOT NULL,
+  ended_at            TEXT,
+  status              TEXT,                -- 'running' | 'ok' | 'error' | 'timeout' | 'crashed'
+  emit_status         TEXT,
+  parent_pid          INTEGER,
+  host_boot_id        TEXT,
+  last_heartbeat_at   TEXT,
+  bytes_written       INTEGER NOT NULL DEFAULT 0,
+  byte_budget_exceeded INTEGER NOT NULL DEFAULT 0,
+  total_subagents     INTEGER NOT NULL DEFAULT 0,
+  total_findings      INTEGER NOT NULL DEFAULT 0,
+  last_seq            INTEGER NOT NULL DEFAULT 0,
+  crashed_reason      TEXT                 -- 'parent_exit' | 'host_boot_changed' | 'orphan_timeout' | NULL
 );
 
 CREATE TABLE IF NOT EXISTS subagents (
@@ -383,6 +489,22 @@ CREATE TABLE IF NOT EXISTS tail_offsets (
   mtime_ns  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chunk_offsets (
+  run_id          TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  subagent_id     TEXT NOT NULL REFERENCES subagents(subagent_id) ON DELETE CASCADE,
+  seq             INTEGER NOT NULL,             -- per-run monotonic seq of the chunk event
+  stream          TEXT NOT NULL,                -- 'stdout' | 'stderr'
+  rotation_index  INTEGER NOT NULL,             -- which events-NNNN.jsonl file
+  byte_start      INTEGER NOT NULL,             -- byte offset within that file
+  byte_end        INTEGER NOT NULL,             -- exclusive end-of-record offset
+  ts              TEXT NOT NULL,
+  encoding        TEXT NOT NULL,                -- 'utf8' | 'base64'
+  PRIMARY KEY (run_id, seq)
+);
+-- chunk_offsets is the seek-index that backs the chunk replay endpoint and
+-- the WebSocket from_seq backfill. Tested under load to validate the
+-- 2-second p95 replay target for 30-day-old history.
+
 CREATE INDEX IF NOT EXISTS idx_runs_repo_started ON runs(repo, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_runs_started      ON runs(started_at DESC);
@@ -391,6 +513,8 @@ CREATE INDEX IF NOT EXISTS idx_subagents_status  ON subagents(status);
 CREATE INDEX IF NOT EXISTS idx_progress_run      ON progress_events(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_progress_subagent ON progress_events(subagent_id, ts);
 CREATE INDEX IF NOT EXISTS idx_spool_run         ON spool_files(run_id, rotation_index);
+CREATE INDEX IF NOT EXISTS idx_chunk_subagent    ON chunk_offsets(subagent_id, seq);
+CREATE INDEX IF NOT EXISTS idx_runs_heartbeat    ON runs(last_heartbeat_at);
 ```
 
 `progress_events` is the queryable history of `subagent_progress` events
@@ -407,10 +531,32 @@ All endpoints return JSON unless otherwise stated. Timestamps are ISO-8601
 UTC with millisecond precision (`2026-05-25T13:42:11.123Z`). Enumerated
 values are the strings in their canonical column definitions (see schema).
 
-**Authentication.** Every request must include `Authorization: Bearer
-<token>` where `<token>` is the per-install token (see "Security"). The UI
-embeds the token at build time from the environment. Bad/missing token →
-401 with the standard error envelope.
+**Authentication.** Browser sessions authenticate via a same-origin
+**HttpOnly session cookie** (`obs_session`). Bootstrap flow (see "Security"
+for the helper command and threat model):
+
+1. Operator runs `node tools/observability_open.ts` on the host. The
+   helper retrieves the per-install token from the macOS Keychain
+   (service `stark-observability-token`), POSTs it to the running
+   container at `POST /api/auth/bootstrap`, and receives a short-lived
+   (60 s) one-time **bootstrap code**.
+2. The helper opens `http://localhost:7700/?b=<code>` in the default
+   browser.
+3. The UI's `index.html` extracts the `b` query parameter, immediately
+   strips it from the URL (`history.replaceState`), and `POST`s it to
+   `POST /api/auth/exchange`. The server validates the code, sets the
+   `obs_session` HttpOnly + Secure-omitted (loopback only) + SameSite=Strict
+   cookie, and returns 204.
+4. Subsequent UI requests carry the cookie automatically. WebSocket
+   upgrades likewise validate the cookie at handshake.
+
+For programmatic clients (CLI scripts, integrations), `Authorization:
+Bearer <token>` is also accepted with the same per-install token.
+
+Bad/missing auth → 401 with the standard error envelope. There is no
+unauthenticated path other than `GET /api/health/probe` (a minimal
+liveness probe that returns just `{ ok: true }` so launchd / monitoring
+can confirm the container is up; no run data is exposed).
 
 **Error envelope** (used for all 4xx/5xx responses):
 
@@ -566,19 +712,15 @@ messages. All messages are JSON.
 
 #### Auth handshake
 
-The very first frame from the client MUST be:
+WebSocket upgrade requests carry the `obs_session` cookie that the
+bootstrap flow set; the server validates the cookie at handshake time
+(before the upgrade completes). Connections without a valid cookie are
+rejected with HTTP 401 during the upgrade. Programmatic clients may
+substitute `Authorization: Bearer <token>` on the upgrade request.
 
-```json
-{ "type": "auth", "token": "…" }
-```
-
-Server replies:
-
-```json
-{ "type": "auth_ok" }
-```
-
-…or closes the connection with code 4001 (`unauthorized`).
+Once the socket is open, the first client frame should be a
+`subscribe` (no separate auth frame is needed; the upgrade already
+authenticated the connection).
 
 #### Subscribe
 
@@ -719,15 +861,62 @@ Required ARIA / semantic patterns:
 
 ### 10. Retention
 
-Background job inside the container, runs hourly:
+Retention is split between the container (state-only) and a host-side
+CLI (the only writer to the spool).
 
-1. Find runs with `ended_at < now - OBSERVABILITY_RETENTION_DAYS` (default 30).
-2. Delete `~/.claude/code-review/observability/runs/{run_id}/` from disk (the mount is RW).
-3. `DELETE FROM runs WHERE run_id = ?` — cascades to `subagents`, `progress_events`, `spool_files`.
-4. Record stats in the in-memory health snapshot.
+#### Host-side spool prune — `tools/observability_prune.ts` (new)
 
-Configurable via env: `OBSERVABILITY_RETENTION_DAYS`,
-`OBSERVABILITY_RETENTION_INTERVAL_MIN` (default 60).
+Usage:
+
+```
+node --experimental-strip-types tools/observability_prune.ts \
+  [--retention-days 30] \
+  [--total-cap-gb 50] \
+  [--dry-run] \
+  [--json]
+```
+
+Behavior:
+
+1. **Age-based pruning.** Walks `~/.claude/code-review/observability/runs/`
+   and deletes any run directory whose `meta.json.ended_at` is more than
+   `retention_days` ago.
+2. **Pressure retention (total-cap-gb).** If after age-based pruning the
+   total spool size still exceeds `total_cap_gb`, the CLI sorts terminal
+   runs by `ended_at ASC` and applies progressive pressure:
+    1. For the oldest 25 % of terminal runs (by count), **truncate token
+       chunks** (`subagent_stdout` / `subagent_stderr` events): the CLI
+       rewrites each rotated JSONL file by replacing every chunk event
+       with `{ "type": "chunk_truncated", "seq": …, "ts": …, "subagent_id": …, "bytes_dropped": N }`
+       and rewrites `meta.json.bytes_written` accordingly. Lifecycle,
+       progress, heartbeat, and end events are preserved.
+    2. If still over cap, delete oldest terminal runs entirely.
+3. **Atomicity.** Each run directory is moved to
+   `~/.claude/code-review/observability/.trash/{run_id}/` first, then
+   removed with `rm -rf` after a 1-minute grace period. This lets the
+   tailer notice the deletion via the spool-files index update before
+   the bytes go away.
+4. **Reports stats** via JSON to stdout when `--json`.
+
+Recommended launchd schedule: hourly. A sample `launchd.plist` ships
+under `tools/observability_server/launchd/`.
+
+#### Container-side state retention
+
+Inside the container, a 60-minute tick:
+
+1. Reads the current `spool_files` snapshot via filesystem stat.
+2. For any `run_id` whose spool directory no longer exists on disk,
+   issues `DELETE FROM runs WHERE run_id = ?` (cascades to all child
+   tables).
+3. Records stats in the in-memory health snapshot exposed at `/api/health`.
+
+The container CANNOT delete spool files — the mount is read-only. All
+disk reclamation flows through the host CLI above.
+
+Configurable via env: `OBSERVABILITY_RETENTION_DAYS` (used by the host
+CLI), `OBSERVABILITY_TOTAL_CAP_GB` (used by the host CLI),
+`OBSERVABILITY_RETENTION_INTERVAL_MIN` (used by the container).
 
 ## Integration with existing dispatchers
 
@@ -763,19 +952,29 @@ Each call site that constructs a `SubAgent` does so via `startSubAgent(ctx, {age
 ## Security
 
 - Data is read from the local filesystem only. No outbound network calls.
+- The spool dir is bind-mounted read-only into the container; spool
+  deletion happens only on the host (`tools/observability_prune.ts`).
+  The web-facing container cannot tamper with the append-only evidence
+  it observes.
 - The Node server binds `0.0.0.0` inside the container; `docker-compose.yml`
   publishes `127.0.0.1:7700:7700` on the host. Operators who want LAN
-  access must set `OBSERVABILITY_ALLOW_LAN=1` **and** supply
-  `OBSERVABILITY_TOKEN`; otherwise the server refuses to start with any
+  access must set `OBSERVABILITY_ALLOW_LAN=1` **and** complete the
+  bootstrap flow; otherwise the server refuses to start with any
   non-loopback publish.
 - **Per-install token.** On first startup, the container generates a
-  256-bit random token, persists it to `/data/token`, and exposes it via
-  `docker logs`. All HTTP requests require `Authorization: Bearer
-  <token>`; all WebSocket connections require an `auth` handshake.
-  The UI build pulls the token from a runtime config endpoint
-  (`/api/runtime-config`, served only over loopback without auth so the
-  empty browser tab can bootstrap; this endpoint returns just the
-  token-version, not the token itself).
+  256-bit random token, persists it to `/data/token` (file mode 0600),
+  and exits with a one-line `docker logs` message instructing the
+  operator to run `node tools/observability_open.ts`. The helper reads
+  the token from the container's `/data/token` (via `docker exec cat`)
+  and stores it in the macOS Keychain under service
+  `stark-observability-token` for subsequent invocations.
+- **Bootstrap-helper command (`tools/observability_open.ts`, new).** Reads
+  the token from the Keychain (falling back to `docker exec` on first run),
+  POSTs it to `POST /api/auth/bootstrap` on `127.0.0.1:7700`, receives a
+  60-second one-time bootstrap code, and opens
+  `http://localhost:7700/?b=<code>` in the default browser. The UI
+  exchanges the code for a session cookie (see §7). The helper never
+  echoes the raw token to stdout.
 - **Origin + Host validation.** The server rejects any HTTP request whose
   `Origin` (when present) is not `http://localhost:7700` /
   `http://127.0.0.1:7700`, and rejects any `Host` header that is not one
@@ -895,11 +1094,53 @@ Tests force tailer stalls (mock filesystem pause), parse errors, backlog
 growth, and SQLite failures, then assert `/api/health` reports accurate
 status, lag, last processed offsets, and actionable error state.
 
+### Liveness model
+
+- **Parent-pid exit** — start a run, kill the dispatcher process with
+  SIGKILL, assert all non-terminal sub-agents transition to
+  `crashed` with `crashed_reason: "parent_exit"` within 90 s.
+- **Host boot id change** — simulate `host_boot_id` change in the
+  `hostinfo` sidecar; assert inflight sub-agents move to `crashed` with
+  `crashed_reason: "host_boot_changed"`.
+- **Laptop sleep / resume** — simulate a host-uptime gap of 5 minutes
+  while wall-clock advances 30 minutes; assert the next tick does NOT
+  mark sub-agents crashed; the subsequent sub-agent heartbeat keeps the
+  run `running`.
+- **Run heartbeat freshness** — assert `runs.last_heartbeat_at` updates
+  every 10 s for a healthy run; assert the SLA (crashed within 60 s of
+  heartbeat going stale).
+
+### Host-side prune
+
+- Age-based deletion respects `--retention-days`.
+- Pressure retention rewrites chunk events to `chunk_truncated` and
+  preserves lifecycle, progress, heartbeat, end events.
+- `.trash/` grace period prevents tailer from re-emitting events from
+  half-deleted files.
+- Container-side state retention drops `runs` rows for missing spool
+  dirs.
+
+### Byte budgets
+
+- `OBSERVABILITY_PER_RUN_MAX_MB` enforced: once exceeded, lifecycle
+  events still flow but chunks are dropped and `byte_budget_exceeded`
+  is set in `meta.json` and the index.
+- Low-disk preflight at `startRun` sets `emit_status: "disabled"`.
+
+### Auth flow
+
+- Bootstrap exchanges code → session cookie; subsequent requests pass.
+- Bootstrap code is single-use and expires after 60 s.
+- Bearer token also accepted for CLI clients; raw browser request
+  without cookie / Bearer is 401.
+- Cookie is HttpOnly + SameSite=Strict; client JS cannot read it.
+
 ### Live test
 
 Run `/stark-review` against a real PR with the stack up; manually verify
 all sub-agents appear, status transitions are correct, the redactor
-catches a planted `sk-ant-*` token in agent output, and the UI is fully
+catches a planted `sk-ant-*` token in agent output, the bootstrap helper
+opens the UI without manual log-inspection, and the UI is fully
 operable via keyboard.
 
 ## Deployment
@@ -914,15 +1155,18 @@ tools/observability_server/
 ├── tsconfig.json
 ├── migrations/
 │   └── 001_init.sql
+├── launchd/
+│   └── com.aryeh.observability.prune.plist  # sample hourly host-prune cron
 ├── server/
 │   ├── index.ts
 │   ├── tailer.ts
 │   ├── index_writer.ts
 │   ├── websocket_hub.ts
 │   ├── http_api.ts
-│   ├── retention.ts
-│   ├── auth.ts
+│   ├── retention.ts      # state-only (drops SQLite rows for missing spool dirs)
+│   ├── auth.ts           # bootstrap codes, session cookies
 │   ├── redact.ts
+│   ├── liveness.ts       # parent_pid + host_boot_id + sleep detection
 │   └── health.ts
 └── ui/
     ├── index.html
@@ -932,16 +1176,26 @@ tools/observability_server/
         └── ...
 ```
 
+Plus three new top-level tools (not in the docker image):
+
+- `tools/observability_emit_lib.ts` — emission library imported by every dispatcher
+- `tools/observability_prune.ts` — host-side spool cleanup CLI
+- `tools/observability_open.ts` — bootstrap helper that opens the UI
+- `tools/observability_hostinfo.ts` — host-info ticker that maintains `hostinfo/host.json` (boot_id, uptime, free disk)
+
 `docker-compose.yml` mounts:
 
-- `~/.claude/code-review/observability/runs:/spool` (read-write)
+- `~/.claude/code-review/observability/runs:/spool:ro`
+- `/proc:/host_proc:ro`
+- `~/.claude/code-review/observability/hostinfo:/hostinfo:ro`
 - named volume `observability_index:/data`
 
 Ports: `127.0.0.1:7700:7700`.
 
 Start: `docker compose -f tools/observability_server/docker-compose.yml up -d`.
 
-UI: `http://localhost:7700`.
+Open the UI: `node --experimental-strip-types tools/observability_open.ts`
+(handles bootstrap — opens the browser at the authenticated session URL).
 
 CLAUDE.md update (this repo + workspace-root) and a one-liner in
 `AGENTS.md` mention the stack and how to start it.
@@ -949,7 +1203,11 @@ CLAUDE.md update (this repo + workspace-root) and a one-liner in
 ## Open questions
 
 None — all open clarifications resolved during the 2026-05-25 brainstorming
-session (scope, granularity, persistence, deploy shape, transport) and
+session (scope, granularity, persistence, deploy shape, transport),
 during the 2026-05-25 design-review fix loop (mount mode, bind, auth,
 redaction, write serialization, schema completeness, API contracts,
-liveness model, accessibility).
+liveness model, accessibility), and during the 2026-05-25 red-team
+fix loop (spool ownership / read-only mount + host-side prune;
+run-level liveness via `parent_pid` + `host_boot_id` + sleep detection;
+chunk-offset index; bootstrap helper + session cookie auth; per-run
+byte budgets + pressure retention).
