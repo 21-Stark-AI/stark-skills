@@ -32,6 +32,80 @@ Phases (8 total):
 7. **Retention** — host-side prune CLI + container state-only sweep + launchd plist; emits `chunk_truncated` events via streaming in-place rewrite; calls server's `pre-rename` + `update-mtime` notify endpoints in that order. Prune CLI reads its Bearer token directly from the macOS Keychain, never via helper stdout.
 8. **Hardening, load test, live verification** — load harness, redaction live test, end-to-end real-PR run with **dispatcher-process** SIGKILL test (matches design's run-level crashed model).
 
+## 1.5. Plan Amendments (NORMATIVE — read before any phase work)
+
+The plan was put through `/stark-review-plan` (codex × 4 domains, 3 fix
+rounds, 81 wing patches auto-applied) and then `/stark-red-team-plan`
+(5 personas, 1 round). The red-team raised five blocking findings —
+one of which (`rt4`) was that deferring the review residuum into a
+trailing "Errata" appendix is itself a hazard: implementers can follow
+the main phase text literally and still build known-broken behavior.
+
+This section folds **both** sets of corrections — the 13 plan-review
+errata (E1–E13, formerly §7) and the 5 red-team integrations
+(RT1–RT5) — into normative deltas keyed to the affected Phase tasks.
+The plan body below is to be read **through** these amendments.
+Wherever a phase task disagrees with this section, this section wins.
+
+### 1.5.1. Plan-review errata (E1–E13) — required phase edits
+
+| Tag | Severity | Phase Task to amend                                | Required change (one-line) |
+| --- | -------- | -------------------------------------------------- | -------------------------- |
+| E1  | critical | Phase 4 Task 1 (auth middleware) + Phase 5 Task 2  | Auth-exempt `GET /`, `/index.html`, `/assets/*`. Add Playwright test for cold-load bootstrap. |
+| E2  | high     | Phase 2 Task 3 + Task 6, Phase 6 Task 2            | `attachChild` returns `{ drain }`; `runProcess` awaits `drain()` + stdout/stderr "end" before resolving; `endSubAgent` after. |
+| E3  | high     | Phase 6 Task 4                                     | Every `phase_execute_observability.ts` subcommand resolves session id itself; `exec-child` becomes supervising wrapper that ticks lease every 30 s. |
+| E4  | high     | Phase 7 Task 1 (prune CLI auth)                    | **Option B (preferred):** add `GET /internal/retention/crashed-runs` on retention listener (port 7701), prune-token authenticated; prune CLI consumes this, never touches the main API. |
+| E5  | high     | Phase 7 Task 3 + Phase 3 Task 4 + Phase 4 Task 2   | New action `abort-rewrite`; `update-mtime` is roll-forward with bounded backoff; both server AND prune CLI scan `rewrite_pending = 1` on startup. **See RT2 below for the SQLite-authoritative variant of this fix that supersedes the host-side journal.** |
+| E6  | high     | Phase 2 Task 5 + Task 4, Phase 6 finding emitters  | Add `redactJson(value)` recursive with depth 32 + per-string 1 MB cap; base64 chunks decode → redact → re-encode, or `chunk_truncated` if undecodable + > 1 MB. |
+| E7  | high     | Phase 3 Task 4 + Phase 7 Task 3                    | `pre-rename` returns 409 `{ code: "scan_pending" }` if `spool_files` row missing. Add `POST /internal/retention/scan-now` for explicit scan. |
+| E8  | medium   | Phase 1 Task 3 (Dockerfile + compose)              | Non-root UID 10001, `cap_drop: ALL`, `no-new-privileges:true`, `read_only: true`, tmpfs `/tmp`; writable mounts limited to `/data`, `/audit`. Verify via `docker inspect`. |
+| E9  | medium   | Phase 1 Task 1 (`ensureRoot`) + Task 3 (compose)   | `ensureRoot()` creates `~/.claude/code-review/observability/audit/` (0700). Compose mounts `…/audit:/audit`. Phase 1 acceptance asserts `/audit` is writable. |
+| E10 | medium   | Phase 2 Task 9 + Phase 4 Task 3 (liveness sweep)   | `run_start` carries `tracked_parent_pid` and `writer_daemon_pid`; index writer populates `runs.parent_pid` from `run_start`. Sweep treats `last_heartbeat_at IS NULL AND started_at > 30 s ago` as `crashed-before-heartbeat`. |
+| E11 | medium   | every example using `curl -H "Authorization: Bearer $TOKEN"` | Replace with cookie-file `curl -b "$COOKIE_FILE"` as default; for prune CLI's genuine Bearer need, write header to a 0600 file and pass via `curl -K <file>`. |
+| E12 | medium   | Phase 2 Task 9 (`startRun`)                        | Call `ensureRoot()` BEFORE `fs.statfs(spoolDir)` low-disk preflight. |
+| E13 | medium   | (folded into RT2)                                  | Pending-rewrite recovery — see RT2. |
+
+### 1.5.2. Red-team integrations (RT1–RT5) — required phase edits
+
+| Tag | Severity | Phase Task to amend                                | Required change |
+| --- | -------- | -------------------------------------------------- | --------------- |
+| RT1 | high (security) | Phase 1 Task 3 + Phase 2 Task 1 + Phase 6 Task 2 | The writer daemon and the spool tree run under a dedicated `starkobs` host UID/GID, managed by launchd (`com.aryeh.observability.writer.plist`). Spool dir is `0700` owned by `starkobs:starkobs`. Dispatchers connect to the writer's UDS via a **short-lived per-run capability**: `tools/observability_emit_lib.ts::startRun()` requests `POST /caps/issue` on a localhost-only auth endpoint (writer-daemon-owned), receives a single-use capability token bound to `(run_id, dispatcher_uid)`, and presents it on the first UDS frame. The writer validates the cap, binds it to the connection for the run's lifetime, and rejects any same-UID connection that doesn't present a valid cap. |
+| RT2 | high (reliability) | Phase 3 (schema) + Phase 4 Task 2 (retention notify) + Phase 7 Task 3 | SQLite is the **sole** rewrite transaction log. Schema additions to `spool_files`: `rewrite_txn_id TEXT`, `rewrite_state TEXT CHECK(rewrite_state IN ('idle','pending','renamed','aborted','committed'))`, `target_size_bytes INTEGER`, `target_mtime_ns INTEGER`. Recovery at server startup: walk `spool_files WHERE rewrite_state IN ('pending','renamed')`, `fstat` the file, and finish-forward (`committed`) or finish-back (`aborted`) by comparing to `target_size_bytes` + `target_mtime_ns`. The host-side `.pending-rewrites/` journal proposed in E5 is **deleted from the plan** in favor of this server-authoritative path; the prune CLI carries `rewrite_txn_id` in every `notify` POST and the server is the only owner of the transition state. |
+| RT3 | high (data) | Phase 1 (schema) + Phase 3 (sweeper) + Phase 4 (WS/API backfill) | Add a `synthetic_events` table:<br>`run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE`,<br>`seq INTEGER NOT NULL`, `ts TEXT NOT NULL`, `type TEXT NOT NULL`, `payload_json TEXT NOT NULL`, `PRIMARY KEY(run_id, seq)`. When the liveness sweeper marks a run/sub-agent crashed without a JSONL writer, it INSERTs a synthetic `subagent_end` / `run_end` row with `seq = MAX(spool_seq) + 1` continuing the per-run monotonic series. WS backfill, `/api/runs/:id/subagents/:sid/chunks`, and CSV export all UNION the JSONL `event_offsets` with `synthetic_events` ordered by `seq`. The contract becomes: **JSONL + synthetic_events** is the complete event history, not JSONL alone. The synthesis from §6 is updated to reflect this. |
+| RT4 | critical (product-dx) | This section | (Self-applies.) The 13 errata are not a trailing appendix anymore; they live in §1.5.1 above with explicit phase-task pointers. The trailing "Errata" section at the bottom of the plan is now a back-reference only — implementers MUST treat §1.5 as the source of truth. |
+| RT5 | high (cost-ops) | Phase 2 Task 9 + Phase 4 Task 6 (health) + Phase 8 (load) | The emit library defines two **durability tiers**:<br>**Tier-immediate** (fsync on every write): `run_start`, `run_end`, `subagent_start`, `subagent_end`, `run_heartbeat`, `subagent_progress { kind: "finding" }`, any event carrying `"redacted": true`.<br>**Tier-batched** (group-commit every 50 events OR 100 ms, whichever first): `subagent_stdout`, `subagent_stderr`, `subagent_heartbeat`, all other `subagent_progress.kind` values.<br>The writer daemon exposes the batched-queue depth + most-recent fsync latency in a `/api/health` block (`durability: { batched_queue_depth, fsync_p50_ms, fsync_p99_ms, last_fsync_at }`). Documented loss window: a sudden power loss can lose up to the last 100 ms of non-lifecycle output (capped at 50 events). Lifecycle and findings are never lost. |
+
+### 1.5.3. Requirement-to-phase verification table
+
+Each requirement below is the union of design success criteria and
+this amendment set. Implementers verify every row before declaring the
+referenced phase complete.
+
+| Requirement                                                                 | Verified in              | Verification artefact                               |
+| --------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------- |
+| Spool mount is read-only inside the container                               | Phase 1 acceptance       | `docker inspect stark-observability` shows `:ro`    |
+| Container runs as non-root with cap-drop ALL (E8)                           | Phase 1 acceptance       | `docker inspect` + `id` inside container            |
+| `/audit` mount present and writable (E9)                                    | Phase 1 acceptance       | `docker exec stark-observability touch /audit/.t`   |
+| Writer daemon runs under `starkobs` UID (RT1)                               | Phase 1 + Phase 2        | `launchctl list com.aryeh.observability.writer`     |
+| Dispatchers present per-run capability tokens (RT1)                         | Phase 2 + Phase 6        | Unit test: same-UID without cap is rejected         |
+| `attachChild` drain promise awaited before `endSubAgent` (E2)               | Phase 2 + Phase 6        | Burst-stdout load test                              |
+| `redactJson` covers structured payloads + base64 (E6)                       | Phase 2                  | Negative test cases for every built-in pattern      |
+| `ensureRoot` runs before `statfs` (E12)                                     | Phase 2                  | Fresh-install integration test                      |
+| SQLite is sole rewrite transaction log (RT2)                                | Phase 3 + Phase 7        | Crash-mid-rewrite integration test                  |
+| `pre-rename` returns 409 on missing `spool_files` row (E7)                  | Phase 3 + Phase 4        | Server-restart-mid-rewrite test                     |
+| `synthetic_events` participates in WS backfill (RT3)                        | Phase 3 + Phase 4        | Sweeper-induced crash test asserts WS replay        |
+| Browser bootstrap shell loads without a cookie (E1)                         | Phase 4 + Phase 5        | Playwright cold-load test                           |
+| Daemon-dies-before-heartbeat → `crashed-before-heartbeat` within 30 s (E10) | Phase 2 + Phase 4        | Liveness integration test                           |
+| Durability tiers + `/api/health.durability` block (RT5)                     | Phase 2 + Phase 4        | Load test asserts lifecycle never lost              |
+| Phase-execute lease holds across fresh shells (E3)                          | Phase 6                  | Multi-shell integration test                        |
+| Prune CLI uses retention-listener for crashed-run reads (E4)                | Phase 7                  | Prune CLI never calls main API                      |
+| `abort-rewrite` reachable on rename failure (E5, RT2)                       | Phase 7                  | Inject `rename(2)` failure test                     |
+| Every doc example uses cookie-file or `-K` config (E11)                     | Phase 8 (docs sweep)     | `grep -RIn "Authorization: Bearer \\\$"` returns 0  |
+
+The §7 trailing "Errata" section remains in the file as a glossary of
+the 13 plan-review findings but is **not normative** any more — §1.5.1
+above is. If the two ever drift, §1.5.1 wins.
+
 ## 2. Prerequisites
 
 Must exist before Phase 1:
