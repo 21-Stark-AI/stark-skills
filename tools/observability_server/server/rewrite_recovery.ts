@@ -10,10 +10,19 @@
  *     `target_size_bytes` — the prune CLI's `rename(2)` landed but the
  *     follow-up `update-mtime` POST never arrived. Apply the destructive
  *     transition (delete the truncated seqs from `event_offsets` +
- *     `chunk_offsets`, reset `tail_offsets.offset = 0`) using the
- *     file's actual mtime as `target_mtime_ns`.
+ *     `chunk_offsets`, reset `tail_offsets.offset = 0`) and persist the
+ *     on-disk mtime as `target_mtime_ns` + the run's `mtime_ns`. The
+ *     server is the sole owner of the transition; there is no host-side
+ *     journal.
  *   - finish-back (`aborted`) otherwise — the rename never happened
  *     (or was rolled back). Clear the pending fields.
+ *
+ * If a prior recovery sweep already persisted `target_mtime_ns` (or a
+ * future schema variant pre-populates it before rename), the stricter
+ * size-AND-mtime match is required — the on-disk mtime must equal the
+ * persisted target. This is the defensive branch; the realistic
+ * post-rename/pre-update crash path has `target_mtime_ns IS NULL` and
+ * is handled by the size-only branch above.
  *
  * The recovery sweep runs in a single SQLite write transaction per
  * row so a crash mid-recovery is replay-safe on the next boot.
@@ -122,22 +131,29 @@ export function recoverPendingRewrites(
     const target = row.target_size_bytes;
     const targetMtime = row.target_mtime_ns;
     const mtimeNs = st !== null ? Math.floor(st.mtimeMs * 1_000_000) : null;
-    // Finish-forward only when BOTH size AND mtime_ns match the recorded
-    // target. Size-alone matching is unsafe: if rename(2) failed but the
-    // original file happens to share the rewritten size, finishing forward
-    // would delete event_offsets/chunk_offsets and reset tail_offsets,
-    // then double-count bytes on the replay of the still-original lines.
-    // The target_mtime_ns column is written by the prune CLI at the same
-    // moment rename(2) is staged, so a matched mtime is proof the rename
-    // landed.
-    if (
-      st !== null &&
+    // RT2 finish-forward: server is the sole owner of the rewrite
+    // transition state. Pre-rename intentionally leaves `target_mtime_ns`
+    // NULL (the rename's mtime is unknowable until after the syscall),
+    // so the realistic post-rename/pre-update crash recovers by:
+    //
+    //   1. target_mtime_ns IS NULL + on-disk size == target_size_bytes
+    //      → rename(2) landed; capture the current on-disk mtime as
+    //        the actual mtime and finish-forward.
+    //   2. target_mtime_ns IS NOT NULL + on-disk (size AND mtime) match
+    //      → strict path; finish-forward.
+    //
+    // Any other state → finish-back. The system stays consistent in
+    // either direction because the tailer re-reads from offset = 0
+    // after recovery and authoritatively re-inserts chunk_truncations
+    // (file rewritten) or chunk_offsets (file untouched) from actual
+    // on-disk content.
+    const sizeMatches =
+      st !== null && typeof target === "number" && st.size === target;
+    const finishForward =
+      sizeMatches &&
       mtimeNs !== null &&
-      typeof target === "number" &&
-      typeof targetMtime === "number" &&
-      st.size === target &&
-      mtimeNs === targetMtime
-    ) {
+      (targetMtime === null || mtimeNs === targetMtime);
+    if (finishForward) {
       const txn = db.transaction(() => {
         const seqs = parseStoredTruncatedSeqs(
           row.rewrite_pending_truncated_json,
