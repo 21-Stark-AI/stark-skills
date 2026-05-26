@@ -20,6 +20,7 @@ import type Database from "better-sqlite3";
 import {
   abortRewriteBodySchema,
   preRenameBodySchema,
+  recoverPendingBodySchema,
   retentionNotifyBodySchema,
   scanNowBodySchema,
   updateMtimeBodySchema,
@@ -29,6 +30,13 @@ import {
   type ScanNowBody,
   type UpdateMtimeBody,
 } from "./retention_notify_schemas.ts";
+
+export interface RecoveryStats {
+  scanned: number;
+  committed: number;
+  aborted: number;
+  skipped: number;
+}
 
 type DbHandle = Database.Database;
 type DbStatement = Database.Statement<any[], any>;
@@ -51,6 +59,17 @@ export interface RetentionRouteDeps {
     runId?: string;
     rotationIndex?: number;
   }) => Promise<void> | void;
+  /**
+   * Backend for `POST /internal/retention/recover-pending`. Wired by
+   * `index.ts` to `recoverPendingRewrites(db)`. Lets the prune CLI
+   * drive RT2 startup-recovery on demand instead of waiting for the
+   * next server restart — the rescue path for the post-rename /
+   * pre-update crash that would otherwise leave `rewrite_state =
+   * 'pending'` stuck (the rewritten file has no `subagent_stdout`
+   * chunks, so the next prune cycle's `streamRewrite` returns null
+   * and never re-issues pre-rename).
+   */
+  recoverPending?: () => RecoveryStats;
 }
 
 interface PreRenameSql {
@@ -77,6 +96,45 @@ export function registerRetentionRoutes(
   const pre = preparePreRename(deps.db);
   const abort = prepareAbortRewrite(deps.db);
   const update = prepareUpdateMtime(deps.db);
+  const selectCrashedRuns = deps.db.prepare(
+    `SELECT run_id, ended_at, crashed_reason, status
+       FROM runs
+      WHERE status = 'crashed'
+      ORDER BY started_at ASC, run_id ASC`,
+  );
+
+  // E4 Option B: the prune CLI's reconciliation pass needs the list of
+  // runs the container's liveness sweeper marked crashed via SQLite
+  // (whose host-side meta.json may still have `ended_at: null` because
+  // the writer daemon was SIGKILLed before it could rewrite it). The
+  // main-API token (UI + scripted clients) is NOT accepted by the
+  // retention listener; this route lets the prune CLI consume crashed-
+  // run state with its own prune-token credential. Loopback-only by
+  // virtue of being mounted on the retention Fastify instance.
+  for (const crashedPath of [
+    "/api/internal/retention/crashed-runs",
+    "/internal/retention/crashed-runs",
+  ]) {
+    app.get(crashedPath, async (req, reply) => {
+      if (deps.requireBearer && !deps.requireBearer(req)) {
+        return reply.code(401).send({ ok: false, code: "unauthorized" });
+      }
+      const rows = selectCrashedRuns.all() as Array<{
+        run_id: string;
+        ended_at: string | null;
+        crashed_reason: string | null;
+        status: string | null;
+      }>;
+      return reply.code(200).send({
+        items: rows.map((r) => ({
+          run_id: r.run_id,
+          ended_at: r.ended_at,
+          crashed_reason: r.crashed_reason,
+          status: r.status,
+        })),
+      });
+    });
+  }
 
   app.post("/api/internal/retention/notify", async (req, reply) => {
     if (deps.requireBearer && !deps.requireBearer(req)) {
@@ -143,6 +201,47 @@ export function registerRetentionRoutes(
         });
       }
       return reply.code(200).send({ ok: true, action: "scan-now" });
+    });
+  }
+
+  // Wing-finding fix: on-demand RT2 recovery sweep. The prune CLI POSTs
+  // here at the start of every cycle so a stuck `rewrite_state =
+  // 'pending'` row (post-rename / pre-update crash) finishes-forward
+  // (commit) or finishes-back (abort) before the cycle's pressure pass.
+  // Server is still the sole owner of the transition state — this
+  // endpoint just exposes the existing startup-recovery sweep to the
+  // CLI without a server restart.
+  for (const recoverPath of [
+    "/api/internal/retention/recover-pending",
+    "/internal/retention/recover-pending",
+  ]) {
+    app.post(recoverPath, async (req, reply) => {
+      if (deps.requireBearer && !deps.requireBearer(req)) {
+        return reply.code(401).send({ ok: false, code: "unauthorized" });
+      }
+      const parsed = recoverPendingBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply
+          .code(400)
+          .send({ ok: false, code: "bad_body", error: parsed.error.message });
+      }
+      if (!deps.recoverPending) {
+        return reply
+          .code(503)
+          .send({ ok: false, code: "recovery_unavailable" });
+      }
+      try {
+        const stats = deps.recoverPending();
+        return reply
+          .code(200)
+          .send({ ok: true, action: "recover-pending", stats });
+      } catch (err) {
+        return reply.code(500).send({
+          ok: false,
+          code: "recovery_failed",
+          error: (err as Error).message,
+        });
+      }
     });
   }
 }

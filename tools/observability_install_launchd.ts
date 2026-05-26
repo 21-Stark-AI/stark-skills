@@ -126,9 +126,10 @@ export function buildHostinfoSpec(opts: InstallOptions): PlistSpec {
 }
 
 export function buildPruneSpec(opts: InstallOptions): PlistSpec {
-  // Phase 7 spells out the prune CLI's args. Phase 1 only generates the
-  // plist skeleton so the install helper is the single owner of plist
-  // shape; Phase 7 wires the actual program arguments through.
+  // Phase 7 Task 4: runs hourly with --json so the stdout/stderr log captures
+  // structured records. The CLI also self-trims `prune.log` (90 days) on each
+  // run and reads its Bearer token from the macOS Keychain — the plist's env
+  // block intentionally carries no token.
   return {
     label: "com.aryeh.observability.prune",
     workingDir: opts.repoRoot,
@@ -138,7 +139,7 @@ export function buildPruneSpec(opts: InstallOptions): PlistSpec {
       "node",
       "--experimental-strip-types",
       path.join(opts.repoRoot, "tools", "observability_prune.ts"),
-      "--service",
+      "--json",
     ],
     intervalSeconds: 3600,
     keepAlive: false,
