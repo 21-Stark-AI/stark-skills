@@ -13,6 +13,7 @@ import Fastify from "fastify";
 
 import { loadMigrations } from "./migrations_loader.ts";
 import { registerRetentionRoutes } from "./http_api.ts";
+import { recoverPendingRewrites } from "./rewrite_recovery.ts";
 
 let Database: typeof import("better-sqlite3") | null = null;
 let dbModuleError: unknown = null;
@@ -566,4 +567,251 @@ test("unknown action discriminator 400s", async () => {
     });
     assert.equal(res.statusCode, 400);
   });
+});
+
+// Wing-finding regression: the prune CLI calls `POST /internal/retention/
+// recover-pending` at the start of every cycle to finish-forward (commit)
+// or finish-back (abort) any rewrite-pending row left stuck by a prior
+// cycle's post-rename / pre-update crash. The endpoint exposes the same
+// `recoverPendingRewrites` sweep that runs at server boot. Without this
+// path, a stuck pending row would survive until a server restart because
+// the rewritten file no longer has `subagent_stdout` chunks for the next
+// `streamRewrite` to pick up.
+
+test("recover-pending: commits a stuck pending row when on-disk size matches target (rename landed, update-mtime never reached the server)", async () => {
+  if (Database === null) return;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ha-test-"));
+  const db = new Database(path.join(tmpDir, "index.db"));
+  const app = Fastify({ logger: false });
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    const migrationsDir = path.resolve(import.meta.dirname, "..", "migrations");
+    for (const m of loadMigrations(migrationsDir)) applySql(db, m.sql);
+
+    const runId = "stuck-after-rename";
+    const filePath = `/spool/runs/${runId}/events-0000.jsonl`;
+    db.prepare(
+      `INSERT INTO runs (run_id, dispatcher, started_at, status) VALUES (?, 'x', ?, 'running')`,
+    ).run(runId, "2026-05-25T00:00:00.000Z");
+    db.prepare(
+      `INSERT INTO subagents (subagent_id, run_id, agent, task, started_at, status)
+       VALUES (?, ?, 'a', 't', ?, 'running')`,
+    ).run(`${runId}:1`, runId, "2026-05-25T00:00:00.000Z");
+    // Seed the row as if Call A (pre-rename) succeeded and `rename(2)`
+    // landed but Call B (update-mtime) never reached the server.
+    db.prepare(
+      `INSERT INTO spool_files
+         (run_id, rotation_index, file_path, size_bytes, mtime_ns, last_offset,
+          rewrite_pending, rewrite_pending_size_bytes, rewrite_pending_truncated_json,
+          rewrite_txn_id, rewrite_state, target_size_bytes, target_mtime_ns)
+       VALUES (?, 0, ?, 1000, 1000000, 1000, 1, 400, ?, 'txn-stuck', 'pending', 400, NULL)`,
+    ).run(
+      runId,
+      filePath,
+      JSON.stringify([
+        {
+          seq: 7,
+          subagent_id: `${runId}:1`,
+          stream: "stdout",
+          bytes_dropped: 30,
+        },
+      ]),
+    );
+    db.prepare(
+      `INSERT INTO event_offsets (run_id, seq, ts, type, subagent_id, rotation_index, byte_start, byte_end)
+       VALUES (?, 7, 't', 'subagent_stdout', ?, 0, 0, 30)`,
+    ).run(runId, `${runId}:1`);
+    db.prepare(
+      `INSERT INTO chunk_offsets (run_id, subagent_id, seq, stream, rotation_index, byte_start, byte_end, ts, encoding)
+       VALUES (?, ?, 7, 'stdout', 0, 0, 30, 't', 'utf8')`,
+    ).run(runId, `${runId}:1`);
+
+    registerRetentionRoutes(app, {
+      db,
+      recoverPending: () =>
+        recoverPendingRewrites(db, {
+          // Post-rename file: size matches target (400). mtime captured
+          // by the recovery sweep is whatever the OS recorded at rename.
+          statSync: (p) => {
+            assert.equal(p, filePath);
+            return { size: 400, mtimeMs: 5 };
+          },
+        }),
+    });
+    await app.ready();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/internal/retention/recover-pending",
+      payload: {},
+    });
+    assert.equal(res.statusCode, 200);
+    const json = res.json() as {
+      ok: boolean;
+      action: string;
+      stats: { scanned: number; committed: number; aborted: number; skipped: number };
+    };
+    assert.equal(json.ok, true);
+    assert.equal(json.action, "recover-pending");
+    assert.equal(json.stats.scanned, 1);
+    assert.equal(json.stats.committed, 1);
+    assert.equal(json.stats.aborted, 0);
+
+    // SQLite state proves the gate is released:
+    //   rewrite_pending = 0, rewrite_state = 'committed', txn_id cleared,
+    //   chunk_offsets / event_offsets for the truncated seq are gone.
+    const row = db
+      .prepare(
+        `SELECT rewrite_state, rewrite_pending, mtime_ns, size_bytes,
+                rewrite_txn_id, rewrite_pending_truncated_json
+           FROM spool_files WHERE run_id = ? AND rotation_index = 0`,
+      )
+      .get(runId) as {
+      rewrite_state: string;
+      rewrite_pending: number;
+      mtime_ns: number;
+      size_bytes: number;
+      rewrite_txn_id: string | null;
+      rewrite_pending_truncated_json: string | null;
+    };
+    assert.equal(row.rewrite_state, "committed");
+    assert.equal(row.rewrite_pending, 0);
+    assert.equal(row.size_bytes, 400);
+    assert.equal(row.mtime_ns, 5_000_000);
+    assert.equal(row.rewrite_txn_id, null);
+    assert.equal(row.rewrite_pending_truncated_json, null);
+    const remainingChunks = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM chunk_offsets WHERE run_id = ?`)
+        .get(runId) as { n: number }
+    ).n;
+    assert.equal(remainingChunks, 0);
+    const remainingOffsets = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM event_offsets WHERE run_id = ?`)
+        .get(runId) as { n: number }
+    ).n;
+    assert.equal(remainingOffsets, 0);
+  } finally {
+    await app.close();
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("recover-pending: 503 when no recoverPending dep is wired", async () => {
+  await withApp(async (app) => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/internal/retention/recover-pending",
+      payload: {},
+    });
+    assert.equal(res.statusCode, 503);
+    assert.deepEqual(res.json(), { ok: false, code: "recovery_unavailable" });
+  });
+});
+
+test("recover-pending: 500 when the recovery sweep throws", async () => {
+  if (Database === null) return;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ha-test-"));
+  const db = new Database(path.join(tmpDir, "index.db"));
+  const app = Fastify({ logger: false });
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    const migrationsDir = path.resolve(import.meta.dirname, "..", "migrations");
+    for (const m of loadMigrations(migrationsDir)) applySql(db, m.sql);
+    registerRetentionRoutes(app, {
+      db,
+      recoverPending: () => {
+        throw new Error("simulated recovery failure");
+      },
+    });
+    await app.ready();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/internal/retention/recover-pending",
+      payload: {},
+    });
+    assert.equal(res.statusCode, 500);
+    const json = res.json() as { code: string };
+    assert.equal(json.code, "recovery_failed");
+  } finally {
+    await app.close();
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("recover-pending: reachable on both /api/internal/... and /internal/... paths", async () => {
+  if (Database === null) return;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ha-test-"));
+  const db = new Database(path.join(tmpDir, "index.db"));
+  const app = Fastify({ logger: false });
+  let calls = 0;
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    const migrationsDir = path.resolve(import.meta.dirname, "..", "migrations");
+    for (const m of loadMigrations(migrationsDir)) applySql(db, m.sql);
+    registerRetentionRoutes(app, {
+      db,
+      recoverPending: () => {
+        calls += 1;
+        return { scanned: 0, committed: 0, aborted: 0, skipped: 0 };
+      },
+    });
+    await app.ready();
+    const a = await app.inject({
+      method: "POST",
+      url: "/api/internal/retention/recover-pending",
+      payload: {},
+    });
+    assert.equal(a.statusCode, 200);
+    const b = await app.inject({
+      method: "POST",
+      url: "/internal/retention/recover-pending",
+      payload: {},
+    });
+    assert.equal(b.statusCode, 200);
+    assert.equal(calls, 2);
+  } finally {
+    await app.close();
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("recover-pending: strict body rejects unknown fields", async () => {
+  if (Database === null) return;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ha-test-"));
+  const db = new Database(path.join(tmpDir, "index.db"));
+  const app = Fastify({ logger: false });
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    const migrationsDir = path.resolve(import.meta.dirname, "..", "migrations");
+    for (const m of loadMigrations(migrationsDir)) applySql(db, m.sql);
+    registerRetentionRoutes(app, {
+      db,
+      recoverPending: () => ({
+        scanned: 0,
+        committed: 0,
+        aborted: 0,
+        skipped: 0,
+      }),
+    });
+    await app.ready();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/internal/retention/recover-pending",
+      payload: { run_id: "nope" },
+    });
+    assert.equal(res.statusCode, 400);
+  } finally {
+    await app.close();
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

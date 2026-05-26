@@ -90,8 +90,26 @@ export const scanNowBodySchema = z
   })
   .strict();
 
+// Wing-finding regression: if the prune CLI crashes / errors after a
+// successful `rename(2)` but before / during `update-mtime`, the
+// `spool_files` row stays in `rewrite_state='pending'` and the tailer
+// stays paused on that file. The next prune cycle's `streamRewrite`
+// finds no `subagent_stdout`/`subagent_stderr` lines (the file has
+// already been rewritten in place), so pre-rename never fires and the
+// row never recovers without a server restart.
+//
+// The retention listener exposes `POST /internal/retention/recover-
+// pending` which drives the same `recoverPendingRewrites` sweep that
+// runs at server boot — `fstat` each pending row's file and finish-
+// forward (commit) or finish-back (abort) the SQLite transition. The
+// prune CLI calls this endpoint at the start of every cycle. Body is
+// intentionally empty so the server's recovery sweep stays the only
+// owner of the transition logic.
+export const recoverPendingBodySchema = z.object({}).strict();
+
 export type PreRenameBody = z.infer<typeof preRenameBodySchema>;
 export type UpdateMtimeBody = z.infer<typeof updateMtimeBodySchema>;
 export type AbortRewriteBody = z.infer<typeof abortRewriteBodySchema>;
 export type RetentionNotifyBody = z.infer<typeof retentionNotifyBodySchema>;
 export type ScanNowBody = z.infer<typeof scanNowBodySchema>;
+export type RecoverPendingBody = z.infer<typeof recoverPendingBodySchema>;

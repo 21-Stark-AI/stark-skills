@@ -245,6 +245,115 @@ test("RT2 recovery aborts when size matches target but mtime_ns does not (failed
   });
 });
 
+test("RT2 recovery commits when rename succeeded but update-mtime never reached the server (target_mtime_ns NULL, size matches)", () => {
+  // Wing-finding regression: pre-rename intentionally writes
+  // target_mtime_ns=NULL (the mtime is unknown until after rename(2)).
+  // If the prune CLI crashes between rename(2) and the update-mtime
+  // POST, server restart must finish-forward — not abort and forget the
+  // rewrite. Recovery resolves this by treating size-match alone as
+  // sufficient proof of rename when target_mtime_ns IS NULL, and
+  // captures the on-disk mtime as the actual mtime.
+  withDb((db) => {
+    const filePath = "/spool/runs/run-rec-e/events-0000.jsonl";
+    seedPendingRow(db, {
+      runId: "run-rec-e",
+      filePath,
+      truncatedSeqs: [50, 51],
+      targetSize: 400,
+      // targetMtimeNs intentionally undefined → NULL in the row.
+    });
+    const stats = recoverPendingRewrites(db, {
+      statSync: (p) => {
+        assert.equal(p, filePath);
+        // Post-rename file: size matches target, mtime is whatever the
+        // OS recorded when rename(2) happened.
+        return { size: 400, mtimeMs: 3 };
+      },
+    });
+    assert.equal(stats.scanned, 1);
+    assert.equal(stats.committed, 1);
+    assert.equal(stats.aborted, 0);
+    const row = db
+      .prepare(
+        `SELECT rewrite_state, rewrite_pending, mtime_ns, size_bytes,
+                target_mtime_ns, target_size_bytes, rewrite_txn_id,
+                rewrite_pending_truncated_json
+           FROM spool_files WHERE run_id = 'run-rec-e' AND rotation_index = 0`,
+      )
+      .get() as {
+      rewrite_state: string;
+      rewrite_pending: number;
+      mtime_ns: number;
+      size_bytes: number;
+      target_mtime_ns: number | null;
+      target_size_bytes: number | null;
+      rewrite_txn_id: string | null;
+      rewrite_pending_truncated_json: string | null;
+    };
+    assert.equal(row.rewrite_state, "committed");
+    assert.equal(row.rewrite_pending, 0);
+    assert.equal(row.size_bytes, 400);
+    // mtime is the actual on-disk mtime captured during recovery.
+    assert.equal(row.mtime_ns, 3_000_000);
+    assert.equal(row.target_mtime_ns, 3_000_000);
+    assert.equal(row.rewrite_txn_id, null);
+    assert.equal(row.rewrite_pending_truncated_json, null);
+    // chunk_offsets for the truncated seqs are gone (destructive
+    // transition applied). The tailer will re-read from offset 0 and
+    // re-insert chunk_truncations rows from the rewritten file.
+    const remainingChunks = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM chunk_offsets WHERE run_id = ?`)
+        .get("run-rec-e") as { n: number }
+    ).n;
+    assert.equal(remainingChunks, 0);
+    const remainingOffsets = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM event_offsets WHERE run_id = ?`)
+        .get("run-rec-e") as { n: number }
+    ).n;
+    assert.equal(remainingOffsets, 0);
+    // tail_offsets.offset is reset to 0 so the tailer re-reads from
+    // start with the new mtime.
+    const tail = db
+      .prepare(
+        `SELECT offset, mtime_ns FROM tail_offsets WHERE file_path = ?`,
+      )
+      .get(filePath) as { offset: number; mtime_ns: number };
+    assert.equal(tail.offset, 0);
+    assert.equal(tail.mtime_ns, 3_000_000);
+  });
+});
+
+test("RT2 recovery aborts when target_mtime_ns NULL and on-disk size does not match (rename did not land)", () => {
+  // Sibling guard for the new finish-forward path: if pre-rename
+  // recorded `target_size_bytes=X` but the on-disk file is still the
+  // original size, the rename(2) clearly did not land — abort and let
+  // the next prune cycle drive a fresh attempt.
+  withDb((db) => {
+    const filePath = "/spool/runs/run-rec-f/events-0000.jsonl";
+    seedPendingRow(db, {
+      runId: "run-rec-f",
+      filePath,
+      truncatedSeqs: [60],
+      targetSize: 400,
+    });
+    const stats = recoverPendingRewrites(db, {
+      // Original size (1000), nothing was renamed.
+      statSync: () => ({ size: 1000, mtimeMs: 1 }),
+    });
+    assert.equal(stats.scanned, 1);
+    assert.equal(stats.aborted, 1);
+    assert.equal(stats.committed, 0);
+    const remainingChunks = (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM chunk_offsets WHERE run_id = ?`)
+        .get("run-rec-f") as { n: number }
+    ).n;
+    assert.equal(remainingChunks, 1);
+  });
+});
+
 test("RT2 recovery aborts when the file is missing on disk", () => {
   withDb((db) => {
     seedPendingRow(db, {
