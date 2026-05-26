@@ -207,6 +207,7 @@ export async function buildServer(
     db,
     requireBearer: pruneTokenChecker,
     triggerScan: (target) => tailer.scanNow(target),
+    recoverPending: () => recoverPendingRewrites(db),
   });
 
   return {
