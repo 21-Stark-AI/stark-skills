@@ -17,5 +17,6 @@
     "allowImportingTsExtensions": false,
     "types": ["vitest/globals"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"],
+  "exclude": ["test/e2e/**", "node_modules", "dist"]
 }
