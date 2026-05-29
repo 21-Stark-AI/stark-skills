@@ -119,7 +119,7 @@ The 9 canonical triggers with their schedules and capabilities:
 | 8 | stark-digest | `0 14 * * 5` | Reporting | Read | No | Yes | 15 | sonnet |
 | 9 | stark-observability-check | `0 8 * * *` | Reporting | Read | Yes | Yes | 20 | sonnet |
 
-Default model: `claude-sonnet-4-20250514`. Per-function override supported in config.
+Default model: `claude-sonnet-4-6`. Per-function override supported in config.
 
 ### 2.4 Component Breakdown
 
@@ -134,7 +134,7 @@ triggers:
     prompt_path: "automation/prompts/stark-sentinel.md"
     default_ref: "main"
     pinned_sha: null  # set to pin; null = resolve at runtime
-    model: "claude-sonnet-4-20250514"
+    model: "claude-sonnet-4-6"
     max_turns: 30
     max_tokens: 8192
     github_access: "read-write"
@@ -190,7 +190,7 @@ Bucket write failure marks the run failed even if the model completed — audit 
 | Terraform | `>= 1.5` |
 | Google provider | `~> 6.0` (match infra-ai-platform) |
 | Cloud Functions Gen2 runtime | Python 3.12 |
-| Anthropic Messages API | Direct HTTPS, default model `claude-sonnet-4-20250514` |
+| Anthropic Messages API | Direct HTTPS, default model `claude-sonnet-4-6` |
 | GitHub API | REST v3 + GraphQL v4, token from Secret Manager |
 | Slack | Incoming webhook per approved destination |
 | GCP shared state | `infra-ai-platform` remote state outputs for project/VPC/labels |
@@ -260,7 +260,7 @@ Cloud Functions Gen2 is backed by Cloud Run and technically has an HTTP endpoint
     "resolved_sha": "abc123..."
   },
   "anthropic": {
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-sonnet-4-6",
     "attempts": 1,
     "turns": 12,
     "input_tokens": 10234,
@@ -1000,7 +1000,7 @@ New repo with independent deploy cycle. Consumes `infra-ai-platform` shared outp
 
 ### 3. Model: Sonnet for All Functions
 
-All 9 functions use `claude-sonnet-4-20250514`. Per-function model override supported in `triggers.yaml` if individual functions need upgrading later.
+All 9 functions use `claude-sonnet-4-6`. Per-function model override supported in `triggers.yaml` if individual functions need upgrading later.
 
 ### 4. Prompt Strategy: Fork (Option B)
 
