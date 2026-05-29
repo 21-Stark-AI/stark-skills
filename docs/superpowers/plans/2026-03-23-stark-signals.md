@@ -1638,7 +1638,7 @@ def upgrade() -> None:
         "gemini": _uuid.uuid5(_uuid.NAMESPACE_DNS, "stark-signals.gemini"),
     }
     op.bulk_insert(agents_table, [
-        {"id": str(agent_ids["claude"]), "name": "claude", "cli_command": "claude", "model_version": "claude-opus-4-6"},
+        {"id": str(agent_ids["claude"]), "name": "claude", "cli_command": "claude", "model_version": "claude-opus-4-8"},
         {"id": str(agent_ids["codex"]), "name": "codex", "cli_command": "codex", "model_version": "codex-mini-2025-01"},
         {"id": str(agent_ids["gemini"]), "name": "gemini", "cli_command": "gemini", "model_version": "gemini-2.5-pro"},
     ])

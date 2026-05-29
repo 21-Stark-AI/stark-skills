@@ -134,7 +134,7 @@ variables:
 competitors:
   - id: claude
     agent: claude           # CLI agent name
-    model: claude-opus-4-6  # optional model override
+    model: claude-opus-4-8  # optional model override
     # prompt_override: ...  # optional per-competitor prompt modification
   - id: codex
     agent: codex
@@ -403,7 +403,7 @@ competitors:
 
 All three use Claude, but with different prompt wrappings. The judge evaluates which prompt style produces better output for the given task. This is directly useful for tuning review prompts (`/stark-review-improvement`).
 
-**Bias note:** When all competitors use the same model as the judge (prompt variant tournaments), self-evaluation bias is a known limitation. The judge may favor outputs that match its own style. Mitigations: use a different model as judge when possible, or run the tournament with multiple judge models and compare. For cross-model tournaments, the default judge (claude-sonnet-4-6) differs from the default competitor model (claude-opus-4-6), avoiding the issue.
+**Bias note:** When all competitors use the same model as the judge (prompt variant tournaments), self-evaluation bias is a known limitation. The judge may favor outputs that match its own style. Mitigations: use a different model as judge when possible, or run the tournament with multiple judge models and compare. For cross-model tournaments, the default judge (claude-sonnet-4-6) differs from the default competitor model (claude-opus-4-8), avoiding the issue.
 
 ---
 

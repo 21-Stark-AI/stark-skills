@@ -339,7 +339,7 @@ class RedTeamResult:
       "input_per_1m_usd": 20.00,
       "output_per_1m_usd": 80.00
     },
-    "claude-opus-4-6": {
+    "claude-opus-4-8": {
       "input_per_1m_usd": 15.00,
       "output_per_1m_usd": 75.00
     },
