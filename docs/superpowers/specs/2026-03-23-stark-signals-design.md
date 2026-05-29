@@ -156,7 +156,7 @@ Registry of LLM agents.
 | id | UUID | PK |
 | name | VARCHAR | unique: claude, codex, gemini |
 | cli_command | VARCHAR | e.g., "claude", "codex", "gemini" |
-| model_version | VARCHAR | e.g., "claude-opus-4-6" |
+| model_version | VARCHAR | e.g., "claude-opus-4-8" |
 | is_active | BOOLEAN | default true |
 | created_at | TIMESTAMP | |
 

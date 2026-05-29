@@ -322,7 +322,7 @@ cost_tracking/
     tokens_in: 12500
     tokens_out: 3200
     llm_calls: [
-      {model: "claude-opus-4-6", tokens_in: 4200, tokens_out: 1100, cost_usd: 0.15},
+      {model: "claude-opus-4-8", tokens_in: 4200, tokens_out: 1100, cost_usd: 0.15},
       {model: "o3", tokens_in: 4100, tokens_out: 1000, cost_usd: 0.12},
       {model: "gemini-2.5-pro", tokens_in: 4200, tokens_out: 1100, cost_usd: 0.08}
     ]
@@ -607,7 +607,7 @@ Never. Tool results are structured JSON. Knowledge chunks are plaintext content.
 
 **Structured Logging** (Cloud Run -> Cloud Logging):
 - Every MCP tool invocation: `{event: "tool_call", agent: "devops", capability: "review", repo: "...", pr: 42, duration_ms: ...}`
-- Every LLM dispatch: `{event: "llm_dispatch", agent: "devops", model: "claude-opus-4-6", tokens_in: ..., tokens_out: ..., duration_ms: ..., error: null}`
+- Every LLM dispatch: `{event: "llm_dispatch", agent: "devops", model: "claude-opus-4-8", tokens_in: ..., tokens_out: ..., duration_ms: ..., error: null}`
 - Every tool execution: `{event: "tool_run", agent: "devops", tool: "terraform-validate", exit_code: 0, duration_ms: ...}`
 - Knowledge sync: `{event: "knowledge_sync", namespace: "devops-runbooks", docs_processed: 15, chunks_upserted: 142, duration_ms: ...}`
 

@@ -629,7 +629,7 @@ def test_get_model_rates_returns_defaults(tmp_path):
         config_loader.load_config.cache_clear()
         rates = config_loader.get_model_rates()
     assert "o3" in rates
-    assert "claude-opus-4-6" in rates
+    assert "claude-opus-4-8" in rates
     assert rates["o3"]["input_per_1m_usd"] > 0
     assert "_fallback" in rates
 
@@ -719,7 +719,7 @@ DEFAULT_RED_TEAM = {
 
 DEFAULT_MODEL_RATES = {
     "o3": {"input_per_1m_usd": 15.00, "output_per_1m_usd": 60.00},
-    "claude-opus-4-6": {"input_per_1m_usd": 15.00, "output_per_1m_usd": 75.00},
+    "claude-opus-4-8": {"input_per_1m_usd": 15.00, "output_per_1m_usd": 75.00},
     "gpt-5.4": {"input_per_1m_usd": 5.00, "output_per_1m_usd": 15.00},
     "_fallback": {"input_per_1m_usd": 100.00, "output_per_1m_usd": 300.00},
 }
@@ -801,7 +801,7 @@ feat(red-team): add red_team + model_rates config sections
 DEFAULT_RED_TEAM section with all round 1 + round 2 fields, including
 per_run_budget_usd, stability_overlap_jaccard_min, max_input_chars,
 allow_human_review_halt. DEFAULT_MODEL_RATES as top-level section
-with o3/claude-opus-4-6/gpt-5.4/_fallback entries.
+with o3/claude-opus-4-8/gpt-5.4/_fallback entries.
 
 get_red_team_config() enforces locked-field rejection for personas and
 model (rt1) — org/repo overrides of those specific fields are dropped
@@ -861,7 +861,7 @@ Edit `global/config.json`. Find the `forge` section (around line 112) and insert
       "input_per_1m_usd": 15.00,
       "output_per_1m_usd": 60.00
     },
-    "claude-opus-4-6": {
+    "claude-opus-4-8": {
       "input_per_1m_usd": 15.00,
       "output_per_1m_usd": 75.00
     },

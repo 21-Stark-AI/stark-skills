@@ -85,7 +85,7 @@ The 3 competing agents:
 
 | Agent | CLI | Strengths |
 |-------|-----|-----------|
-| Claude | `claude -p - --output-format text --model claude-opus-4-6` | Nuanced reasoning, architectural depth, trade-off analysis |
+| Claude | `claude -p - --output-format text --model claude-opus-4-8` | Nuanced reasoning, architectural depth, trade-off analysis |
 | Codex | `codex exec -c ... --ephemeral --json --full-auto -` | Code-centric thinking, practical implementation focus |
 | Gemini | `gemini -p <prompt> -o json` | Breadth scanning, alternative pattern recognition |
 
