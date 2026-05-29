@@ -18,7 +18,7 @@ classification:
   retention_days: 30                               # int ≥ 0
   provider_allowlist:                              # ordered list of model providers
     - openai-gpt-5.5
-    - anthropic-claude-opus-4-7
+    - anthropic-claude-opus-4-8
   notes: free-text rationale                       # optional
 ---
 ```
@@ -46,7 +46,7 @@ classification:
   retention_days: 30
   provider_allowlist:
     - openai-gpt-5.5
-    - anthropic-claude-opus-4-7
+    - anthropic-claude-opus-4-8
   notes: legacy default — operator did not annotate classification:
 ```
 

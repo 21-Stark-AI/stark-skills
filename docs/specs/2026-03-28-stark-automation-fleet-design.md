@@ -500,7 +500,7 @@ Issue: GetEvinced/stark-skills#142
 ```
 :bar_chart: stark-digest - Week of 2026-03-24
 
-Models: :white_check_mark: All current (claude-opus-4-6, gpt-5.4, gemini-3.1-pro-preview)
+Models: :white_check_mark: All current (claude-opus-4-8, gpt-5.4, gemini-3.1-pro-preview)
 Health: :warning: 1 sentinel alert (codex flag change, resolved in PR #47)
 Deps: :white_check_mark: No critical CVEs
 Quality: :chart_with_upwards_trend: Signal-to-noise improved 8% (codex:security domain)

@@ -657,7 +657,7 @@ Built-in rate table in `config.json` (overridable):
 
 | Model | Input $/1M | Output $/1M |
 |-------|-----------|------------|
-| claude-opus-4-6 | $15.00 | $75.00 |
+| claude-opus-4-8 | $15.00 | $75.00 |
 | claude-sonnet-4-6 | $3.00 | $15.00 |
 | gpt-5.4 (codex) | $2.50 | $10.00 |
 | gemini-2.5-pro | $1.25 | $10.00 |
