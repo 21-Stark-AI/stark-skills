@@ -1327,32 +1327,13 @@ function dispatchCodex(
 }
 
 /**
- * Observability handle for tapping the codex subprocess. Defined as a
- * structural type so callers don't have to import RunCtx/SubAgent into
- * test files that exercise dispatch synchronously.
- */
-export interface RedTeamObservabilityHandle {
-  ctx: unknown; // RunCtx — opaque to keep red_team_lib import-free of emit lib types
-  sa: unknown;  // SubAgent
-}
-
-/**
- * Async sibling of `dispatchCodex` that uses `spawn` (not spawnSync) and
- * routes stdout/stderr through `attachChild` so the real subprocess lifecycle
- * is captured in the observability spool BEFORE `endSubAgent` runs.
- *
- * Wing-round-3 fix #22 — the previous synthetic-sub-agent wrapper in
- * `red_team_design.ts`/`red_team_plan.ts` bracketed a spawnSync call, so
- * stdout/stderr never reached the daemon. Callers that want chunks in the
- * spool pass an `observability` handle here; the prebuilt result is then
- * threaded through sync `dispatch()` via `codexFn` so all downstream paths
- * (parse, validate, sidecar, audit) stay untouched.
+ * Async sibling of `dispatchCodex` that uses `spawn` (not spawnSync) to run
+ * the codex subprocess and collect its stdout/stderr.
  */
 export async function dispatchCodexAsync(
   prompt: string,
   model: string,
   timeoutMs: number,
-  observability?: RedTeamObservabilityHandle,
 ): Promise<{
   raw_output: string;
   duration_s: number;
@@ -1393,26 +1374,7 @@ export async function dispatchCodexAsync(
     ];
     const child = spawn("codex", args, { env, stdio: ["pipe", "pipe", "pipe"] });
 
-    // Attach the observability tap BEFORE any data event fires, so the
-    // captured byte stream is byte-for-byte identical to what the local
-    // parser sees below (the tap is non-consuming — see attachChild).
-    let drain: (() => Promise<void>) | null = null;
-    if (observability) {
-      try {
-        const emitLib = await import("./observability_emit_lib.ts");
-        const handle = emitLib.attachChild(
-          observability.ctx as Parameters<typeof emitLib.attachChild>[0],
-          observability.sa as Parameters<typeof emitLib.attachChild>[1],
-          child,
-        );
-        drain = handle.drain;
-      } catch {
-        // Observability disabled or unreachable — fall through without tap.
-        drain = null;
-      }
-    }
-
-    // Buffer stdout/stderr in parallel with the tap.
+    // Buffer stdout/stderr.
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     child.stdout!.on("data", (b: Buffer) => stdoutChunks.push(b));
@@ -1421,11 +1383,10 @@ export async function dispatchCodexAsync(
     // Stream the prompt over stdin, then close to signal EOF.
     child.stdin!.end(prompt);
 
-    // Wait for the subprocess to exit; enforce timeoutMs. E2: on timeout we
-    // mark `timedOut: true` and SIGKILL the child, but DO NOT resolve until
-    // `close` plus stdout/stderr "end" have all fired — so attachChild's tap
-    // sees every final byte before the caller awaits drain(). Matches the
-    // runProcess pattern in copilot_dispatch.ts.
+    // Wait for the subprocess to exit; enforce timeoutMs. On timeout we mark
+    // `timedOut: true` and SIGKILL the child, but DO NOT resolve until `close`
+    // plus stdout/stderr "end" have all fired — so every final byte is
+    // buffered. Matches the runProcess pattern in copilot_dispatch.ts.
     const exitInfo = await new Promise<{
       status: number | null;
       signal: NodeJS.Signals | null;
@@ -1487,12 +1448,6 @@ export async function dispatchCodexAsync(
       });
     });
 
-    // E2: drain the observability tap AFTER the child has exited so every
-    // emitted chunk's UDS write is acked before endSubAgent fires.
-    if (drain) {
-      try { await drain(); } catch { /* */ }
-    }
-
     const elapsed = (Date.now() - start) / 1000;
     const stdoutStr = Buffer.concat(stdoutChunks).toString("utf8");
     const stderrStr = Buffer.concat(stderrChunks).toString("utf8");
@@ -1535,61 +1490,6 @@ export async function dispatchCodexAsync(
   } finally {
     sandbox.cleanup();
   }
-}
-
-/**
- * Async wrapper around sync `dispatch` that runs the codex subprocess via
- * `dispatchCodexAsync` (taps stdout/stderr through `attachChild`) and then
- * threads the prebuilt result back through `dispatch` via `codexFn`. The
- * fix-plan codex call stays on the sync path (unobserved) to avoid changing
- * `resolveFixPlan`'s shape; callers wanting fix-plan observability should
- * pass `fixPlanCodexFn` explicitly.
- *
- * Wing-round-3 fix #22: every red-team dispatcher entry uses this wrapper
- * when an observability handle is available, so the real codex subprocess
- * stdout/stderr lands in the spool before `endSubAgent`.
- */
-export async function dispatchWithObservability(
-  args: DispatchArgs,
-  observability?: RedTeamObservabilityHandle,
-): Promise<DispatchResult> {
-  // No real subprocess to tap — fall through to sync dispatch.
-  if (args.replayTranscript || args.codexFn) {
-    return dispatch(args);
-  }
-  const prompt = assemblePrompt({
-    prompts: args.prompts,
-    personas: args.personas,
-    artifact: args.artifact,
-    sourceSpec: args.sourceSpec,
-  });
-  // Skip the codex spawn if the pre-dispatch sensitive gate will refuse
-  // anyway — sync dispatch re-runs the gate and returns the blocked
-  // envelope without ever calling our codexFn.
-  if (preDispatchSensitiveGate(prompt).length > 0) {
-    return dispatch(args);
-  }
-  const dispatched = await dispatchCodexAsync(
-    prompt,
-    args.model,
-    args.timeoutMs,
-    observability,
-  );
-  // The fix-plan path runs its own codex spawn; default it to the real
-  // sync dispatcher so we don't accidentally feed it the challenge's
-  // prebuilt output (resolveFixPlan falls back to `args.codexFn` when
-  // `fixPlanCodexFn` is undefined — see runRedTeamFixPlan).
-  const fixPlanCodexFn =
-    args.fixPlanCodexFn ??
-    ((p: string, m: string) => {
-      const cfg = loadFixPlanConfig();
-      return dispatchCodex(p, m, cfg.timeout_s * 1000);
-    });
-  return dispatch({
-    ...args,
-    codexFn: () => dispatched,
-    fixPlanCodexFn,
-  });
 }
 
 /** Parse Codex `--json` JSONL output: collect assistant text + token counts. */
