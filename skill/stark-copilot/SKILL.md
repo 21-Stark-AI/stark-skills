@@ -210,6 +210,10 @@ node --experimental-strip-types "$TOOLS/copilot_dispatch.ts" \
 
 Pass `--goal-condition` **by default when `LEAD` is `claude`** (omit it when `--no-goal` is set or the lead is `codex`/`gemini`). With it set, the dispatcher prefixes the lead's prompt with `/goal …` and runs it as a `-p`-argument goal loop that iterates until tests pass, bounded by `--goal-max-budget-usd` and `--timeout`. The condition omits "committed" on purpose — rule 6 of the implement prompt keeps the lead from committing; the dispatcher owns git and the wing reviews the worktree diff.
 
+> **Budget guard:** `--goal-max-budget-usd` is mandatory in goal mode. A missing, zero, or non-numeric value never disables the guard — the dispatcher falls back to its built-in default ($5) rather than running unbounded.
+>
+> **Security note:** the goal loop requires the prompt to be passed as a `-p` **argument** (stdin doesn't trigger `/goal`), so the prompt is visible in `ps`/process listings. The composed prompt carries only issue/plan/task text — **never put secrets in it** (the skills don't interpolate credentials into prompts).
+
 The dispatcher owns the loop. It runs the lead in a worktree (round 1), then up to
 `max_rounds` review→fix iterations: wing reviews → if `revise`, lead re-runs in the
 same worktree with the wing's blocking findings → wing reviews the new diff. It exits
