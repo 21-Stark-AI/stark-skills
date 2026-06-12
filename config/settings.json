@@ -42,7 +42,8 @@
   "enableWorkflows": true,
   "statusLine": {
     "type": "command",
-    "command": "bash /Users/aryeh/.claude/statusline-command.sh"
+    "command": "bash /Users/aryeh/.claude/statusline-command.sh",
+    "refreshInterval": 1
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
@@ -94,7 +95,7 @@
   "theme": "dark",
   "editorMode": "normal",
   "preferredNotifChannel": "auto",
-  "remoteControlAtStartup": true,
+  "remoteControlAtStartup": false,
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
@@ -103,6 +104,5 @@
     "allow": [
       "Pushing branches and opening/merging PRs in /Users/aryeh/Code/Playground/stark-data-core is permitted — it is a trusted sibling repo in Aryeh's workspace alongside stark-night-watch and is covered by the same review workflow."
     ]
-  },
-  "model": "opus"
+  }
 }
