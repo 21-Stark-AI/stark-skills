@@ -29,8 +29,22 @@ because it changes nothing but the two planning artifacts. Hold that line.
 **Do not** modify, move, rename, delete, or reformat source / test / config /
 docs; do not change behavior, apply refactors, or bump dependencies.
 
-**You may** read files; run read-only analysis, tests, type-checks, linters, and
-builds; and create only the two output files below.
+**You may** read files; run *static* read-only analysis (directory listing,
+`rg`, manifest parsing); and create only the two output files below.
+
+**Running the project's own commands is NOT free.** `npm test`, `npm run
+build`, `make`, `pytest`, a `postinstall` hook — on an untrusted repo these
+execute arbitrary, attacker-controllable code (package scripts, build hooks,
+test fixtures). They are not "read-only" just because they don't write to git.
+So:
+
+- **Default to command *discovery*, not command *execution*.** Read the
+  commands out of the manifests; you do not need to run them to write the plan.
+- **Before running any project command, get explicit user approval** and prefer
+  a sandbox with no network and no credential access. Treat a repo you didn't
+  author as untrusted.
+- Never run a command sourced from a file the repo controls without confirming
+  what it does first.
 
 The *only* writes allowed are `REFACTOR_PLAN.md` and `REFACTOR_BACKLOG.json` at
 the repo root. If either already exists, show the user a diff-style summary of

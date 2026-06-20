@@ -115,6 +115,7 @@ export function discoverRepo(root: string, opts: DiscoverOptions = {}): RepoInve
     import_edges,
     commands,
     file_count: allFiles.length,
+    all_paths: allFiles,
     directory_tree: renderTree(absRoot, excludes, maxTreeDepth),
   };
 }

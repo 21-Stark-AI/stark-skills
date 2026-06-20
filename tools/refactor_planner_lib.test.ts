@@ -13,7 +13,8 @@ import { after, before, test } from "node:test";
 
 import { discoverRepo } from "./refactor_planner_discovery.ts";
 import { buildAnalysisPacks, detectCycles, planAllJobs } from "./refactor_planner_context.ts";
-import { crossCheckAndResolve, buildPlanModel } from "./refactor_planner_synth.ts";
+import { crossCheckAndResolve, buildPlanModel, resolveWave2Conflicts } from "./refactor_planner_synth.ts";
+import type { AgentProvider } from "./refactor_planner_lib.ts";
 import { renderPlanMarkdown, buildBacklog } from "./refactor_planner_artifacts.ts";
 import { extractJsonObject } from "./refactor_planner_provider.ts";
 import { runDispatcher } from "./refactor_planner_lib.ts";
@@ -130,9 +131,18 @@ test("validateBacklog rejects unknown depends_on, bad id, dup id, bad enum", () 
   assert.ok(!validateBacklog(badEnum).ok);
 });
 
-test("validateBacklog warns on a non-existent source path for a delete task", () => {
+test("validateBacklog errors on a missing source path for a destructive task", () => {
   const v = validateBacklog(minimalBacklog(), new Set(["src/other.ts"]));
-  assert.ok(v.warnings.some((w) => w.includes("src/a.ts")));
+  assert.ok(!v.ok, "missing delete source path must fail the gate");
+  assert.ok(v.errors.some((e) => e.includes("src/a.ts") && e.includes("delete")));
+});
+
+test("validateBacklog enforces sequential and non-empty task ids", () => {
+  const gap = minimalBacklog(); gap.tasks[1].id = "RF-003"; // RF-001, RF-003 -> gap
+  assert.ok(validateBacklog(gap).errors.some((e) => e.includes("sequential")));
+
+  const empty = minimalBacklog(); empty.tasks[0].id = ""; empty.tasks[1].depends_on = [];
+  assert.ok(validateBacklog(empty).errors.some((e) => e.includes("non-empty")));
 });
 
 // ── context packs ─────────────────────────────────────────────────────────────
@@ -189,6 +199,46 @@ test("buildPlanModel orders tests before deletes and yields a valid backlog", ()
   assert.ok(v.ok, v.errors.join("; "));
 });
 
+test("investigate-recommended dead code becomes a non-destructive task, not a delete", () => {
+  const inv = discoverRepo(fixture);
+  const findings: AnalysisFindings = {
+    deadCode: { dead_or_suspicious_code: [
+      { id: "DEAD-1", path: "src/util/helper.ts", symbol_or_file: "help", evidence: ["unsure"], recommended_action: "investigate whether this is reachable", risk: "high" },
+      { id: "DEAD-2", path: "src/util/helper.ts", symbol_or_file: "old", evidence: ["0 refs"], recommended_action: "delete the unused export", risk: "low" },
+    ] },
+  };
+  const model = buildPlanModel({ inventory: inv, findings }, []);
+  const investigate = model.tasks.find((t) => t.title.startsWith("Investigate"));
+  const del = model.tasks.find((t) => t.type === "delete");
+  assert.ok(investigate && investigate.type !== "delete", "investigate finding must not be a delete task");
+  assert.ok(del, "explicit-delete finding still becomes a delete task");
+  assert.ok(validateBacklog(buildBacklog(model)).ok);
+});
+
+test("resolveWave2Conflicts catches a self-contradictory target directory", () => {
+  const conflicts = resolveWave2Conflicts({
+    targetArchitecture: { target_tree: "", rationale: [], target_directories: [
+      { path: "src/core", responsibility: "x", belongs_here: [], does_not_belong_here: [], allowed_dependencies: ["src/util"], forbidden_dependencies: ["src/util"] },
+    ] },
+  });
+  assert.ok(conflicts.some((c) => c.kind === "dep-rule-contradiction"));
+});
+
+test("non-noop run fails (no artifacts) when subagents fail and --allow-partial is off", async () => {
+  const failing: AgentProvider = { name: "failing", async runAgent() { return { rawText: "", error: "boom" }; } };
+  const r = await runDispatcher({ mode: "run", root: fixture, provider: { provider: "claude" }, providerInstance: failing });
+  assert.ok(!r.ok, "must fail when required subagents fail");
+  assert.ok(r.diagnostics.length > 0);
+  assert.ok(!r.artifacts, "must not write artifacts on subagent failure");
+});
+
+test("--allow-partial lets a degraded non-noop run still produce a valid plan", async () => {
+  const failing: AgentProvider = { name: "failing", async runAgent() { return { rawText: "", error: "boom" }; } };
+  const r = await runDispatcher({ mode: "run", root: fixture, provider: { provider: "claude" }, providerInstance: failing, allowPartial: true });
+  assert.ok(r.ok, r.errors.join("; "));
+  assert.ok(r.validation!.ok);
+});
+
 // ── artifact rendering ────────────────────────────────────────────────────────
 
 test("renderPlanMarkdown contains all 14 sections", () => {
@@ -211,6 +261,9 @@ test("extractJsonObject handles direct, fenced, and embedded JSON", () => {
 // ── dispatcher modes (noop provider) ──────────────────────────────────────────
 
 test("dry-run writes inventory + 10 context packs, no artifacts", async () => {
+  // isolate from any prior test that wrote artifacts into the shared fixture
+  fs.rmSync(path.join(fixture, "REFACTOR_PLAN.md"), { force: true });
+  fs.rmSync(path.join(fixture, "REFACTOR_BACKLOG.json"), { force: true });
   const r = await runDispatcher({ mode: "dry-run", root: fixture });
   assert.ok(r.ok);
   assert.equal(r.plannedJobs!.length, 10);

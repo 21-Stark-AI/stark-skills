@@ -62,6 +62,18 @@ hardcoded into business logic.
 | Prompts dir | `--prompts-dir <dir>` | `STARK_REFACTOR_PROMPTS` | `assetPromptsDir()/refactor-planner` |
 | Exclusions | `--exclude a,b,c` (additive) | — | `.git node_modules dist build coverage .next .nuxt target vendor __pycache__ …` |
 | Concurrency | `--max-concurrency <n>` | — | `4` |
+| Partial runs | `--allow-partial` | — | off |
+
+**Failure semantics:** with a real provider (`claude`/`codex`), if any subagent
+fails or returns unparseable output the run **fails and writes no artifacts** —
+rather than silently emitting a partial/empty plan marked successful. Pass
+`--allow-partial` to accept a degraded plan from whatever did succeed. The `noop`
+provider never fails, so it always produces (empty) artifacts.
+
+**Subagent sandboxing:** Claude subagents run with **no filesystem tools** and
+Codex in a read-only, network-disabled sandbox — the host already embeds every
+excerpt an agent needs, so untrusted repo content can't steer an agent into
+reading local secrets.
 
 `--provider noop` runs the full pipeline deterministically with **no LLM** —
 every agent returns a schema-valid empty result. Useful for testing the wiring
@@ -117,4 +129,6 @@ and surfaced in the plan's Open Questions.
   This is deliberate — it guarantees a valid, DAG-correct backlog rather than
   trusting an LLM to emit perfect JSON for the gate.
 - Planning-only: the dispatcher writes exactly `.refactor-planner/` and the two
-  root artifacts. It never edits, moves, or deletes source.
+  root artifacts. It never edits, moves, or deletes source. Discovery is fully
+  static (manifest parsing, no command execution), so the dispatcher itself never
+  runs target-repo build/test scripts.

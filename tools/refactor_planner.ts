@@ -23,6 +23,7 @@ interface CliArgs {
   overwrite: boolean;
   promptsDir?: string;
   excludes?: string[];
+  allowPartial: boolean;
   json: boolean;
 }
 
@@ -41,13 +42,14 @@ Options:
   --prompts-dir <dir>    subagent prompt dir (default: env STARK_REFACTOR_PROMPTS or asset prompts/refactor-planner)
   --exclude <a,b,c>      extra path exclusions (added to defaults)
   --no-overwrite         refuse to overwrite existing artifacts
+  --allow-partial        (run) write a plan even if some subagents failed
   --json                 print the machine-readable receipt to stdout
   -h, --help             show this help
 
 Planning only: writes <root>/.refactor-planner/ and the two root artifacts; never edits source.`;
 
 function parseArgs(argv: string[]): CliArgs | { help: true } | { error: string } {
-  const a: CliArgs = { mode: "dry-run", root: process.cwd(), overwrite: true, json: false };
+  const a: CliArgs = { mode: "dry-run", root: process.cwd(), overwrite: true, allowPartial: false, json: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = () => argv[++i];
@@ -70,6 +72,7 @@ function parseArgs(argv: string[]): CliArgs | { help: true } | { error: string }
       case "--prompts-dir": a.promptsDir = next(); break;
       case "--exclude": a.excludes = (next() ?? "").split(",").map((s) => s.trim()).filter(Boolean); break;
       case "--no-overwrite": a.overwrite = false; break;
+      case "--allow-partial": a.allowPartial = true; break;
       case "--json": a.json = true; break;
       default: return { error: `unknown argument '${arg}'` };
     }
@@ -116,6 +119,7 @@ async function main(): Promise<void> {
     maxConcurrency: parsed.maxConcurrency,
     overwrite: parsed.overwrite,
     promptsDir: parsed.promptsDir,
+    allowPartial: parsed.allowPartial,
   });
 
   if (parsed.json) process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");

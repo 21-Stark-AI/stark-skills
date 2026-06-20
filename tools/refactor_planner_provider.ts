@@ -97,13 +97,17 @@ class CliAgentProvider implements AgentProvider {
 
   private buildCmd(): { cmd: string; args: string[] } {
     if (this.vendor === "claude") {
+      // No filesystem tools (finding #5): the host embeds every excerpt the agent
+      // needs in the prompt, so granting Read/Glob/Grep would only create a
+      // prompt-injection path for untrusted repo content to read local secrets.
       return {
         cmd: "claude",
-        args: ["-p", "-", "--output-format", "text", "--model", this.model, "--no-session-persistence", "--allowedTools", "Read,Glob,Grep"],
+        args: ["-p", "-", "--output-format", "text", "--model", this.model, "--no-session-persistence", "--allowedTools", ""],
       };
     }
-    // codex, read-only sandbox — these agents only inspect, never write.
-    return { cmd: "codex", args: ["exec", "-m", this.model, "-c", 'model_reasoning_effort="high"', "-s", "read-only", "--ephemeral", "--json", "-"] };
+    // codex: read-only, network-disabled sandbox confined to a throwaway cwd — it
+    // likewise works from the embedded context and cannot reach out of the sandbox.
+    return { cmd: "codex", args: ["exec", "-m", this.model, "-c", 'model_reasoning_effort="high"', "-c", 'sandbox_mode="read-only"', "-c", 'tools.web_search=false', "-s", "read-only", "--ephemeral", "--json", "-"] };
   }
 }
 

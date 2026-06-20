@@ -70,15 +70,8 @@ export function crossCheckAndResolve(inv: RepoInventory, findings: AnalysisFindi
     out.duplication = { duplicates: fixed };
   }
 
-  // 4. Target-architecture self-violation: a directory forbidding a dep it also allows.
-  if (out.targetArchitecture) {
-    for (const dir of out.targetArchitecture.target_directories) {
-      const overlap = dir.allowed_dependencies.filter((a) => dir.forbidden_dependencies.includes(a));
-      if (overlap.length) {
-        conflicts.push({ kind: "dep-rule-contradiction", detail: `${dir.path} both allows and forbids: ${overlap.join(", ")}`, resolution: "treated as forbidden (stricter wins)" });
-      }
-    }
-  }
+  // (Target-architecture contradictions are checked in `resolveWave2Conflicts`,
+  // which runs AFTER the target-architecture agent — see finding #1.)
 
   // 5. Import cycles surfaced by the host but not addressed by the dependency agent.
   const cycles = detectCycles(inv);
@@ -89,6 +82,36 @@ export function crossCheckAndResolve(inv: RepoInventory, findings: AnalysisFindi
   // `canonicalPaths` participates in dedup reasoning above via the delete-vs-canonical rule.
   void canonicalPaths;
   return { findings: out, conflicts };
+}
+
+/**
+ * Second conflict pass, run AFTER wave 2 (target-architecture + phase-planner)
+ * so it can see the dependency rules those agents produce — which the wave-1
+ * `crossCheckAndResolve` cannot (finding #1). Currently catches a target
+ * directory that both allows and forbids the same dependency.
+ */
+export function resolveWave2Conflicts(findings: AnalysisFindings): Conflict[] {
+  const conflicts: Conflict[] = [];
+  for (const dir of findings.targetArchitecture?.target_directories ?? []) {
+    const overlap = dir.allowed_dependencies.filter((a) => dir.forbidden_dependencies.includes(a));
+    if (overlap.length) {
+      conflicts.push({ kind: "dep-rule-contradiction", detail: `${dir.path} both allows and forbids: ${overlap.join(", ")}`, resolution: "treated as forbidden (stricter wins)" });
+    }
+  }
+  // A phase that moves/deletes a risky-area path must not precede the tests-before-movement phase.
+  const phases = findings.phases?.phases ?? [];
+  const riskyPaths = new Set((findings.testRisk?.risky_areas ?? []).map((r) => r.path));
+  const testsPhaseIdx = phases.findIndex((p) => /test/i.test(p.name) && /before|baseline|coverage/i.test(p.name));
+  if (testsPhaseIdx >= 0) {
+    for (let i = 0; i < testsPhaseIdx; i++) {
+      const early = phases[i];
+      const touchesRisky = early.affected_paths.some((p) => riskyPaths.has(p));
+      if (touchesRisky && /move|reorg|delete|dedup/i.test(early.name)) {
+        conflicts.push({ kind: "phase-before-tests", detail: `phase ${early.number} "${early.name}" touches a risky path before the tests phase`, resolution: "reorder: schedule tests-before-movement first" });
+      }
+    }
+  }
+  return conflicts;
 }
 
 // ── plan model assembly ───────────────────────────────────────────────────────
@@ -235,12 +258,21 @@ function buildTasks(f: AnalysisFindings, validation: string[]): { tasks: Backlog
       depsForPaths(dup.paths), validation, "Restore the duplicated file and its imports.", dup.evidence));
   }
 
-  // 4) Dead-code deletions last; depend on any merge touching the same path.
+  // 4) Dead-code: emit a `delete` task ONLY when the recommendation is an explicit
+  //    removal. Investigate/suspicious findings (including conflict-downgraded
+  //    "INVESTIGATE …" ones) become non-destructive investigation tasks so an
+  //    executor never deletes code on a soft signal (finding #2; keep > delete).
   for (const dc of f.deadCode?.dead_or_suspicious_code ?? []) {
     const id = nextId();
     const deps = new Set(depsForPaths([dc.path]));
     const m = mergeIdByPath.get(dc.path); if (m) deps.add(m);
-    tasks.push(mkTask(id, `Remove dead code: ${dc.symbol_or_file}`, "delete", "low", dc.risk, [dc.path], [dc.recommended_action], [...deps], validation, "Restore the file from git history.", dc.evidence));
+    if (isExplicitDelete(dc.recommended_action)) {
+      tasks.push(mkTask(id, `Remove dead code: ${dc.symbol_or_file}`, "delete", "low", dc.risk, [dc.path], [dc.recommended_action], [...deps], validation, "Restore the file from git history.", dc.evidence));
+    } else {
+      tasks.push(mkTask(id, `Investigate suspected dead code: ${dc.symbol_or_file}`, "test", "low", dc.risk, [dc.path],
+        [`Confirm reachability before any removal: ${dc.recommended_action}`, "If confirmed dead, raise a follow-up delete task; otherwise close."],
+        [...deps], validation, "No code change; investigation only.", dc.evidence));
+    }
   }
 
   return { tasks };
@@ -395,3 +427,11 @@ function sevToRisk(s: Severity): BacklogTask["risk"] {
   return s === "critical" || s === "high" ? "high" : s === "medium" ? "medium" : "low";
 }
 function truncate(s: string, n: number): string { return s.length > n ? s.slice(0, n) + "…" : s; }
+
+/** A dead-code recommendation only earns a `delete` task when it explicitly says
+ * remove/delete AND isn't hedged with investigate/verify/suspicious language. */
+function isExplicitDelete(recommendedAction: string): boolean {
+  const a = recommendedAction.toLowerCase();
+  if (/\b(investigat|verify|confirm|review|suspicious|unsure|maybe)\b/.test(a)) return false;
+  return /\b(delete|remove|drop|prune|dead-?code)\b/.test(a);
+}

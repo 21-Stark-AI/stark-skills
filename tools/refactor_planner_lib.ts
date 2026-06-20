@@ -15,7 +15,8 @@ import { buildAnalysisPacks, buildPhasePlannerPack, buildSynthesisPack, buildTar
 import { discoverRepo, DEFAULT_EXCLUDES, type DiscoverOptions } from "./refactor_planner_discovery.ts";
 import { buildBacklog, writeArtifacts } from "./refactor_planner_artifacts.ts";
 import { createProvider, resolveProviderConfig, type AgentProvider, type ProviderConfig } from "./refactor_planner_provider.ts";
-import { buildPlanModel, crossCheckAndResolve } from "./refactor_planner_synth.ts";
+export type { AgentProvider } from "./refactor_planner_provider.ts";
+import { buildPlanModel, crossCheckAndResolve, resolveWave2Conflicts } from "./refactor_planner_synth.ts";
 import {
   OUTPUT_VALIDATORS, validateBacklog,
   type AgentName, type AnalysisFindings, type ContextPack, type RepoInventory,
@@ -32,6 +33,9 @@ export interface DispatcherOptions {
   maxConcurrency?: number;
   overwrite?: boolean;      // overwrite existing artifacts (default true for run)
   promptsDir?: string;
+  allowPartial?: boolean;   // write a plan even if some subagents failed (non-noop)
+  /** Test seam: inject a provider instead of constructing one from config. */
+  providerInstance?: AgentProvider;
 }
 
 export interface Diagnostic { agent: AgentName; error: string; rawPath?: string; }
@@ -91,7 +95,7 @@ export async function runDispatcher(opts: DispatcherOptions): Promise<Dispatcher
   }
 
   // run mode
-  const provider = createProvider(providerConfig);
+  const provider = opts.providerInstance ?? createProvider(providerConfig);
   const promptsDir = resolvePromptsDir(opts.promptsDir);
   ensureDir(path.join(outDir, "subagent-results"));
   ensureDir(path.join(outDir, "diagnostics"));
@@ -107,20 +111,33 @@ export async function runDispatcher(opts: DispatcherOptions): Promise<Dispatcher
   // Cross-check after wave 1 so wave 2 reasons over cleaned findings.
   const resolved = crossCheckAndResolve(inv, findings);
   Object.assign(findings, resolved.findings);
-  receipt.conflicts = resolved.conflicts.length;
+  const conflicts = [...resolved.conflicts];
 
   // Wave 2: synthesis agents, sequential (each depends on the prior).
   await dispatchInto(provider, promptsDir, buildTargetArchPack(inv, findings), inv, findings, outDir, receipt);
   await dispatchInto(provider, promptsDir, buildPhasePlannerPack(inv, findings), inv, findings, outDir, receipt);
   const proseRaw = await dispatchProse(provider, promptsDir, buildSynthesisPack(inv, findings), inv, outDir, receipt);
 
+  // Second conflict pass — now that wave-2 dependency rules exist (finding #1).
+  conflicts.push(...resolveWave2Conflicts(findings));
+  receipt.conflicts = conflicts.length;
+  receipt.findingCounts = countFindings(findings);
+
+  // A real (non-noop) provider that produced agent failures must not silently
+  // yield a "successful" partial/empty plan (findings #3/#6). Fail loudly unless
+  // the caller explicitly opted into a partial run.
+  if (providerConfig.provider !== "noop" && receipt.diagnostics.length > 0 && !opts.allowPartial) {
+    receipt.errors.push(`${receipt.diagnostics.length} subagent failure(s); refusing to write a partial plan (pass --allow-partial to override). See diagnostics.`);
+    writeJson(path.join(outDir, "run-summary.json"), receipt);
+    return receipt;
+  }
+
   // Synthesize + validate + write.
-  const model = buildPlanModel({ inventory: inv, findings, proseRaw }, resolved.conflicts);
+  const model = buildPlanModel({ inventory: inv, findings, proseRaw }, conflicts);
   const backlog = buildBacklog(model);
   const existing = new Set(allRepoPaths(inv));
   const v = validateBacklog(backlog, existing);
   receipt.validation = { ok: v.ok, errors: v.errors, warnings: v.warnings };
-  receipt.findingCounts = countFindings(findings);
 
   if (!v.ok) {
     receipt.errors.push("assembled backlog failed validation — see validation.errors");
@@ -292,7 +309,9 @@ function countFindings(f: AnalysisFindings): Record<string, number> {
 }
 
 function allRepoPaths(inv: RepoInventory): string[] {
-  return [...inv.largest_files.map((x) => x.path), ...inv.test_files, ...inv.config_files, ...inv.build_files, ...inv.entry_points, ...inv.docs, ...inv.ci_files];
+  // The full file list (finding #7) — an accurate set so the path-existence gate
+  // can't false-error on a real file that wasn't in the notable-files subset.
+  return inv.all_paths;
 }
 
 function ensureDir(d: string): void { fs.mkdirSync(d, { recursive: true }); }

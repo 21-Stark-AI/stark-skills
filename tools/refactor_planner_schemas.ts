@@ -32,13 +32,14 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 // ── Validation primitives ────────────────────────────────────────────────────
 
-export interface ValidationResult<T> {
-  ok: boolean;
-  value?: T;
-  errors: string[];
-  /** Non-fatal observations (e.g. a referenced path that doesn't exist). */
-  warnings: string[];
-}
+/**
+ * Discriminated union so a successful `ok` soundly narrows `value` to `T` — a
+ * caller that checks `result.ok` no longer has to cast or guard against
+ * `undefined` (finding #11).
+ */
+export type ValidationResult<T> =
+  | { ok: true; value: T; errors: string[]; warnings: string[] }
+  | { ok: false; value?: undefined; errors: string[]; warnings: string[] };
 
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -154,6 +155,8 @@ export interface RepoInventory {
   /** Best-effort, deterministically derived; the command-discovery agent refines. */
   commands: CommandSet;
   file_count: number;
+  /** Every non-excluded repo-relative file path (sorted). Backs the path-existence gate. */
+  all_paths: string[];
   directory_tree: string;
 }
 
@@ -459,7 +462,9 @@ function fail<T>(errors: string[]): ValidationResult<T> {
   return { ok: false, errors, warnings: [] };
 }
 function done<T>(value: T, c: Checker): ValidationResult<T> {
-  return { ok: c.errors.length === 0, value: c.errors.length === 0 ? value : undefined, errors: c.errors, warnings: c.warnings };
+  return c.errors.length === 0
+    ? { ok: true, value, errors: [], warnings: c.warnings }
+    : { ok: false, errors: c.errors, warnings: c.warnings };
 }
 
 export function validateInventory(v: unknown): ValidationResult<InventoryOutput> {
@@ -673,9 +678,13 @@ const DUP_ID = /^DUP-\d{3,}$/;
  * enforces the two things an executor depends on and an LLM gets wrong:
  *  - task `depends_on` references resolve and form a DAG (no deadlock cycles);
  *  - ids are unique and well-formed.
- * When `existingPaths` is supplied, referenced source paths that don't exist are
- * surfaced as warnings (not errors — move/create tasks legitimately name new paths).
+ * When `existingPaths` is supplied, a referenced SOURCE path that doesn't exist
+ * is a hard error for path-dependent task types (delete/merge/rename/move) — the
+ * thing being moved/removed must exist — and a warning for other types (which
+ * legitimately name new target paths).
  */
+const PATH_MUST_EXIST_TYPES = new Set<TaskType>(["delete", "merge", "rename", "move"]);
+
 export function validateBacklog(v: unknown, existingPaths?: Set<string>): ValidationResult<RefactorBacklog> {
   if (!isPlainObject(v)) return fail(["backlog is not a JSON object"]);
   const c = new Checker();
@@ -714,7 +723,11 @@ export function validateBacklog(v: unknown, existingPaths?: Set<string>): Valida
     const at = `tasks[${i}]`;
     if (!isPlainObject(t)) { c.errors.push(`${at} must be an object`); return blankTask(); }
     const id = c.str(t, "id", at);
-    if (id && !RF_ID.test(id)) c.errors.push(`${at}.id '${id}' must match RF-NNN`);
+    const expectedId = `RF-${String(i + 1).padStart(3, "0")}`;
+    if (!id) c.errors.push(`${at}.id must be a non-empty string`);
+    else if (!RF_ID.test(id)) c.errors.push(`${at}.id '${id}' must match RF-NNN`);
+    // sequential, 1-based, no gaps (the advertised contract — finding #8/#9/#10)
+    else if (id !== expectedId) c.errors.push(`${at}.id '${id}' must be sequential: expected '${expectedId}' at position ${i}`);
     if (id && seenTaskIds.has(id)) c.errors.push(`${at}.id '${id}' is duplicated`);
     if (id) seenTaskIds.add(id);
     const task: BacklogTask = {
@@ -745,13 +758,15 @@ export function validateBacklog(v: unknown, existingPaths?: Set<string>): Valida
   const cycle = findCycle(tasks);
   if (cycle) c.errors.push(`tasks.depends_on contains a cycle: ${cycle.join(" -> ")}`);
 
-  // path existence (warnings only)
+  // path existence: a hard gate for source-must-exist actions, a warning otherwise
   if (existingPaths) {
     for (const t of tasks) {
-      // only source-must-exist actions
-      if (t.type === "delete" || t.type === "merge" || t.type === "rename" || t.type === "move") {
-        for (const p of t.paths) {
-          if (p && !existingPaths.has(p)) c.warnings.push(`task ${t.id} references path '${p}' which does not exist in the repo`);
+      for (const p of t.paths) {
+        if (!p || existingPaths.has(p)) continue;
+        if (PATH_MUST_EXIST_TYPES.has(t.type)) {
+          c.errors.push(`task ${t.id} (${t.type}) references source path '${p}' which does not exist in the repo`);
+        } else {
+          c.warnings.push(`task ${t.id} references path '${p}' which does not exist in the repo`);
         }
       }
     }
@@ -764,7 +779,10 @@ export function validateBacklog(v: unknown, existingPaths?: Set<string>): Valida
     const at = `duplicates[${i}]`;
     if (!isPlainObject(d)) { c.errors.push(`${at} must be an object`); return blankBacklogDup(); }
     const id = c.str(d, "id", at);
-    if (id && !DUP_ID.test(id)) c.errors.push(`${at}.id '${id}' must match DUP-NNN`);
+    const expectedId = `DUP-${String(i + 1).padStart(3, "0")}`;
+    if (!id) c.errors.push(`${at}.id must be a non-empty string`);
+    else if (!DUP_ID.test(id)) c.errors.push(`${at}.id '${id}' must match DUP-NNN`);
+    else if (id !== expectedId) c.errors.push(`${at}.id '${id}' must be sequential: expected '${expectedId}' at position ${i}`);
     if (id && seenDupIds.has(id)) c.errors.push(`${at}.id '${id}' is duplicated`);
     if (id) seenDupIds.add(id);
     return {
