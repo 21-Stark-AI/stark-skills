@@ -277,11 +277,21 @@ audit-log entries under `~/.claude/code-review/history/<org>/<repo>/<pr>/`).
 
 The gate allows the fix loop when ALL of:
 
-- `config.test_command` is non-empty (sourced from trusted config only — never
-  CLAUDE.md or package.json or any PR-controlled file).
+- A `test_command` resolves. **Resolution order:** explicit `config.test_command`
+  (trusted config) → **auto-detected** by `detectTestCommand()` from the trusted
+  checkout root → none. Detection reads **only** the operator's local checkout
+  (`--config-root`), **never** the PR-head worktree — letting a PR choose the
+  command that runs with push credentials would be an RCE vector. It recognizes
+  Makefile `test:` targets, `package.json` `scripts.test`, `go.mod`,
+  `Cargo.toml`, `*.test.ts`/`*.test.js` (node:test), and pytest (only when test
+  files actually exist). When nothing resolves, the loop soft-skips via
+  `allow_no_test_command` rather than failing — repos no longer need to pin a
+  brittle `test_command`.
 - The PR is same-repo, OR fork-with-`maintainerCanModify`, OR the operator
   passed `--allow-untrusted-fix-loop` AND `config.untrusted_fix_loop=true`
-  (both opt-ins required for untrusted fork pushes).
+  (both opt-ins required for untrusted fork pushes). Detection-sourced commands
+  still only execute inside these trusted contexts — fork reviews are read-only
+  and never run the detected command.
 - `--no-fix-loop` was not passed.
 
 If any condition fails, the review still posts; the fix loop is soft-skipped

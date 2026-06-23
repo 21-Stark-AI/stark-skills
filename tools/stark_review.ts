@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   buildMarker,
   DEFAULT_TEST_ENV_ALLOWLIST,
+  detectTestCommand,
   evaluateFixLoopGate,
   findingId,
   loadTrustedConfig,
@@ -2784,6 +2785,19 @@ export async function main(
     });
   } catch (err) {
     return finalizeFailure(repo, pr, "config_load_failed", (err as Error).message, cli.json);
+  }
+
+  // Self-detect the test command when none is explicitly configured. Detection
+  // reads ONLY the trusted configRoot (never the PR worktree) — see
+  // detectTestCommand. This frees repos from pinning a brittle `test_command`
+  // (the prior `pytest scripts/` left over from the Python era exited 5 on
+  // every run). Falls back to null → the gate soft-skips via allow_no_test_command.
+  if (!config.test_command || !String(config.test_command).trim()) {
+    const detected = detectTestCommand(cli.configRoot);
+    if (detected) {
+      config.test_command = detected;
+      if (!cli.json) process.stderr.write(`stark-review: auto-detected test_command: ${detected}\n`);
+    }
   }
 
   if (!cli.maxRoundsExplicit && typeof config.max_rounds === "number") {

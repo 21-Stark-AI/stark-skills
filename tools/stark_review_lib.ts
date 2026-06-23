@@ -462,6 +462,90 @@ function gitCapture(cwd: string, args: string[]): string | null {
 }
 
 /**
+ * Auto-detect a test command from the TRUSTED checkout root when no explicit
+ * `test_command` is configured. Reads ONLY `trustedRoot` (the operator's
+ * local checkout) — NEVER the PR-head worktree. Letting a PR pick the command
+ * that runs with push credentials would be an RCE vector; `loadTrustedConfig`
+ * already refuses a `configRoot` inside the worktree, and detection inherits
+ * that same trusted root.
+ *
+ * Returns a literal command for `sh -c` (globs are fine — `runTrustedTest`
+ * runs the string through a shell), or `null` when no runner is recognized
+ * (the caller then soft-skips the test gate via `allow_no_test_command`).
+ *
+ * Precedence is by specificity: an explicit project script (Makefile target,
+ * package.json `test`) beats a language default.
+ */
+export function detectTestCommand(trustedRoot: string): string | null {
+  const exists = (p: string): boolean => fs.existsSync(path.join(trustedRoot, p));
+  const read = (p: string): string | null => {
+    try {
+      return fs.readFileSync(path.join(trustedRoot, p), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const dirHasSuffix = (dir: string, suffix: string): boolean => {
+    try {
+      return fs.readdirSync(path.join(trustedRoot, dir)).some((f) => f.endsWith(suffix));
+    } catch {
+      return false;
+    }
+  };
+  const dirHasMatch = (dir: string, re: RegExp): boolean => {
+    try {
+      return fs.readdirSync(path.join(trustedRoot, dir)).some((f) => re.test(f));
+    } catch {
+      return false;
+    }
+  };
+
+  // 1. Makefile with a `test:` target.
+  for (const mk of ["Makefile", "makefile", "GNUmakefile"]) {
+    const body = read(mk);
+    if (body && /^test:/m.test(body)) return "make test";
+  }
+  // 2. package.json with a non-empty `scripts.test`.
+  const pkgRaw = read("package.json");
+  if (pkgRaw) {
+    try {
+      const pkg = JSON.parse(pkgRaw) as { scripts?: { test?: unknown } };
+      if (typeof pkg.scripts?.test === "string" && pkg.scripts.test.trim()) return "npm test";
+    } catch {
+      // malformed package.json — fall through to language defaults
+    }
+  }
+  // 3. Go module.
+  if (exists("go.mod")) return "go test ./...";
+  // 4. Rust crate.
+  if (exists("Cargo.toml")) return "cargo test";
+  // 5. TypeScript node:test files (the stark-skills layout: tools/*.test.ts).
+  for (const dir of ["tools", "test", "tests", "src", "."]) {
+    if (dirHasSuffix(dir, ".test.ts")) {
+      const glob = dir === "." ? "*.test.ts" : `${dir}/*.test.ts`;
+      return `node --experimental-strip-types --test ${glob}`;
+    }
+  }
+  // 6. Plain JS node:test files.
+  for (const dir of ["test", "tests", "src", "."]) {
+    if (dirHasSuffix(dir, ".test.js")) {
+      const glob = dir === "." ? "*.test.js" : `${dir}/*.test.js`;
+      return `node --test ${glob}`;
+    }
+  }
+  // 7. Python pytest — only when actual test files exist, so we never repeat
+  //    the exit-5 "no tests collected" trap that a bare `pytest <dir>` causes.
+  const pyTest = /^(test_.*|.*_test)\.py$/;
+  if (
+    (exists("pytest.ini") || exists("pyproject.toml") || exists("tox.ini")) &&
+    (dirHasMatch("tests", pyTest) || dirHasMatch("test", pyTest) || dirHasMatch(".", pyTest))
+  ) {
+    return "python3 -m pytest -q";
+  }
+  return null;
+}
+
+/**
  * Load and merge global, org-walked, and repo-override configs.
  *
  * - Global: `<home>/.claude/code-review/config.json`
