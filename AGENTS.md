@@ -105,7 +105,7 @@ All skills live in `skill/stark-*/SKILL.md`; `install.sh` symlinks them for Clau
 - `/stark-plan-to-tasks <path> [--dry-run] [--cleanup <slug>]` — decompose plan into phased GitHub issues (3 LLM passes)
 - `/stark-phase-execute <plan-slug> [--dry-run]` — autonomous phase execution: implement all tasks, PR, review, merge, release, dashboard
 - `/stark-copilot <plan-or-prompt> [--lead AGENT] [--wing AGENT] [--plan-slug SLUG]` — autonomous implementation with paired lead/wing subagents; issue-driven mode when plan has been decomposed via `/stark-plan-to-tasks`
-- `/stark-review [PR_NUMBER]` — single-agent PR code review (1 LLM × triage-selected domains, fast/cheap)
+- `/stark-review [PR_NUMBER]` — single-agent PR code review (1 LLM × triage-selected domains, fast/cheap). Fix-loop `test_command` is auto-detected from the **trusted** `--config-root` (never the PR worktree) via `detectTestCommand()` when unset — no brittle pinned command required.
 - `/stark-review-improvement [--prompts-dir DIR]` — improve prompts based on review assessment (PR or design/plan review)
 - `/stark-review-design-improvement` — improve design review prompts (wraps /stark-review-improvement with --prompts-dir design-review)
 
