@@ -1,126 +1,77 @@
 ---
 name: stark-terragrunt-review
 description: >-
-  Ad-hoc code review of Terragrunt orchestration — terragrunt.hcl, root.hcl,
+  Multi-agent code review of Terragrunt orchestration — terragrunt.hcl, root.hcl,
   terragrunt.stack.hcl, units, includes, dependency/generate/remote_state blocks,
-  the DRY values pattern, and multi-account/multi-env live repos — for dependency
-  correctness, state isolation, mock-output safety, and common HCL pitfalls. Use
-  whenever the user wants to review, audit, or sanity-check a Terragrunt repo or
-  catalog/live structure, asks about dependency ordering / mock outputs / state
-  keys / include hierarchy, or points at terragrunt.hcl and wants findings.
-  Review-only; never applies changes unless asked with --fix. Defers Terraform
-  resource/module quality to stark-terraform-review.
-argument-hint: "[path] [--changed] [--fix] [--pr N] [--no-tools] [--min-severity low|medium|high|critical]"
+  the DRY values pattern, multi-account/multi-env live repos — for dependency
+  correctness, state isolation, mock-output safety, and HCL pitfalls. Runs across
+  one or more configurable LLMs (claude/codex/gemini), each as its own subagent,
+  then merges + cross-validates findings. Use whenever the user wants to review,
+  audit, or sanity-check a Terragrunt repo/catalog/live tree, or asks about
+  dependency ordering / mock outputs / state keys / include hierarchy. Review-only;
+  defers resource/module HCL to stark-terraform-review.
+argument-hint: "[path] [--agents claude,codex,gemini] [--changed] [--no-tools] [--min-severity ...] [--pr N --repo O/R] [--dry-run] [--json]"
 disable-model-invocation: false
 model: opus
 ---
 
 # stark-terragrunt-review
 
-You are a senior Terragrunt reviewer. You review the **orchestration layer** —
-how units/stacks are wired, how state is partitioned, how dependencies resolve —
-and you **defer the resource/module HCL** (provider resources, variable
-contracts, `aws_*`) to `stark-terraform-review`. Every finding anchors to a real
-`file:line` with a concrete fix. Terragrunt has its own failure surface that
-plain-Terraform review misses entirely; this skill is that surface.
+Multi-agent Terragrunt reviewer for the **orchestration layer**. Keep this skill
+thin: resolve the target, then hand off to the TS dispatcher `tools/iac_review.ts`,
+which runs the review across **one or more configured LLM agents** (each a
+headless subagent), merges + cross-validates findings, and renders the report.
+Resource/module HCL is deferred to `stark-terraform-review`.
 
-## Mode: review-only
+## Configuring which LLMs run the review
 
-Default behavior changes **nothing** but your report. Opt-in exceptions:
+Precedence: **`--agents` flag > config `iac_review.agents` > `["codex"]`**. To run
+with Gemini **and** Codex:
 
-- `--fix` — apply only **safe, mechanical** fixes you listed (`find_in_parent_folders`
-  over hardcoded parent paths, adding `mock_outputs` stubs, `path_relative_to_include()`
-  state keys, refspec ordering). Never restructure stacks/dependencies without a go-ahead.
-- `--pr N` — post findings to PR `N` (inline where anchored, summary otherwise),
-  authored by the run's GitHub App. Every finding lands on the PR; none dropped.
+```bash
+… --agents gemini,codex
+# or: { "iac_review": { "agents": ["gemini", "codex"] } } in config.json
+```
+
+(The `iac_review` config is shared with stark-terraform-review.) Each agent
+reviews independently; agreed findings are marked cross-validated.
 
 ## Arguments
 
 Raw input: `$ARGUMENTS`
 
-- `path` — file or directory (catalog/ or live/ root). Default: current git repo root / cwd.
-- `--changed` — review only `.hcl` touched vs the merge base.
-- `--fix` — apply safe mechanical fixes after reporting.
-- `--pr N` — post findings to PR N.
-- `--no-tools` — skip `terragrunt` CLI checks (read-only review); say so in the report.
-- `--min-severity` — drop findings below this floor in the final report.
+- `path` — file or directory (catalog/ or live/ root). Default: repo root / cwd.
+- `--agents a,b` — LLMs to run (claude|codex|gemini). Overrides config.
+- `--changed` — only `.hcl` changed vs the git merge-base / working tree.
+- `--no-tools` — skip host scanners.
+- `--min-severity S` — `critical|high|medium|low` floor.
+- `--pr N --repo O/R` — post merged findings to PR N (first agent's GitHub App).
+- `--dry-run` — resolve only, dispatch nothing.
+- `--json` — receipt JSON instead of the markdown report.
 
-## Review workflow
+## Run it
 
-1. **Identify the layout.** Is this a **catalog** (`units/`, `stacks/*.stack.hcl`,
-   explicit stacks — preferred) or a **classic live** repo
-   (`account/region/env/component/terragrunt.hcl` + `_envcommon/`, implicit
-   stacks)? The include chain you check differs. Detect the OpenTofu/Terraform
-   floor (gates `use_lockfile` vs DynamoDB). See
-   [references/review-checklist.md](references/review-checklist.md).
-
-2. **Map the DAG.** Run (unless `--no-tools`) `terragrunt find --dag --dependencies`
-   / `terragrunt list --tree` to see units + edges. Look for **cycles**, and for
-   units that consume an output without declaring the `dependency`. See
-   [references/tooling.md](references/tooling.md).
-
-3. **Review the orchestration blocks** against the checklist: `include` (root +
-   envcommon, `expose`), `dependency` (mock outputs mandatory + schema-matched,
-   `skip_outputs`/`enabled`, no duplicate names), `generate` (`if_exists`,
-   heredoc-in-ternary parens), `remote_state` (`path_relative_to_include()` keys,
-   per-env bucket isolation, locking), module `source` (refspec **after** `//path`,
-   version from `values`, SSH).
-
-4. **Check the DRY values pattern.** All unit inputs should flow through `values.*`
-   with `try(values.x, default)` for optionals; references like `"../vpc"` resolve
-   to `dependency.vpc.outputs.*`. Flag hardcoded inputs and hardcoded parent paths
-   (`../../../root.hcl` instead of `find_in_parent_folders()`).
-
-5. **Check state isolation.** Each unit = its own state key
-   (`${path_relative_to_include()}/terraform.tfstate`); per-env/account bucket
-   suffix; **no Terraform workspaces** (separate dirs instead); no shared state
-   across envs.
-
-6. **Scope-split & classify.** Anything that's really a Terraform resource/module
-   issue → note it and hand off to `stark-terraform-review` (see
-   [references/terraform-vs-terragrunt.md](references/terraform-vs-terragrunt.md)).
-   Assign severity, name the failure mode, drop below `--min-severity`.
-
-7. **Report** in the format below. If clean, say so; don't manufacture nits.
-
-## Severity guide
-
-- **critical** — state corruption / cross-env blast: shared state key across envs,
-  missing locking on shared backend, a `generate` overwriting hand-written files
-  with `if_exists = "overwrite"`.
-- **high** — broken/failing runs: circular dependency, missing `mock_outputs`
-  (plan/validate fails), mock schema mismatching real outputs, undeclared
-  dependency that's actually used, git source refspec ordering bug.
-- **medium** — DRY/maintainability: hardcoded inputs instead of `values`,
-  hardcoded parent paths, duplicate `dependency` names, deprecated `--queue-*`
-  targeting, DynamoDB lock when `use_lockfile` is available.
-- **low** — hygiene: missing `try()` on optionals, naming, `skip_outputs`
-  optimization opportunities, catalog version not parameterized.
-
-## Output format
-
-Group by severity, highest first. Per finding:
-
-```
-### [SEVERITY] <short title>
-- **Where:** `path/to/terragrunt.hcl:LINE`
-- **Failure mode:** <dependency | mock-output | state-isolation | include | generate | source | values/DRY>
-- **Why:** <1–2 lines; the concrete consequence>
-- **Fix:**
-  ```hcl
-  <minimal corrected block>
-  ```
-- **Evidence:** <terragrunt CLI output, or "manual">
+```bash
+TOOLS="${STARK_REVIEW_TOOLS:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review}/tools}"
+node --experimental-strip-types --no-warnings "$TOOLS/iac_review.ts" \
+  --kind terragrunt "${PATH_ARG:-.}" ${EXTRA_FLAGS}
 ```
 
-End with a **verdict**: counts by severity + merge recommendation, and an explicit
-"Terraform-layer items handed to stark-terraform-review: N".
+The dispatcher:
+1. Resolves the agent list (reports skipped ones).
+2. Collects in-scope Terragrunt HCL (`terragrunt.hcl`, `root.hcl`, `*.stack.hcl`, `_envcommon/*.hcl`; `--changed` narrows).
+3. Runs read-only scanners if installed (`terragrunt hcl validate`, `terragrunt find --dag --dependencies`) as evidence — unless `--no-tools`.
+4. Dispatches every agent in parallel with the canonical rubric (`global/prompts/iac-review/terragrunt.md`) + line-numbered context.
+5. Parses + dedups findings across agents, applies `--min-severity`.
+6. Prints the report (and `--pr` posts it). Exits non-zero (2) on any critical/high.
 
-## References
+## What it checks
 
-- [references/review-checklist.md](references/review-checklist.md) — the Terragrunt-specific failure catalog (include/dependency/generate/remote_state, values, DAG, state isolation, stacks, classic vs explicit).
-- [references/tooling.md](references/tooling.md) — `terragrunt` CLI checks (find/dag/validate) and how to read them.
-- [references/terraform-vs-terragrunt.md](references/terraform-vs-terragrunt.md) — the scope boundary: what this skill reviews vs what it hands to stark-terraform-review.
+Orchestration-layer **failure modes** — dependency/DAG (cycles, mock-output
+schema), state isolation, include hierarchy, `generate`/`remote_state` blocks,
+git source refspec, values/DRY pattern, stack composition. Resource/module HCL is
+explicitly handed to `stark-terraform-review`. Full rubric:
+`global/prompts/iac-review/terragrunt.md`.
 
-> Rules adapted from jfr992/terragrunt-skill (Apache-2.0) and TerraShark. See
-> `docs/specs/2026-06-24-terraform-terragrunt-review-research.md`.
+> Rules adapted from jfr992/terragrunt-skill (Apache-2.0) and TerraShark.
+> Research: `docs/specs/2026-06-24-terraform-terragrunt-review-research.md`.
