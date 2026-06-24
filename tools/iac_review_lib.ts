@@ -86,6 +86,7 @@ export interface IacReviewReceipt {
   agents: AgentName[];
   files_reviewed: string[];
   scanners_run: string[];
+  scanners_skipped: string[];
   agent_runs: AgentRunReport[];
   findings: IacFinding[];
   posted_pr: number | null;
@@ -99,6 +100,8 @@ export interface RunIacReviewOpts {
   agents?: string[] | null; // CLI override
   changed?: boolean;
   noTools?: boolean;
+  /** Vouch for the source so HCL-evaluating scanners (terragrunt) may run. */
+  trustSource?: boolean;
   minSeverity?: Severity;
   pr?: number | null;
   repo?: string | null;
@@ -128,10 +131,13 @@ function sleep(ms: number): Promise<void> {
 
 /** File globs per kind. Terragrunt is HCL-centric; Terraform is .tf-centric. */
 const TERRAFORM_RE = /\.(tf|tfvars)$|\.tftest\.hcl$/;
-const TERRAGRUNT_NAME_RE = /(^|\/)(terragrunt|root|terragrunt\.stack)\.hcl$/;
 
 function isLikelyTerragruntFile(rel: string): boolean {
-  return TERRAGRUNT_NAME_RE.test(rel) || /\.hcl$/.test(rel);
+  // Terragrunt live/catalog repos use many named .hcl files (account/region/env,
+  // _envcommon, units, stacks), so we accept .hcl broadly — but exclude
+  // Terraform *test* HCL, which belongs to the Terraform reviewer, not here.
+  if (/\.tftest\.hcl$/.test(rel)) return false;
+  return /\.hcl$/.test(rel);
 }
 
 // ---------------------------------------------------------------------------
@@ -354,8 +360,10 @@ function have(cmd: string): boolean {
 export function runScanners(
   kind: Kind,
   dir: string,
-): { report: string; ran: string[] } {
+  trustSource: boolean = false,
+): { report: string; ran: string[]; skipped: string[] } {
   const ran: string[] = [];
+  const skipped: string[] = [];
   const blocks: string[] = [];
   const tf = have("terraform") ? "terraform" : have("tofu") ? "tofu" : null;
 
@@ -365,22 +373,31 @@ export function runScanners(
     blocks.push(`### ${label}\n\n\`\`\`\n${out || "(no output)"}\n\`\`\``);
   };
 
+  // Static, side-effect-free scanners — safe on untrusted source.
   if (kind === "terraform" && tf) {
     add(`${tf} fmt -check`, spawnText(tf, ["fmt", "-check", "-recursive"], dir));
     add(`${tf} validate`, spawnText(tf, ["validate", "-no-color"], dir));
-  }
-  if (kind === "terragrunt" && have("terragrunt")) {
-    add("terragrunt hcl validate", spawnText("terragrunt", ["hcl", "validate"], dir));
-    add(
-      "terragrunt find --dag --dependencies",
-      spawnText("terragrunt", ["find", "--dag", "--dependencies"], dir),
-    );
   }
   if (have("tflint")) add("tflint", spawnText("tflint", ["--format", "compact"], dir));
   if (have("trivy")) add("trivy config", spawnText("trivy", ["config", "--quiet", "."], dir));
   if (have("checkov")) add("checkov", spawnText("checkov", ["-d", ".", "--compact", "--quiet"], dir));
 
-  return { report: blocks.join("\n\n"), ran };
+  // Terragrunt config parsing can evaluate HCL functions (e.g. `run_cmd`),
+  // so these EXECUTE the reviewed source. Only run them when the operator
+  // vouches for the source via --trust-source (sec-001).
+  if (kind === "terragrunt" && have("terragrunt")) {
+    if (trustSource) {
+      add("terragrunt hcl validate", spawnText("terragrunt", ["hcl", "validate"], dir));
+      add(
+        "terragrunt find --dag --dependencies",
+        spawnText("terragrunt", ["find", "--dag", "--dependencies"], dir),
+      );
+    } else {
+      skipped.push("terragrunt hcl validate / find (HCL exec — pass --trust-source)");
+    }
+  }
+
+  return { report: blocks.join("\n\n"), ran, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +505,10 @@ export async function callAgent(
       geminiCwd = cwd;
       geminiHome = setupGeminiHome("gemini-iac-review-", cwd, "iac-review", "plan");
       cmd = "gemini";
-      args = ["-m", resolveModel("gemini"), "--skip-trust", "-p", prompt];
+      // Prompt over stdin, NOT argv: the prompt embeds reviewed file contents
+      // (possibly .tfvars secrets), and argv is visible in `ps`/proc (sec-002).
+      args = ["-m", resolveModel("gemini"), "--skip-trust"];
+      stdin = prompt;
       env = makeGeminiEnv(geminiHome);
     }
   } catch (err) {
@@ -663,6 +683,9 @@ export function renderReport(receipt: IacReviewReceipt): string {
     `Agents: ${agents.join(", ") || "(none)"} · Files: ${receipt.files_reviewed.length}` +
       (receipt.scanners_run.length ? ` · Scanners: ${receipt.scanners_run.join(", ")}` : ""),
   );
+  if (receipt.scanners_skipped.length) {
+    lines.push(`_Scanners skipped: ${receipt.scanners_skipped.join("; ")}_`);
+  }
   const runBits = agent_runs.map(
     (r) => `${r.agent}${r.ok ? "" : `✗(${r.error})`}${r.api_key_fallback ? "·apikey" : ""}=${r.finding_count}`,
   );
@@ -718,11 +741,14 @@ export async function runIacReview(opts: RunIacReviewOpts): Promise<IacReviewRec
 
   let scannerReport = "";
   let scannersRan: string[] = [];
+  let scannersSkipped: string[] = [];
   if (!opts.noTools && files.length > 0) {
-    const s = runScanners(opts.kind, dir);
+    const s = runScanners(opts.kind, dir, !!opts.trustSource);
     scannerReport = s.report;
     scannersRan = s.ran;
+    scannersSkipped = s.skipped;
     if (scannersRan.length) log(`scanners: ${scannersRan.join(", ")}`);
+    for (const sk of scannersSkipped) log(`scanner skipped: ${sk}`);
   }
 
   const receipt: IacReviewReceipt = {
@@ -731,6 +757,7 @@ export async function runIacReview(opts: RunIacReviewOpts): Promise<IacReviewRec
     agents,
     files_reviewed: files.map((f) => f.rel),
     scanners_run: scannersRan,
+    scanners_skipped: scannersSkipped,
     agent_runs: [],
     findings: [],
     posted_pr: null,

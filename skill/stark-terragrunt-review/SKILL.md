@@ -44,6 +44,7 @@ Raw input: `$ARGUMENTS`
 - `--agents a,b` — LLMs to run (claude|codex|gemini). Overrides config.
 - `--changed` — only `.hcl` changed vs the git merge-base / working tree.
 - `--no-tools` — skip host scanners.
+- `--trust-source` — allow the HCL-**evaluating** Terragrunt scanners (`terragrunt hcl validate`, `find --dag`). These execute the reviewed config (Terragrunt can eval `run_cmd`), so they're **off by default** and should only be enabled for source you trust (e.g. your own repo). Untrusted/PR review: leave off.
 - `--min-severity S` — `critical|high|medium|low` floor.
 - `--pr N --repo O/R` — post merged findings to PR N (first agent's GitHub App).
 - `--dry-run` — resolve only, dispatch nothing.
@@ -60,7 +61,7 @@ node --experimental-strip-types --no-warnings "$TOOLS/iac_review.ts" \
 The dispatcher:
 1. Resolves the agent list (reports skipped ones).
 2. Collects in-scope Terragrunt HCL (`terragrunt.hcl`, `root.hcl`, `*.stack.hcl`, `_envcommon/*.hcl`; `--changed` narrows).
-3. Runs read-only scanners if installed (`terragrunt hcl validate`, `terragrunt find --dag --dependencies`) as evidence — unless `--no-tools`.
+3. Runs the HCL-evaluating Terragrunt scanners (`terragrunt hcl validate`, `terragrunt find --dag --dependencies`) as evidence **only with `--trust-source`** — they execute the config (Terragrunt can eval `run_cmd`), so they're off by default.
 4. Dispatches every agent in parallel with the canonical rubric (`global/prompts/iac-review/terragrunt.md`) + line-numbered context.
 5. Parses + dedups findings across agents, applies `--min-severity`.
 6. Prints the report (and `--pr` posts it). Exits non-zero (2) on any critical/high.

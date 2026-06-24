@@ -32,12 +32,18 @@ import {
   type Severity,
 } from "./iac_review_lib.ts";
 
+const SEVERITIES = new Set<Severity>(["critical", "high", "medium", "low"]);
+function isSeverity(v: string): v is Severity {
+  return SEVERITIES.has(v as Severity);
+}
+
 function parseArgs(argv: string[]): {
   kind: Kind | null;
   target: string;
   agents: string[] | null;
   changed: boolean;
   noTools: boolean;
+  trustSource: boolean;
   minSeverity: Severity | null;
   pr: number | null;
   repo: string | null;
@@ -52,6 +58,7 @@ function parseArgs(argv: string[]): {
     agents: null as string[] | null,
     changed: false,
     noTools: false,
+    trustSource: false,
     minSeverity: null as Severity | null,
     pr: null as number | null,
     repo: null as string | null,
@@ -70,7 +77,13 @@ function parseArgs(argv: string[]): {
       case "--agents": o.agents = String(next() ?? "").split(",").map((s) => s.trim()).filter(Boolean); break;
       case "--changed": o.changed = true; break;
       case "--no-tools": o.noTools = true; break;
-      case "--min-severity": o.minSeverity = next() as Severity; break;
+      case "--trust-source": o.trustSource = true; break;
+      case "--min-severity": {
+        const v = String(next() ?? "").toLowerCase();
+        if (!isSeverity(v)) throw new Error(`--min-severity must be one of critical|high|medium|low (got '${v}')`);
+        o.minSeverity = v;
+        break;
+      }
       case "--pr": o.pr = Number(next()); break;
       case "--repo": o.repo = next() ?? null; break;
       case "--timeout": o.timeout = Number(next()); break;
@@ -92,6 +105,7 @@ Usage: iac_review.ts --kind terraform|terragrunt [path] [options]
   --agents a,b       agents to run (claude,codex,gemini); overrides config
   --changed          review only changed HCL (git)
   --no-tools         skip host scanners
+  --trust-source     allow HCL-evaluating scanners (terragrunt) — trusted source only
   --min-severity S   critical|high|medium|low floor
   --pr N --repo O/R  post findings to PR N
   --timeout SEC      per-agent timeout
@@ -128,6 +142,7 @@ async function main(): Promise<void> {
     agents: opts.agents,
     changed: opts.changed,
     noTools: opts.noTools,
+    trustSource: opts.trustSource,
     minSeverity: opts.minSeverity ?? undefined,
     pr: opts.pr,
     repo: opts.repo,
@@ -140,6 +155,18 @@ async function main(): Promise<void> {
     process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
   } else {
     process.stdout.write(renderReport(receipt) + "\n");
+  }
+
+  // sec-003: a review where every agent failed is INCONCLUSIVE, not clean —
+  // don't let it fail open with a green exit. Exit 3 so a gate can't mistake
+  // total dispatch failure for "no findings".
+  if (!receipt.dry_run && receipt.agents.length > 0) {
+    const succeeded = receipt.agent_runs.filter((r) => r.ok).length;
+    if (succeeded === 0) {
+      const errs = receipt.agent_runs.map((r) => `${r.agent}:${r.error}`).join(", ");
+      process.stderr.write(`INCONCLUSIVE: all ${receipt.agents.length} agent(s) failed (${errs}) — no review was produced\n`);
+      process.exit(3);
+    }
   }
 
   // Non-zero exit when critical/high findings remain (useful as a gate).
