@@ -676,8 +676,13 @@ export function renderReport(receipt: IacReviewReceipt): string {
   const counts: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const f of findings) counts[f.severity]++;
 
+  // Concise target label — never leak an absolute local/scratchpad path into a
+  // posted PR comment; show the trailing path segments only.
+  const segs = receipt.target.replace(/\/+$/, "").split("/").filter(Boolean);
+  const targetLabel = segs.length <= 3 ? receipt.target : `…/${segs.slice(-3).join("/")}`;
+
   const lines: string[] = [];
-  lines.push(`# ${kind} review — ${receipt.target}`);
+  lines.push(`# ${kind} review — \`${targetLabel}\``);
   lines.push("");
   lines.push(
     `Agents: ${agents.join(", ") || "(none)"} · Files: ${receipt.files_reviewed.length}` +

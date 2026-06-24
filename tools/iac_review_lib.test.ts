@@ -5,8 +5,30 @@ import {
   resolveAgents,
   parseFindings,
   dedupeFindings,
+  renderReport,
   type IacFinding,
+  type IacReviewReceipt,
 } from "./iac_review_lib.ts";
+
+test("renderReport: never leaks an absolute local path into the title", () => {
+  const receipt: IacReviewReceipt = {
+    kind: "terraform",
+    target: "/private/tmp/claude-501/abc/scratchpad/devops-infra-pr484/terragrunt/modules/gcp/organization_audit_config",
+    agents: ["codex"],
+    files_reviewed: ["main.tf"],
+    scanners_run: [],
+    scanners_skipped: [],
+    agent_runs: [{ agent: "codex", model: "gpt-5.5", ok: true, error: null, finding_count: 0, duration_s: 1, api_key_fallback: false }],
+    findings: [],
+    posted_pr: null,
+    posted_ok: null,
+    dry_run: false,
+  };
+  const out = renderReport(receipt);
+  assert.ok(!out.includes("/private/tmp"), "must not leak the scratchpad path");
+  assert.ok(out.includes("organization_audit_config"), "should keep the meaningful tail");
+  assert.ok(out.includes("…/"), "should show a truncated label");
+});
 
 test("resolveAgents: CLI overrides config, filters unknown, dedupes, preserves order", () => {
   const { agents, skipped } = resolveAgents(
