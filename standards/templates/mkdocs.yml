@@ -12,6 +12,7 @@ nav:
   - Specs: specs/
   - Plans: plans/
   - ADRs: adr/
+  - Retros: retros/
   - Guides: guides/
   - Reference: reference/
   - Architecture: architecture/
