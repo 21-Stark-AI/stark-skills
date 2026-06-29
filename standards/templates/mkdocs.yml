@@ -9,10 +9,10 @@ plugins:
   - search
 nav:
   - Start Here: index.md
-  - Specs: spec/
-  - Plans: plan/
+  - Specs: specs/
+  - Plans: plans/
   - ADRs: adr/
-  - Retros: retro/
+  - Retros: retros/
   - Guides: guides/
   - Reference: reference/
   - Architecture: architecture/
