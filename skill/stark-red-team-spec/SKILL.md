@@ -1,5 +1,5 @@
 ---
-name: stark-red-team-design
+name: stark-red-team-spec
 description: >-
   Adversarial red-team review of a design doc. 5 personas (security-trust,
   reliability-distsys, data, product-dx, cost-ops) attack the design and emit
@@ -12,7 +12,7 @@ revision: 63a8c794adafa2df8a713b4dcf9743a09e3c7cfc
 revision_date: 2026-05-18T19:17:41Z
 ---
 
-# stark-red-team-design
+# stark-red-team-spec
 
 Adversarial committee challenge of a design document. 5 personas attack the
 design from their viewpoints and emit findings with counter-proposals,
@@ -31,7 +31,7 @@ regret in 6 months?"**
 
 ```bash
 TOOLS="${STARK_RED_TEAM_TOOLS:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review}/tools}"
-node --experimental-strip-types "$TOOLS/preflight.ts" --workflow stark-red-team-design --json
+node --experimental-strip-types "$TOOLS/preflight.ts" --workflow stark-red-team-spec --json
 ```
 
 - `overall == "blocked"` → print failing checks, stop. In automation contexts,
@@ -66,7 +66,7 @@ TOOLS = ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review}/tools
 
 ### 1.1 Validate input
 
-- Confirm `<design-path>` was provided. If not: `Usage: /stark-red-team-design <path>`.
+- Confirm `<design-path>` was provided. If not: `Usage: /stark-red-team-spec <path>`.
 - Confirm the file exists. If not, search candidates:
   ```bash
   find docs/ -name "*${name}*" -o -name "*${name}*.md" 2>/dev/null | head -5

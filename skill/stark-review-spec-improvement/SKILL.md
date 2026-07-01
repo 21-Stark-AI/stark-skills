@@ -1,5 +1,5 @@
 ---
-name: stark-review-design-improvement
+name: stark-review-spec-improvement
 description: >-
   Improve design review prompts from assessment feedback. Wraps /stark-review-improvement for design-review prompts.
 argument-hint: (reads assessment from context or design-review history)
@@ -9,28 +9,28 @@ revision: ea7268a18edb159e040db78148f2ab9cb324d76a
 revision_date: 2026-05-03T06:43:43Z
 ---
 
-# stark-review-design-improvement
+# stark-review-spec-improvement
 
-Improve design/spec review prompts based on assessment feedback from `/stark-review-design` runs.
+Improve design/spec review prompts based on assessment feedback from `/stark-review-spec` runs.
 
 This is a wrapper around `/stark-review-improvement` that:
 1. Sets `--prompts-dir design-review` (targets `global/prompts/design-review/{agent}/`)
-2. Looks for assessments in `~/.claude/code-review/history/design-reviews/` or in conversation context (the "Prompt Improvement Assessment" section from a `/stark-review-design` run)
+2. Looks for assessments in `~/.claude/code-review/history/design-reviews/` or in conversation context (the "Prompt Improvement Assessment" section from a `/stark-review-spec` run)
 3. Uses `tools/stark_review_doc.ts` as the orchestrator (not `multi_review.ts`)
 
 ## Usage
 
 ```
-/stark-review-design-improvement
+/stark-review-spec-improvement
 ```
 
-Typically invoked after a `/stark-review-design` run that produced a Prompt Improvement Assessment with actionable recommendations.
+Typically invoked after a `/stark-review-spec` run that produced a Prompt Improvement Assessment with actionable recommendations.
 
 ## How It Works
 
 ### Step 1: Find the assessment
 
-Look in the current conversation context for a "Prompt Improvement Assessment" section from a `/stark-review-design` run. The assessment typically looks like:
+Look in the current conversation context for a "Prompt Improvement Assessment" section from a `/stark-review-spec` run. The assessment typically looks like:
 
 ```markdown
 ## Prompt Improvement Assessment
@@ -78,6 +78,6 @@ These patterns appear frequently in design review assessments:
 
 | Failure | Recovery |
 |---------|----------|
-| No assessment in context or history | "Run /stark-review-design first, then invoke this skill" |
+| No assessment in context or history | "Run /stark-review-spec first, then invoke this skill" |
 | Assessment has no actionable items | Report "No actionable improvements found" and exit |
 | /stark-review-improvement not available | Error — skill dependency missing |

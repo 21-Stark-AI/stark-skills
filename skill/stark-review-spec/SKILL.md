@@ -1,5 +1,5 @@
 ---
-name: stark-review-design
+name: stark-review-spec
 description: >-
   Multi-domain design/spec review with lead/wing fix loop. Codex (gpt-5.5, xhigh
   reasoning) reviews 8 domains in parallel; Claude (opus-4-8) wing fixes findings.
@@ -17,9 +17,9 @@ skill captures the path, validates basics, delegates to the TS dispatcher with
 
 ## Preflight
 
-Run [standard preflight](../../standards/preflight.md) with `--workflow stark-review-design`.
+Run [standard preflight](../../standards/preflight.md) with `--workflow stark-review-spec`.
 
-# stark-review-design
+# stark-review-spec
 
 Lead/wing multi-round design review:
 
@@ -78,7 +78,7 @@ path to `DOC` — **never `path`**: under zsh the lowercase `path` parameter is
 tied to `$PATH`, so `path=…` silently clobbers the command search path and
 every dispatched `codex`/`node`/`gh` call dies with `agent_unavailable`.
 
-- If no `DOC`: error "Usage: /stark-review-design <path>" and abort.
+- If no `DOC`: error "Usage: /stark-review-spec <path>" and abort.
 - If `DOC` looks like a partial name (no `/`), `find docs/ -name "*${DOC}*"
   -o -name "*${DOC}*.md" 2>/dev/null | head -5` to suggest matches.
 - Repo dir defaults to the current working directory. Capture it BEFORE

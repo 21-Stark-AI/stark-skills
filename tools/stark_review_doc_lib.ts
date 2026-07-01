@@ -1,7 +1,7 @@
 /**
  * Pure helpers for the doc-review dispatcher (`stark_review_doc.ts`).
  *
- * Shared by /stark-review-design and /stark-review-plan. No I/O at the top
+ * Shared by /stark-review-spec and /stark-review-plan. No I/O at the top
  * level; functions that touch disk take explicit roots. Designed for
  * unit-test friendliness — every step that has an interesting branch lives
  * here behind a pure function.

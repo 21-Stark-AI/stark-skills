@@ -41,10 +41,10 @@ Review artifacts before they ship. Each review skill dispatches the enabled LLM 
 | Skill | What it reviews | When to use |
 |-------|----------------|-------------|
 | `/stark-review` | PR code changes | Triage-selected domains, 1 LLM × N domains — fast, cheap, default agent configurable per domain. |
-| [`/stark-review-design`](skill/stark-review-design/SKILL.md) | Architecture and design docs | Before committing to a design. Reviews across 8 domains (completeness, security, scope, etc.). |
+| [`/stark-review-spec`](skill/stark-review-spec/SKILL.md) | Architecture and design docs | Before committing to a design. Reviews across 8 domains (completeness, security, scope, etc.). |
 | [`/stark-review-plan`](docs/skills/stark-review-plan/usage.md) | Execution plans and deployment plans | Before executing. Adversarial SRE review across 4 failure vectors (completeness, security, sequencing, viability) — assumes the plan will break. |
 | [`/stark-review-improvement`](docs/skills/stark-review-improvement/usage.md) | Review prompt effectiveness | After reviews produce too many false positives. Tunes agent prompts based on assessment data. |
-| [`/stark-review-design-improvement`](skill/stark-review-design-improvement/SKILL.md) | Design review prompt effectiveness | After design reviews produce too many false positives. Wraps `/stark-review-improvement` with design-review prompts. |
+| [`/stark-review-spec-improvement`](skill/stark-review-spec-improvement/SKILL.md) | Design review prompt effectiveness | After design reviews produce too many false positives. Wraps `/stark-review-improvement` with design-review prompts. |
 
 **Best practice:** Run `/stark-review-plan` on specs *before* implementation starts. It's cheaper to fix a plan than to fix code. Use `/stark-review` on every PR.
 
@@ -54,12 +54,12 @@ Turn ideas into tracked, phased GitHub issues, then execute them autonomously.
 
 | Skill | What it does | When to use |
 |-------|-------------|-------------|
-| [`/stark-design-to-plan`](docs/skills/stark-design-to-plan/usage.md) | Generate implementation plan from design doc | Starting a new feature. Enabled agents generate plans from a brainstormed design, then cross-review one another before synthesis. |
+| [`/stark-spec-to-plan`](docs/skills/stark-spec-to-plan/usage.md) | Generate implementation plan from design doc | Starting a new feature. Enabled agents generate plans from a brainstormed design, then cross-review one another before synthesis. |
 | [`/stark-plan-to-tasks`](docs/skills/stark-plan-to-tasks/usage.md) | Decompose a spec into phased GitHub issues | After a spec/plan is reviewed and approved. 3 LLM passes: quality gate → decomposition → validation. |
 | [`/stark-phase-execute`](docs/skills/stark-phase-execute/usage.md) | Autonomously implement all tasks in a phase | When you have GitHub issues ready. Branches, implements, PRs, reviews, merges — zero intervention. |
 | [`/stark-copilot`](skill/stark-copilot/SKILL.md) | Autonomous implementation with paired lead/wing agents | When you want a paired lead/wing build loop — lead implements, wing reviews diff, fix-loop until approved. |
 
-**Best practice:** The full pipeline is: brainstorm a design (`superpowers:brainstorming`) → `/stark-review-design` → `/stark-design-to-plan` → `/stark-review-plan` → `/stark-plan-to-tasks` → `/stark-phase-execute`. Each step feeds the next. Don't skip the review steps — unreviewed plans produce ambiguous issues that block autonomous execution.
+**Best practice:** The full pipeline is: brainstorm a design (`superpowers:brainstorming`) → `/stark-review-spec` → `/stark-spec-to-plan` → `/stark-review-plan` → `/stark-plan-to-tasks` → `/stark-phase-execute`. Each step feeds the next. Don't skip the review steps — unreviewed plans produce ambiguous issues that block autonomous execution.
 
 ### Refactoring
 

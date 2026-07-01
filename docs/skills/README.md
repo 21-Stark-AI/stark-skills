@@ -12,9 +12,9 @@ Two patterns recur throughout. **Generate** skills (blue) dispatch 3 agents to i
 
 Designs are produced by `superpowers:brainstorming` (outside this repo). From there:
 
-**Step 1 — `/stark-review-design`** puts that design through 12 domain specialists (general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility, test-plan) running across 2-3 agents. It fixes issues autonomously for up to 3 rounds, then runs a final review-only pass.
+**Step 1 — `/stark-review-spec`** puts that design through 12 domain specialists (general, completeness, security, scope, api-design, data-modeling, consistency, scalability, extensibility, resilience, accessibility, test-plan) running across 2-3 agents. It fixes issues autonomously for up to 3 rounds, then runs a final review-only pass.
 
-**Step 2 — `/stark-design-to-plan`** converts the reviewed design into a phased implementation plan. 3-generate + 6-cross-review pattern, scoring on completeness, feasibility, phasing, risk coverage, and testability.
+**Step 2 — `/stark-spec-to-plan`** converts the reviewed design into a phased implementation plan. 3-generate + 6-cross-review pattern, scoring on completeness, feasibility, phasing, risk coverage, and testability.
 
 **Step 3 — `/stark-review-plan`** reviews the implementation plan through 10 adversarial domains (general, completeness, security, feasibility, operability, sequencing, rollback, risk, gates, timeline). It assumes the plan will fail and hunts for where it will break.
 
@@ -30,11 +30,11 @@ Designs are produced by `superpowers:brainstorming` (outside this repo). From th
 
 The pipeline handles the happy path from idea to code. The remaining skills handle everything around it.
 
-**Adversarial review** — `/stark-red-team-design` and `/stark-red-team-plan` put a design or execution plan through a committee of adversarial personas, surfacing challenges the domain reviews miss. Challenge-only — no fix loop.
+**Adversarial review** — `/stark-red-team-spec` and `/stark-red-team-plan` put a design or execution plan through a committee of adversarial personas, surfacing challenges the domain reviews miss. Challenge-only — no fix loop.
 
 **Workflow** — `/stark-session` manages work sessions (briefing on start, cleanup on end). `/stark-release` cuts versioned releases with changelog and tags. `/stark-persona` adds character voices to sessions — weighted selection, date-aware combos, and catchphrases. `/stark-gh-user` switches the active GitHub identity to dodge per-user API rate limits.
 
-**Maintenance** — `/stark-housekeeping` audits stale issues, dead branches, and worktree remnants. `/stark-review-improvement` tunes review prompts based on false-positive analysis; `/stark-review-design-improvement` does the same for design-review prompts.
+**Maintenance** — `/stark-housekeeping` audits stale issues, dead branches, and worktree remnants. `/stark-review-improvement` tunes review prompts based on false-positive analysis; `/stark-review-spec-improvement` does the same for design-review prompts.
 
 **Documentation** — `/stark-init-docs` scaffolds a docs structure (ADRs, runbooks, MkDocs config).
 

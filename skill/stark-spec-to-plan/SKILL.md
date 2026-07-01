@@ -1,5 +1,5 @@
 ---
-name: stark-design-to-plan
+name: stark-spec-to-plan
 description: >-
   Convert design docs into phased implementation plans via paired lead/wing agents. Lead drafts, wing reviews, fix-loop until approved. Use for plan from design/spec.
 argument-hint: "<path> [--lead claude|codex|gemini] [--wing claude|codex|gemini] [--max-rounds N] [--timeout N] [--wing-timeout N] [--dry-run] [--force]"
@@ -13,7 +13,7 @@ revision_date: 2026-05-19T05:45:53Z
 
 Run environment validation before proceeding:
 ```bash
-node --experimental-strip-types ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review}/tools/preflight.ts --workflow stark-design-to-plan --json
+node --experimental-strip-types ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review}/tools/preflight.ts --workflow stark-spec-to-plan --json
 ```
 Parse the JSON result:
 - If `overall` is "blocked": print the failing checks and stop. Do not proceed.
@@ -21,7 +21,7 @@ Parse the JSON result:
 - If `overall` is "ready": continue silently.
 - In non-interactive automation contexts, a blocked preflight must emit a `preflight_check` event with `status=blocked`, append an entry to `~/.claude/code-review/alerts.jsonl`, and exit non-zero so the trigger is marked failed.
 
-# stark-design-to-plan
+# stark-spec-to-plan
 
 Generate a phased implementation plan from a design document via a paired **lead/wing** subagent loop:
 
@@ -33,7 +33,7 @@ This is the cheaper, lower-variance sibling of the prior 3-agent tournament. Pai
 
 This skill is thin: it orchestrates `tools/plan_dispatch.ts`, which owns the dispatch, the review→fix loop, and the JSON verdict parsing. Do not re-implement that logic here.
 
-Fills the pipeline gap: `/stark-review-design` → **`/stark-design-to-plan`** → `/stark-review-plan` → `/stark-plan-to-tasks`.
+Fills the pipeline gap: `/stark-review-spec` → **`/stark-spec-to-plan`** → `/stark-review-plan` → `/stark-plan-to-tasks`.
 
 ## Arguments
 
@@ -63,7 +63,7 @@ PROMPTS="${STARK_REVIEW_PROMPTS:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review
 
 ### 1.1 Validate input
 
-- Confirm `<path>` argument was provided. If not, error: "Usage: /stark-design-to-plan <path>"
+- Confirm `<path>` argument was provided. If not, error: "Usage: /stark-spec-to-plan <path>"
 - Confirm file exists and is readable. If not found and path looks like a partial name (no directory separator), search:
   ```bash
   find docs/ -name "*${path}*" -o -name "*${path}*.md" 2>/dev/null | head -5
@@ -221,7 +221,7 @@ Most failure modes are owned by the dispatcher (listed for orchestrator awarenes
 
 | Scenario | Dispatcher behavior | Orchestrator action |
 |---|---|---|
-| No path provided | (Pre-dispatch) | "Usage: /stark-design-to-plan <path>" |
+| No path provided | (Pre-dispatch) | "Usage: /stark-spec-to-plan <path>" |
 | File not found | (Pre-dispatch) | Search docs/ for candidates |
 | Uncommitted changes | (Pre-dispatch) | "Commit or stash first, or use --force" |
 | `--lead` == `--wing` | `error=lead_eq_wing` returned immediately | Refuse before dispatch in §1; never reach dispatcher |
