@@ -56,7 +56,7 @@ HISTORY_SUB  = (org/repo/pr structure)
 
 Look in the **current conversation context** for either:
 
-- A "Prompt Improvement Assessment" section (from a `/stark-review` or `/stark-review-design` run)
+- A "Prompt Improvement Assessment" section (from a `/stark-review` or `/stark-review-spec` run)
 - A `prompt-assessment.md` or `*.design-review.md` file path referenced in conversation
 
 If neither exists, check the most recent history directory for the matching review type:

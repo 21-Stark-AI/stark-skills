@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// stark-review-design Phase 4 renderer. Takes the classified rounds payload
+// stark-review-spec Phase 4 renderer. Takes the classified rounds payload
 // (output of plan_review_dispatch.py + the skill's per-finding classification
 // overlay) and emits the consolidated markdown summary.
 //

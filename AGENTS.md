@@ -46,7 +46,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 
 ### Dispatch tools (TS)
 - `tools/copilot_dispatch.ts` — `/stark-copilot` lead/wing implementation dispatcher (replaces former `scripts/copilot_dispatch.py`). Owns the worktree + diff + review→fix loop + JSON verdict parsing. Also the canonical home for shared agent-dispatch primitives now imported by `plan_dispatch.ts`: `run`, `buildAgentEnv`, `setupGeminiHome`, `makeGeminiEnv`, `tryGeminiApiKeyFallback`, `releaseAgentTempDir`, plus the verdict parsers.
-- `tools/plan_dispatch.ts` — `/stark-design-to-plan` lead/wing plan-generation dispatcher (replaces the deleted `scripts/design_to_plan_dispatch.py`, which used a 3-agent tournament + cross-review). Round 1: lead reads design + `generate.md`, emits markdown plan draft. Wing reviews via `review.md`, returns `{verdict, blocking_findings[], non_blocking_suggestions[], summary}` JSON. On `revise`, lead receives prior draft + findings + `revise.md`, emits a new draft. Loops until `approve` / `block` / `--max-rounds` / empty-draft / unchanged-from-prior. No worktree (plans are text). Same final-verdict union + JSON output shape as copilot. Defaults: lead=`claude`, wing=`codex`, max-rounds=4, lead-timeout=900s, wing-timeout=600s.
+- `tools/plan_dispatch.ts` — `/stark-spec-to-plan` lead/wing plan-generation dispatcher (replaces the deleted `scripts/design_to_plan_dispatch.py`, which used a 3-agent tournament + cross-review). Round 1: lead reads design + `generate.md`, emits markdown plan draft. Wing reviews via `review.md`, returns `{verdict, blocking_findings[], non_blocking_suggestions[], summary}` JSON. On `revise`, lead receives prior draft + findings + `revise.md`, emits a new draft. Loops until `approve` / `block` / `--max-rounds` / empty-draft / unchanged-from-prior. No worktree (plans are text). Same final-verdict union + JSON output shape as copilot. Defaults: lead=`claude`, wing=`codex`, max-rounds=4, lead-timeout=900s, wing-timeout=600s.
 
 ### TUI & session
 - `tools/stark_session_lib.ts` + `tools/stark_session.ts` — `/stark-session` data collector. Subcommands `start` and `end` return structured JSON; Claude renders the briefing/summary directly. Session-state, persona, alerts, skill-suggestions, healer-canary collectors hit pure-TS siblings; only `github_projects.py` remains. Replaces the deleted `session_tui*.py` ANSI/box-drawing renderer.
@@ -99,15 +99,15 @@ All skills live in `skill/stark-*/SKILL.md`; `install.sh` symlinks them for Clau
 
 ### Pipeline (end-to-end, in order)
 
-- `/stark-review-design <path>` — multi-agent design/spec review (N agents × 8 domains, default N=2)
-- `/stark-design-to-plan <path>` — generate implementation plan from design doc via paired lead/wing loop (default lead `claude`, wing `codex`); lead drafts, wing reviews and emits JSON verdict, fix-loop until approved. Cheaper and lower-variance than the prior 3-agent tournament.
+- `/stark-review-spec <path>` — multi-agent design/spec review (N agents × 8 domains, default N=2)
+- `/stark-spec-to-plan <path>` — generate implementation plan from design doc via paired lead/wing loop (default lead `claude`, wing `codex`); lead drafts, wing reviews and emits JSON verdict, fix-loop until approved. Cheaper and lower-variance than the prior 3-agent tournament.
 - `/stark-review-plan <path>` — multi-agent execution plan review (N agents × 4 adversarial domains, default N=2)
 - `/stark-plan-to-tasks <path> [--dry-run] [--cleanup <slug>]` — decompose plan into phased GitHub issues (3 LLM passes)
 - `/stark-phase-execute <plan-slug> [--dry-run]` — autonomous phase execution: implement all tasks, PR, review, merge, release, dashboard
 - `/stark-copilot <plan-or-prompt> [--lead AGENT] [--wing AGENT] [--plan-slug SLUG]` — autonomous implementation with paired lead/wing subagents; issue-driven mode when plan has been decomposed via `/stark-plan-to-tasks`
 - `/stark-review [PR_NUMBER]` — single-agent PR code review (1 LLM × triage-selected domains, fast/cheap). Fix-loop `test_command` is auto-detected from the **trusted** `--config-root` (never the PR worktree) via `detectTestCommand()` when unset — no brittle pinned command required.
 - `/stark-review-improvement [--prompts-dir DIR]` — improve prompts based on review assessment (PR or design/plan review)
-- `/stark-review-design-improvement` — improve design review prompts (wraps /stark-review-improvement with --prompts-dir design-review)
+- `/stark-review-spec-improvement` — improve design review prompts (wraps /stark-review-improvement with --prompts-dir design-review)
 
 ### Workflow & Ops
 

@@ -4,7 +4,7 @@
     "script_version": "1.0.0"
   },
   "skills": {
-    "stark-design-to-plan": {
+    "stark-spec-to-plan": {
       "hash": "d2ac1a09b5f929d8",
       "usage_quality": "ok",
       "internals_quality": "ok"
@@ -34,7 +34,7 @@
       "usage_quality": "ok",
       "internals_quality": "ok"
     },
-    "stark-review-design": {
+    "stark-review-spec": {
       "hash": "add05559dffc06c8",
       "usage_quality": "ok",
       "internals_quality": "ok"

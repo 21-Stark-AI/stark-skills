@@ -2,7 +2,7 @@
 /**
  * stark_review_doc — multi-round doc review with lead/wing fix loop.
  *
- * Shared dispatcher for /stark-review-design and /stark-review-plan.
+ * Shared dispatcher for /stark-review-spec and /stark-review-plan.
  * Selected with `--prompts-dir design-review|plan-review`.
  *
  *   Lead:  codex (gpt-5.5) at xhigh reasoning, dispatched per-domain in

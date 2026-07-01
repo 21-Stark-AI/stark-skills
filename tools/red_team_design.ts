@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `/stark-red-team-design` TS dispatcher.
+ * `/stark-red-team-spec` TS dispatcher.
  *
  * Thin wrapper around `tools/red_team_lib.ts`. The former Python entry
  * (`scripts/red_team_design_dispatch.py`) was deleted in Phase 4 of the

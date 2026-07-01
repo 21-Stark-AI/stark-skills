@@ -1,4 +1,4 @@
-# Debugging Dispatch Failures — stark-review-design
+# Debugging Dispatch Failures — stark-review-spec
 
 If sub-agents return 0 findings or errors, check the dispatch layer:
 
