@@ -60,8 +60,8 @@ PEACH="\033[38;5;216m" YEL="\033[38;5;229m" GRN="\033[38;5;150m"
 SAP="\033[38;5;117m"   RED="\033[38;5;211m" TEAL="\033[38;5;158m"
 MAR="\033[38;5;217m"   MAUVE="\033[38;5;141m" SKY="\033[38;5;117m"
 CTX_COL="\033[38;2;77;165;220m"    # #4da5dc — CTX label (context gauge)
-WND_COL="\033[38;2;120;55;85m"     # #783755 — WND label (5-hour window gauge)
-WEEK_COL="\033[38;2;177;219;217m"  # #b1dbd9 — WEEK label (5-hour reset countdown)
+FIVEHR_COL="\033[38;2;237;117;78m" # #ed754e — 5H label (5-hour window gauge)
+DAY_COL="\033[38;2;229;114;74m"    # #e5724a — 7D label (7-day window gauge)
 SEP=" ${DIM}|${R} "
 
 # Gauge heat ramp — 10 truecolor stops used by mkbar to shade each filled dot
@@ -109,15 +109,16 @@ fmt_n() { # token count → sets FN: "1.2k" / "145k" / "1.5M"
   fi
 }
 
-fmt_remain() { # reset_epoch [time_emoji] → sets FR: " ⏳ XdYh" or ""
+fmt_remain() { # reset_epoch [time_emoji] → sets FR: " ⏳ XdYh" or " XdYh" (emoji arg "") or ""
   FR=""
   [ -z "$1" ] || ! [ "$1" -gt 0 ] 2>/dev/null && return
-  local diff=$(( $1 - NOW )) e="${2:-\\u23f3}"
+  local diff=$(( $1 - NOW )) e="${2-\\u23f3}"
   [ "$diff" -le 0 ] && return
   local d=$(( diff / 86400 )) h=$(( (diff % 86400) / 3600 )) m=$(( (diff % 3600) / 60 ))
-  if [ "$d" -gt 0 ]; then FR=" ${e} ${d}d${h}h"
-  elif [ "$h" -gt 0 ]; then FR=" ${e} ${h}h${m}m"
-  else FR=" ${e} ${m}m"; fi
+  local lead=""; [ -n "$e" ] && lead="${e} "
+  if [ "$d" -gt 0 ]; then FR=" ${lead}${d}d${h}h"
+  elif [ "$h" -gt 0 ]; then FR=" ${lead}${h}h${m}m"
+  else FR=" ${lead}${m}m"; fi
 }
 
 # All gauges render at width 10, and for w=10 cell i's heat level is exactly
@@ -133,13 +134,6 @@ mkbar() { # pct → sets BAR: railed █ bar, each filled cell shaded by its lev
   (( filled > 10 )) && filled=10
   (( filled < 0 )) && filled=0
   BAR="${_BORD}▐${R}${_FB[filled]}${DIM}${_E10:0:10-filled}${_BORD}▌${R}"
-}
-
-rate_seg() { # section_emoji pct reset_epoch [time_emoji]
-  [ -z "$2" ] && return
-  local pct; printf -v pct '%.0f' "$2"
-  tcolor "$pct" 80 50; fmt_remain "$3" "$4"; mkbar "$pct"
-  seg2 "${TC}${1}${R} ${BAR} ${TC}${pct}%${FR}${R}"
 }
 
 gradient() { # text [palette] → sets GRAD: per-account color sweep
@@ -466,14 +460,20 @@ if _on cost && [ -n "$session_cost" ]; then
   seg2 "$c"
 fi
 
-# 5-hour rate-limit window: fixed-color text labels (WND for the usage bar,
-# WEEK for the reset countdown) instead of rate_seg's dynamic-colored emoji.
+# 5-hour rate-limit window: fixed-color "5H" label instead of a dynamic-
+# colored emoji; countdown is a bare duration, no emoji/label of its own.
 if _on five_hour_rl && [ -n "$five_pct" ]; then
   printf -v _fpct '%.0f' "$five_pct"
-  tcolor "$_fpct" 80 50; mkbar "$_fpct"; fmt_remain "$five_reset" "${WEEK_COL}WEEK${R}"
-  seg2 "${WND_COL}WND${R} ${BAR} ${TC}${_fpct}%${FR}${R}"
+  tcolor "$_fpct" 80 50; mkbar "$_fpct"; fmt_remain "$five_reset" ""
+  seg2 "${FIVEHR_COL}5H${R} ${BAR} ${TC}${_fpct}%${FR}${R}"
 fi
-_on weekly_rl && rate_seg "\U0001f4c5" "$week_pct" "$week_reset" "\\U0001f570\\ufe0f"
+# 7-day rate-limit window: fixed-color "7D" label instead of the dynamic-
+# colored 📅 emoji; countdown is a bare duration, matching 5H.
+if _on weekly_rl && [ -n "$week_pct" ]; then
+  printf -v _wpct '%.0f' "$week_pct"
+  tcolor "$_wpct" 80 50; mkbar "$_wpct"; fmt_remain "$week_reset" ""
+  seg2 "${DAY_COL}7D${R} ${BAR} ${TC}${_wpct}%${FR}${R}"
+fi
 
 _on tier_warn && [ "$over_200k" = "true" ] && seg2 "${RED}⚠️ 1M-tier${R}"
 
