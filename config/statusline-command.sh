@@ -5,8 +5,14 @@
 # Runs on every refresh tick (1s), so forks are the enemy:
 #   • one jq parses stdin AND statusline-segments.json together
 #   • account identity (~/.claude.json is big) is mtime-cached to a tab file
+#   • repo root / worktree / branch are read straight off .git files in bash
+#     (pointer file, commondir, HEAD) — no `git rev-parse` fork
 #   • remote URL is read from .git/config in bash (no `git remote` fork)
-#   • git status/diff only run when the git_dirty segment is enabled
+#   • the dirty scan (status + numstat, the priciest part) runs only when the
+#     git_dirty segment is enabled, in ONE process substitution, and its
+#     result is TTL-cached (4s) keyed on repo root — bursty event-driven
+#     re-renders are fork-free
+#   • gauge bars index precomputed shaded prefixes — no per-cell loop
 #   • helpers return via printf -v globals (TC/FN/FD/FR/GRAD) — no $(...) subshells
 
 # ── Extract all fields + segment visibility (single jq call) ─────────────
@@ -111,18 +117,19 @@ fmt_remain() { # reset_epoch [time_emoji] → sets FR: " ⏳ XdYh" or ""
   else FR=" ${e} ${m}m"; fi
 }
 
-mkbar() { # pct [width] → sets BAR: railed █ bar, each filled cell shaded by its level (green→red)
-  local pct=$1 w=${2:-10} i f='' e='' filled val idx
-  filled=$(( (pct * w + 50) / 100 ))
-  [ "$filled" -gt "$w" ] && filled=$w
-  [ "$filled" -lt 0 ] && filled=0
-  for (( i = 0; i < filled; i++ )); do
-    val=$(( (100 * i + 50) / w )); idx=$(( val / 10 )); (( idx > 9 )) && idx=9
-    f+="${_SHADE[idx]}█"
-  done
-  for (( i = filled; i < w; i++ )); do e+="░"; done
-  local BORD="\033[38;5;252m"   # bright neutral — contrasts both filled + empty cells
-  BAR="${BORD}▐${R}${f}${DIM}${e}${BORD}▌${R}"
+# All gauges render at width 10, and for w=10 cell i's heat level is exactly
+# _SHADE[i] ((100i+50)/10 = 10i+5 → idx i) — so the filled prefixes are built
+# once and mkbar becomes a pure array lookup + substring, no per-cell loop.
+_FB=("") _fb=""
+for (( _i = 0; _i < 10; _i++ )); do _fb+="${_SHADE[_i]}█"; _FB+=("$_fb"); done
+_E10="░░░░░░░░░░"
+_BORD="\033[38;5;252m"   # bright neutral rail — contrasts both filled + empty cells
+
+mkbar() { # pct → sets BAR: railed █ bar, each filled cell shaded by its level (green→red)
+  local filled=$(( ($1 * 10 + 50) / 100 ))
+  (( filled > 10 )) && filled=10
+  (( filled < 0 )) && filled=0
+  BAR="${_BORD}▐${R}${_FB[filled]}${DIM}${_E10:0:10-filled}${_BORD}▌${R}"
 }
 
 rate_seg() { # section_emoji pct reset_epoch [time_emoji]
@@ -179,59 +186,95 @@ gradient() { # text [palette] → sets GRAD: per-account color sweep
   printf -v GRAD '%b' "${out}${RST}"
 }
 
-# ── Git (consolidated calls) ─────────────────────────────────────────────
-wt_name="" repo_name="" git_branch="" git_dirty=""
+# ── Git (pure-bash discovery, TTL-cached dirty scan) ─────────────────────
+# Repo root / worktree / branch come straight off the filesystem (.git
+# pointer file, commondir, HEAD) — replaces the `git rev-parse` fork.
+wt_name="" repo_name="" git_branch="" git_dirty="" _root=""
 if [ -n "$cwd" ]; then
-  # Worktree + branch: single rev-parse
-  { read -r gc; read -r gd; read -r git_branch; } \
-    < <(git -C "$cwd" --no-optional-locks rev-parse --git-common-dir --git-dir --abbrev-ref HEAD 2>/dev/null)
-  [ -n "$gc" ] && [ -n "$gd" ] && [ "$gc" != "$gd" ] && wt_name=${cwd##*/}
+  _root="$cwd"
+  while [ -n "$_root" ] && [ ! -e "$_root/.git" ]; do _root="${_root%/*}"; done
+fi
+if [ -n "$_root" ]; then
+  gd="$_root/.git" gc=""
+  if [ -f "$gd" ]; then                       # pointer file: worktree/submodule
+    IFS= read -r _l < "$gd"
+    gd="${_l#gitdir: }"
+    [[ "$gd" != /* ]] && gd="$_root/$gd"
+    if [ -f "$gd/commondir" ]; then           # linked worktree → resolve common dir
+      IFS= read -r _cd < "$gd/commondir"
+      [[ "$_cd" != /* ]] && _cd="$gd/$_cd"
+      gc="$_cd" wt_name=${cwd##*/}
+    else gc="$gd"; fi                         # submodule: common == git dir
+  else gc="$gd"; fi
+
+  # Branch: parse HEAD directly — "ref: refs/heads/x" → x; detached → "HEAD"
+  # (matches `rev-parse --abbrev-ref HEAD`).
+  if [ -r "$gd/HEAD" ]; then
+    IFS= read -r _h < "$gd/HEAD"
+    case "$_h" in
+      "ref: refs/heads/"*) git_branch="${_h#ref: refs/heads/}" ;;
+      "ref: "*)            git_branch="${_h#ref: }" ;;
+      *)                   git_branch="HEAD" ;;
+    esac
+  fi
 
   # Repo name: read `[remote "origin"] url` straight out of the common-dir
   # config file — pure bash, replaces a `git remote get-url` fork. (Skips
   # url.*.insteadOf rewrites, which don't change the basename.)
-  if [ -n "$gc" ]; then
-    [[ "$gc" != /* ]] && gc="$cwd/$gc"
-    if [ -r "$gc/config" ]; then
-      _sect=0
-      while IFS= read -r cline; do
-        if [[ "$cline" =~ ^[[:space:]]*\[ ]]; then
-          [[ "$cline" == *'[remote "origin"]'* ]] && _sect=1 || _sect=0
-        elif (( _sect )) && [[ "$cline" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*([^[:space:]]+) ]]; then
-          repo_name="${BASH_REMATCH[1]##*/}"; repo_name=${repo_name%.git}
-          break
-        fi
-      done < "$gc/config"
-    fi
+  if [ -r "$gc/config" ]; then
+    _sect=0
+    while IFS= read -r cline; do
+      if [[ "$cline" =~ ^[[:space:]]*\[ ]]; then
+        [[ "$cline" == *'[remote "origin"]'* ]] && _sect=1 || _sect=0
+      elif (( _sect )) && [[ "$cline" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*([^[:space:]]+) ]]; then
+        repo_name="${BASH_REMATCH[1]##*/}"; repo_name=${repo_name%.git}
+        break
+      fi
+    done < "$gc/config"
   fi
 
-  # Dirty-state scan is the priciest part of the tick — only pay for it
-  # when the segment is actually displayed (needs both branch + dirty on).
+  # Dirty-state scan is the priciest part of the tick — only pay for it when
+  # the segment is displayed (branch + dirty both on), and TTL-cache the
+  # result (4s, keyed on repo root): event-driven renders burst, and a burst
+  # should fork git exactly once. Both git calls share one process
+  # substitution, split by a \x01 sentinel line.
   if [ -n "$git_branch" ] && _on git_branch && _on git_dirty; then
-    # File counts: single porcelain call replaces diff + diff --cached + ls-files
-    changed=0 untracked=0
-    while IFS= read -r line; do
-      x=${line:0:1} y=${line:1:1}
-      if [ "$x" = "?" ]; then (( untracked++ ))
-      else [ "$x" != " " ] && (( changed++ )); [ "$y" != " " ] && (( changed++ )); fi
-    done < <(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null)
+    _gcf="$HOME/.claude/.statusline-git-dirty-cache" _hit=""
+    if [ -r "$_gcf" ]; then
+      { IFS= read -r _ce; IFS= read -r _cr; IFS= read -r git_dirty; } < "$_gcf"
+      if [[ "$_ce" =~ ^[0-9]+$ ]] && [ "$_cr" = "$_root" ] && (( NOW - _ce < 4 )); then
+        _hit=1
+      else git_dirty=""; fi
+    fi
+    if [ -z "$_hit" ]; then
+      # File counts: porcelain replaces diff + diff --cached + ls-files;
+      # `diff HEAD --numstat` covers staged+unstaged lines in one call.
+      changed=0 untracked=0 la=0 lr=0 _num=""
+      while IFS= read -r line; do
+        [ "$line" = $'\x01' ] && { _num=1; continue; }
+        if [ -z "$_num" ]; then
+          x=${line:0:1} y=${line:1:1}
+          if [ "$x" = "?" ]; then (( untracked++ ))
+          else [ "$x" != " " ] && (( changed++ )); [ "$y" != " " ] && (( changed++ )); fi
+        else
+          added="${line%%$'\t'*}" _rest="${line#*$'\t'}" removed="${_rest%%$'\t'*}"
+          [[ "$added" =~ ^[0-9]+$ ]] && la=$((la + added))
+          [[ "$removed" =~ ^[0-9]+$ ]] && lr=$((lr + removed))
+        fi
+      done < <(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null
+               printf '\x01\n'
+               git -C "$cwd" --no-optional-locks diff HEAD --numstat 2>/dev/null)
 
-    # `git diff HEAD --numstat` covers both unstaged and staged in one call
-    # (single fork instead of `diff` + `diff --cached`). Sum in pure bash.
-    la=0 lr=0
-    while read -r added removed _; do
-      [[ "$added" =~ ^[0-9]+$ ]] && la=$((la + added))
-      [[ "$removed" =~ ^[0-9]+$ ]] && lr=$((lr + removed))
-    done < <(git -C "$cwd" --no-optional-locks diff HEAD --numstat 2>/dev/null)
-
-    p=""
-    [ "$changed" -gt 0 ]   && p="\U0001f4c4 ${changed}"
-    [ "$untracked" -gt 0 ] && { [ -n "$p" ] && p="${p} "; p="${p}\U0001f50e ${untracked}"; }
-    dp=""
-    [ "$la" -gt 0 ] && dp="${GRN}+${la}${R}"
-    [ "$lr" -gt 0 ] && { [ -n "$dp" ] && dp="${dp} "; dp="${dp}${RED}-${lr}${R}"; }
-    [ -n "$dp" ] && { [ -n "$p" ] && p="${p} "; p="${p}${dp}"; }
-    git_dirty="$p"
+      p=""
+      [ "$changed" -gt 0 ]   && p="\U0001f4c4 ${changed}"
+      [ "$untracked" -gt 0 ] && { [ -n "$p" ] && p="${p} "; p="${p}\U0001f50e ${untracked}"; }
+      dp=""
+      [ "$la" -gt 0 ] && dp="${GRN}+${la}${R}"
+      [ "$lr" -gt 0 ] && { [ -n "$dp" ] && dp="${dp} "; dp="${dp}${RED}-${lr}${R}"; }
+      [ -n "$dp" ] && { [ -n "$p" ] && p="${p} "; p="${p}${dp}"; }
+      git_dirty="$p"
+      printf '%s\n%s\n%s\n' "$NOW" "$_root" "$git_dirty" > "$_gcf" 2>/dev/null
+    fi
   fi
 fi
 
