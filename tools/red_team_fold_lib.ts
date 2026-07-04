@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { extractVerdictJson, isPlainObject } from "./copilot_dispatch.ts";
 import { parseFixPlanOutput } from "./red_team_lib.ts";
 import type { FixPlanMove, RedTeamFixPlan } from "./red_team_lib.ts";
+import { applyPatches, type FixerPatch } from "./stark_review_doc_lib.ts";
 
 /** Outcome the fold host applies to a single fix-plan move. */
 export type Disposition = "accept" | "modify" | "reject" | "apply_failed";
@@ -219,4 +220,39 @@ export function parseDispositions(
   }
 
   return { dispositions, invalid };
+}
+
+/**
+ * Apply the `accept`/`modify` dispositions' patches to `doc` via the shared
+ * `applyPatches` engine, then reconcile the outcome back onto the
+ * disposition list.
+ *
+ * `reject` dispositions (and any `accept`/`modify` row with a null `patch`,
+ * which `parseDispositions` never emits but a caller-constructed list could)
+ * contribute no patch and pass through untouched. Every patch that
+ * `applyPatches` could not land — `old` absent or non-unique in the current
+ * document — flips that move's disposition to `apply_failed`; its
+ * `rationale` (and every other field) is preserved so the audit trail still
+ * shows *why* the decider wanted the change, just not that it landed.
+ * Successfully applied patches keep their original `accept`/`modify`
+ * disposition.
+ */
+export function applyFold(
+  doc: string,
+  dispositions: MoveDisposition[],
+): { newDoc: string; dispositions: MoveDisposition[] } {
+  const toApply = dispositions.filter(
+    (d) => d.patch && (d.disposition === "accept" || d.disposition === "modify"),
+  );
+  const patches: FixerPatch[] = toApply.map((d) => ({
+    finding_id: d.move_id,
+    old: d.patch!.old,
+    new: d.patch!.new,
+  }));
+  const res = applyPatches(doc, patches);
+  const failedMoveIds = new Set(res.failures.map((f) => f.patch.finding_id));
+  const out = dispositions.map((d) =>
+    failedMoveIds.has(d.move_id) ? { ...d, disposition: "apply_failed" as Disposition } : d,
+  );
+  return { newDoc: res.newDoc, dispositions: out };
 }

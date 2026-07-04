@@ -1,7 +1,13 @@
 // tools/red_team_fold_lib.test.ts
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sha256Hex, resolveFixPlanForFold, parseDispositions } from "./red_team_fold_lib.ts";
+import {
+  sha256Hex,
+  resolveFixPlanForFold,
+  parseDispositions,
+  applyFold,
+  type MoveDisposition,
+} from "./red_team_fold_lib.ts";
 
 const PLAN = JSON.stringify({ summary: "s", moves: [], model: "gpt-5.5-pro",
   unaddressed_finding_ids: [], orphan_finding_ids: [], notes: "", input_truncated: false,
@@ -80,4 +86,28 @@ test("parseDispositions: empty rationale invalid; unknown move invalid", () => {
   const { invalid } = parseDispositions(raw, MOVES);
   assert.equal(invalid.some(i => i.reason === "empty_rationale"), true);
   assert.equal(invalid.some(i => i.reason === "unknown_move_id"), true);
+});
+
+test("applyFold: accepted patch lands, rejected leaves doc unchanged", () => {
+  const doc = "line one\nUNIQUE_TARGET\nline three\n";
+  const disp: MoveDisposition[] = [
+    { move_id: "m1", addressed_finding_ids: [], disposition: "accept", rationale: "ok",
+      patch: { move_id: "m1", old: "UNIQUE_TARGET", new: "REPLACED" }, move_snapshot_json: "{}" },
+    { move_id: "m2", addressed_finding_ids: [], disposition: "reject", rationale: "no",
+      patch: null, move_snapshot_json: "{}" },
+  ];
+  const out = applyFold(doc, disp);
+  assert.equal(out.newDoc.includes("REPLACED"), true);
+  assert.equal(out.dispositions.find(d => d.move_id === "m1")?.disposition, "accept");
+});
+
+test("applyFold: non-unique old → apply_failed, doc unchanged for that move", () => {
+  const doc = "dup\ndup\n";
+  const disp: MoveDisposition[] = [
+    { move_id: "m1", addressed_finding_ids: [], disposition: "modify", rationale: "r",
+      patch: { move_id: "m1", old: "dup", new: "x" }, move_snapshot_json: "{}" },
+  ];
+  const out = applyFold(doc, disp);
+  assert.equal(out.dispositions[0].disposition, "apply_failed");
+  assert.equal(out.newDoc, doc);
 });
