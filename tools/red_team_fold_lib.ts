@@ -11,7 +11,9 @@
 // fallback). It never silently picks "whatever's latest" — that would risk
 // folding a stale or foreign plan into an artifact that has since moved on.
 import { createHash } from "node:crypto";
-import type { RedTeamFixPlan } from "./red_team_lib.ts";
+import { extractVerdictJson, isPlainObject } from "./copilot_dispatch.ts";
+import { parseFixPlanOutput } from "./red_team_lib.ts";
+import type { FixPlanMove, RedTeamFixPlan } from "./red_team_lib.ts";
 
 /** Outcome the fold host applies to a single fix-plan move. */
 export type Disposition = "accept" | "modify" | "reject" | "apply_failed";
@@ -125,4 +127,96 @@ export function resolveFixPlanForFold(opts: ResolveOpts): {
   }
 
   return { status: "no_fix_plan_found", source: null };
+}
+
+/** Coerce to a string, or `""` for anything that isn't one. */
+function strOrEmpty(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+/**
+ * Parse the disposition decider's raw JSON output into validated
+ * `MoveDisposition[]` plus an `invalid[]` list of rejected rows.
+ *
+ * Extraction: `extractVerdictJson` only matches a top-level object carrying
+ * a `"verdict"` key (the copilot lead/wing review shape) — the decider's
+ * `{summary, dispositions}` envelope never has one, so it is tried first
+ * (in case a future prompt revision wraps dispositions in a verdict
+ * envelope) and, when it comes back without a `dispositions` array, this
+ * falls back to `parseFixPlanOutput` — the same best-effort JSON-object
+ * extraction (direct parse → fenced ```block → first `{`..last `}` slice,
+ * no required key) already used for the structurally-identical fix-plan
+ * envelope — rather than re-implementing that scan here.
+ *
+ * Validation, per row: `move_id` must match one of `moves`; `disposition`
+ * must be `accept` | `modify` | `reject`; `rationale` must be non-empty;
+ * `accept`/`modify` additionally require `patch.old` non-empty. Anything
+ * failing a rule is dropped into `invalid[]` with a reason string instead
+ * of the output array.
+ */
+export function parseDispositions(
+  rawOutput: string,
+  moves: FixPlanMove[],
+): { dispositions: MoveDisposition[]; invalid: Array<{ move_id: string; reason: string }> } {
+  const dispositions: MoveDisposition[] = [];
+  const invalid: Array<{ move_id: string; reason: string }> = [];
+  const byId = new Map(moves.map((m) => [m.id, m]));
+
+  const fromVerdict = extractVerdictJson(rawOutput);
+  const obj: Record<string, unknown> =
+    fromVerdict && Array.isArray(fromVerdict["dispositions"]) ? fromVerdict : parseFixPlanOutput(rawOutput);
+  const rows: unknown[] = Array.isArray(obj["dispositions"]) ? (obj["dispositions"] as unknown[]) : [];
+
+  for (const rawRow of rows) {
+    const r: Record<string, unknown> = isPlainObject(rawRow) ? rawRow : {};
+
+    const moveId = strOrEmpty(r["move_id"]);
+    const move = byId.get(moveId);
+    if (!move) {
+      invalid.push({ move_id: moveId || "(missing)", reason: "unknown_move_id" });
+      continue;
+    }
+
+    const dispRaw = r["disposition"];
+    const disp: "accept" | "modify" | "reject" | null =
+      dispRaw === "accept" || dispRaw === "modify" || dispRaw === "reject" ? dispRaw : null;
+    if (!disp) {
+      invalid.push({ move_id: moveId, reason: "bad_disposition" });
+      continue;
+    }
+
+    const rationale = strOrEmpty(r["rationale"]).trim();
+    if (!rationale) {
+      invalid.push({ move_id: moveId, reason: "empty_rationale" });
+      continue;
+    }
+
+    let patch: FoldPatch | null = null;
+    if (disp === "accept" || disp === "modify") {
+      const patchObj: Record<string, unknown> = isPlainObject(r["patch"]) ? r["patch"] : {};
+      const old = strOrEmpty(patchObj["old"]);
+      const nw = strOrEmpty(patchObj["new"]);
+      if (!old) {
+        invalid.push({ move_id: moveId, reason: "accept_without_patch" });
+        continue;
+      }
+      patch = { move_id: moveId, old, new: nw };
+    }
+
+    const addressedRaw = r["addressed_finding_ids"];
+    const addressed_finding_ids = Array.isArray(addressedRaw)
+      ? addressedRaw.map((x) => String(x))
+      : move.addressed_finding_ids;
+
+    dispositions.push({
+      move_id: moveId,
+      addressed_finding_ids,
+      disposition: disp,
+      rationale,
+      patch,
+      move_snapshot_json: JSON.stringify(move),
+    });
+  }
+
+  return { dispositions, invalid };
 }
