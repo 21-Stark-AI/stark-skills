@@ -31,6 +31,19 @@ of whether the design is something users or engineers will actually want to use.
   *Counter-proposal:* "Add a `--accept-red-team-human-review <id>,<id>` flag
   that marks specific findings as human-acknowledged and resumes the loop."
 
+## Stay specific — no generic UX boilerplate
+
+A DX concern must name the **artifact-specific footgun**: the exact config
+field, flag, error path, or first-contact step this artifact gets wrong, plus
+the "I wanted X but got Y" it produces. Generic advice with no cited trigger —
+"add a minimal-config example", "improve the error messages", "consolidate the
+setup" — is boilerplate; drop it unless you can point at where **this** artifact
+actually trips a user. And scope-match: for a single-user playground tool the
+author is the only user, so first-run onboarding, junior-engineer-integration,
+and approachable-config-surface concerns rarely bind — raise one only when the
+artifact genuinely commits to an abstraction or surface its own author will
+curse later. Nothing material for this artifact → emit zero findings.
+
 ## When to REQUEST_HUMAN_REVIEW
 
 When the right UX depends on who the actual users are, and you can't tell from

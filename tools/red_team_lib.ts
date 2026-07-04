@@ -323,8 +323,14 @@ export function assemblePrompt(args: {
   artifact: string;
   sourceSpec: string;
   artifactName?: string;
+  /** Plan-stage only: the resolved red-team sidecar from the *design* stage
+   *  (`<design>.red-team.md`). When present it is threaded as an additional
+   *  guarded input block so the plan committee can see which concerns were
+   *  already raised and resolved at design time and stop re-litigating them
+   *  (task #5 — plan-stage dedup). */
+  designDispositions?: string;
 }): string {
-  const { prompts, personas, artifact, sourceSpec } = args;
+  const { prompts, personas, artifact, sourceSpec, designDispositions } = args;
   const parts: string[] = [];
   parts.push(prompts.preamble);
   parts.push("");
@@ -347,6 +353,12 @@ export function assemblePrompt(args: {
   parts.push(sourceSpec);
   parts.push(`<<<RED_TEAM_INPUT_END name="source_spec">>>`);
   parts.push("");
+  if (designDispositions && designDispositions.trim()) {
+    parts.push(`<<<RED_TEAM_INPUT name="design_dispositions">>>`);
+    parts.push(designDispositions);
+    parts.push(`<<<RED_TEAM_INPUT_END name="design_dispositions">>>`);
+    parts.push("");
+  }
   return parts.join("\n");
 }
 
@@ -1128,6 +1140,10 @@ export interface DispatchArgs {
   personas: PersonaSlug[];
   artifact: string;
   sourceSpec: string;
+  /** Plan-stage only: content of the design's resolved red-team sidecar
+   *  (`<design>.red-team.md`), threaded to the plan committee so it stops
+   *  re-deriving already-resolved design concerns (task #5). */
+  designDispositions?: string;
   model: string;
   /** Per-run timeout for the codex subprocess. */
   timeoutMs: number;
@@ -1179,7 +1195,13 @@ export function dispatch(args: DispatchArgs): DispatchResult {
   const { ctx, prompts, personas, artifact, sourceSpec, model } = args;
 
   // Build the assembled provider request.
-  const prompt = assemblePrompt({ prompts, personas, artifact, sourceSpec });
+  const prompt = assemblePrompt({
+    prompts,
+    personas,
+    artifact,
+    sourceSpec,
+    designDispositions: args.designDispositions,
+  });
 
   // Pre-dispatch sensitive-data gate — scan ONLY the untrusted document text
   // (artifact + source-spec), never the assembled prompt: our own preamble
@@ -1625,6 +1647,7 @@ export async function dispatchAsync(
     personas: args.personas,
     artifact: args.artifact,
     sourceSpec: args.sourceSpec,
+    designDispositions: args.designDispositions,
   });
   // Skip the codex spawn if the pre-dispatch sensitive gate will refuse
   // anyway — sync dispatch re-runs the gate and returns the blocked

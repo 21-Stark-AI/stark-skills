@@ -117,6 +117,30 @@ it is not a soft "unsure" bucket. Use it only for a real concern whose
 the artifact (per your persona file). Merely torn about whether a concern clears
 the bar → a non-blocking `medium`/`low` or a drop, not a halt.
 
+## Zero findings is a valid, honest committee output
+
+A persona with nothing material to say about **this specific artifact** emits
+**zero** findings. Do not fill a slot to "represent the viewpoint" — a committee
+of five that returns two true objections and three empty personas is working
+correctly. One-finding-per-persona-every-run is the failure mode this section
+exists to stop; the reader learns to ignore a gate that always fires. If, after
+the four admissibility checks, your persona has no surviving finding, say so in
+one line in the synthesis and emit none.
+
+## Scope-match the artifact — most of these are single-user playground tools
+
+Read what the artifact **is** before demanding what a platform would need. The
+bulk of the work reviewed here is single-user, playground-scoped tooling (one
+operator, run from a laptop, no fleet, no SLA), not multi-tenant production
+infrastructure. For an artifact scoped that way, do **not** treat the absence of
+platform hardening as a gap: fleet alerting, signed-token rotation, HA/failover,
+pagination, budget circuit-breakers, on-call runbooks, and 10x-scale capacity
+planning are **out of scope unless the artifact itself claims that scope**. An
+explicit "what this is not / playground scope" statement in the artifact is a
+**legitimate answer to your concern, not a hole in it** — re-read for one before
+you file. Reserve platform-grade objections for artifacts that actually take on
+platform-grade responsibility.
+
 ## Output schema
 
 Return ONE JSON object, no other text, matching this shape:
