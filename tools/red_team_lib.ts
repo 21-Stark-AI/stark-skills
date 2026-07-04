@@ -215,6 +215,45 @@ export const BLOCKING_SEVERITIES: ReadonlySet<Severity> = new Set([
   "high",
 ]);
 
+/** Concern text that asserts a prompt-injection was found. */
+const INJECTION_CLAIM_RE = /prompt\s+injection\s+detected/i;
+/** A verbatim quoted span of ≥12 chars — evidence a real injection was cited. */
+const INJECTION_SPAN_RE = /["'`][^"'`\n]{12,}["'`]/;
+
+/**
+ * Demote advisory injection findings that cite no verbatim span.
+ *
+ * The AUTHORITATIVE injection gate is the host `preDispatchSensitiveGate`,
+ * which refuses the run pre-dispatch on real injection patterns — so any
+ * committee "prompt injection detected" finding is advisory, not the gate.
+ * Across 201 runs, 68 such findings (100% `critical`, ~a third of all runs)
+ * were false positives: the model flagged the artifact's OWN authored
+ * directive-shaped text (most often a plan's execution/`Global Constraints`
+ * preamble) as an attack, with no quoted span. A real injection the host
+ * patterns missed would quote the offending span (the preamble now requires
+ * it); an unquoted injection claim is the FP shape. Cap those at `low` so
+ * they still surface but stop halting the run. Non-injection findings and
+ * span-citing injection findings are left exactly as the committee rated
+ * them — this only touches the proven-false-positive shape.
+ */
+export function demoteAdvisoryInjectionFindings(
+  findings: readonly RedTeamFinding[],
+): { findings: RedTeamFinding[]; demoted: number } {
+  let demoted = 0;
+  const out = findings.map((f) => {
+    if (
+      BLOCKING_SEVERITIES.has(f.severity) &&
+      INJECTION_CLAIM_RE.test(f.concern) &&
+      !INJECTION_SPAN_RE.test(f.concern)
+    ) {
+      demoted++;
+      return { ...f, severity: "low" as Severity };
+    }
+    return f;
+  });
+  return { findings: out, demoted };
+}
+
 export const REPO_ROOT = (() => {
   // The lib lives at <repo>/tools/red_team_lib.ts. Walk up two levels for
   // the repo root so dispatchers can resolve sibling paths (scripts/,
@@ -750,7 +789,11 @@ export function validateFindings(rawJson: string): {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     void i;
   }
-  return { findings: out, invalid_count: invalid, parse_error: null };
+  // Advisory-injection demotion: the host pre-dispatch gate is the real
+  // injection blocker; an unquoted committee "prompt injection" claim is the
+  // proven false-positive shape (see demoteAdvisoryInjectionFindings).
+  const { findings: normalized } = demoteAdvisoryInjectionFindings(out);
+  return { findings: normalized, invalid_count: invalid, parse_error: null };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
