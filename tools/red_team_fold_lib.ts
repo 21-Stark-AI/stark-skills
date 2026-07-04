@@ -294,9 +294,27 @@ export function applyFold(
 //      load-bearing invariant (rt1): even if defense 1 fails, defense 2
 //      holds.
 
-/** Wrap one untrusted block in a hash-stamped `<<<RED_TEAM_INPUT>>>` envelope. */
+/**
+ * Wrap one untrusted block in a hash-stamped `<<<RED_TEAM_INPUT>>>` envelope.
+ *
+ * Escapes any delimiter markers already present in `body` BEFORE hashing +
+ * wrapping. Without this, a body containing the literal string
+ * `<<<END_RED_TEAM_INPUT name="...">>>` (or `<<<RED_TEAM_INPUT ...>>>`) could
+ * forge an early boundary, spilling attacker-controlled text out of its
+ * envelope and into the region where only `foldMd` (the system prompt) is
+ * supposed to issue instructions — defeating the injection defense
+ * `assembleFoldPrompt` is built around.
+ *
+ * Same replacement strings as `wrapFixPlanInput` (this file's sibling
+ * wrapper in `red_team_lib.ts`, ~line 1977), so the whole red-team subsystem
+ * escapes delimiters identically. Not imported because `wrapFixPlanInput`
+ * isn't exported; replicated inline instead.
+ */
 function block(name: string, body: string): string {
-  return `<<<RED_TEAM_INPUT name="${name}" hash="${sha256Hex(body)}">>>\n${body}\n<<<END_RED_TEAM_INPUT name="${name}">>>`;
+  const escaped = body
+    .replace(/<<<RED_TEAM_INPUT/g, "&lt;&lt;&lt;RED_TEAM_INPUT")
+    .replace(/<<<END_RED_TEAM_INPUT/g, "&lt;&lt;&lt;END_RED_TEAM_INPUT");
+  return `<<<RED_TEAM_INPUT name="${name}" hash="${sha256Hex(escaped)}">>>\n${escaped}\n<<<END_RED_TEAM_INPUT name="${name}">>>`;
 }
 
 /**
