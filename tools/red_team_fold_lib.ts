@@ -236,6 +236,13 @@ export function parseDispositions(
  * shows *why* the decider wanted the change, just not that it landed.
  * Successfully applied patches keep their original `accept`/`modify`
  * disposition.
+ *
+ * Reconciliation keys off the `FixerPatch` object *identity* (the same
+ * reference `applyPatches` echoes back in `failures[].patch`), not the
+ * `move_id` string — `parseDispositions` never dedupes judgments, so two
+ * dispositions can legitimately share a `move_id`, and string-keyed
+ * reconciliation would flip both to `apply_failed` even when only one of
+ * their patches actually failed.
  */
 export function applyFold(
   doc: string,
@@ -244,15 +251,24 @@ export function applyFold(
   const toApply = dispositions.filter(
     (d) => d.patch && (d.disposition === "accept" || d.disposition === "modify"),
   );
-  const patches: FixerPatch[] = toApply.map((d) => ({
-    finding_id: d.move_id,
-    old: d.patch!.old,
-    new: d.patch!.new,
-  }));
+  // 1:1 map each FixerPatch object back to its source disposition, so failures
+  // reconcile by identity rather than by `move_id` string. `parseDispositions`
+  // never dedupes judgments, so two dispositions can legitimately share a
+  // `move_id` (a malformed/duplicate decider payload); reconciling by string
+  // equality would flip BOTH to apply_failed even when only one patch failed,
+  // mislabeling the move whose edit actually landed in `newDoc`.
+  const patchToDisposition = new Map<FixerPatch, MoveDisposition>();
+  const patches: FixerPatch[] = toApply.map((d) => {
+    const p: FixerPatch = { finding_id: d.move_id, old: d.patch!.old, new: d.patch!.new };
+    patchToDisposition.set(p, d);
+    return p;
+  });
   const res = applyPatches(doc, patches);
-  const failedMoveIds = new Set(res.failures.map((f) => f.patch.finding_id));
+  const failedDispositions = new Set<MoveDisposition>(
+    res.failures.map((f) => patchToDisposition.get(f.patch)!),
+  );
   const out = dispositions.map((d) =>
-    failedMoveIds.has(d.move_id) ? { ...d, disposition: "apply_failed" as Disposition } : d,
+    failedDispositions.has(d) ? { ...d, disposition: "apply_failed" as Disposition } : d,
   );
   return { newDoc: res.newDoc, dispositions: out };
 }

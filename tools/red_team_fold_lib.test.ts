@@ -111,3 +111,17 @@ test("applyFold: non-unique old → apply_failed, doc unchanged for that move", 
   assert.equal(out.dispositions[0].disposition, "apply_failed");
   assert.equal(out.newDoc, doc);
 });
+
+test("applyFold: duplicate move_id — only the failing patch flips, applied edit survives", () => {
+  const doc = "AAA\nBBB\n";
+  const disp: MoveDisposition[] = [
+    { move_id: "m1", addressed_finding_ids: [], disposition: "accept", rationale: "first",
+      patch: { move_id: "m1", old: "AAA", new: "XXX" }, move_snapshot_json: "{}" },
+    { move_id: "m1", addressed_finding_ids: [], disposition: "modify", rationale: "second",
+      patch: { move_id: "m1", old: "AAA", new: "YYY" }, move_snapshot_json: "{}" },
+  ];
+  const out = applyFold(doc, disp);
+  assert.equal(out.newDoc, "XXX\nBBB\n");                 // first edit landed
+  assert.equal(out.dispositions[0].disposition, "accept");      // NOT mislabeled
+  assert.equal(out.dispositions[1].disposition, "apply_failed"); // the real failure
+});
