@@ -407,6 +407,80 @@ test("runFold: --dry-run triages into the return value but writes NOTHING", asyn
   assert.equal(countRows(dbPath, "red_team_fold_runs"), 0); // no audit
 });
 
+test("runFold: decider dispatch failure records NOTHING and returns decider_dispatch_failed", async () => {
+  const dbPath = mkTempDb();
+  const art = "line one\nUNIQUE\nline three\n";
+  const p = writeTmp(art);
+  const events: string[] = [];
+  const r = await runFold({
+    artifactPath: p,
+    dbPath,
+    dryRun: false,
+    openPr: true,
+    foldMd: "SYSTEM",
+    repo: "o/r",
+    branch: "b",
+    fixPlanSource: { fixPlan: fpWithMoves(1), sourceRunId: "r1", artifactHash: sha256Hex(art) },
+    // Empty raw_output + non-null error — the exact shape dispatchDecider
+    // returns on a timeout/unavailable/non-zero-exit dispatch.
+    deciderFn: async () => ({ raw_output: "", input_tokens: 0, output_tokens: 0, error: "timeout" }),
+    prFn: async () => {
+      throw new Error("PR must not be opened when the decider dispatch failed");
+    },
+    onAudit: () => events.push("audit"),
+    onPr: () => events.push("pr"),
+  });
+  // A failed dispatch must NOT masquerade as a clean "reviewed everything,
+  // changed nothing" fold — distinct terminal status, zero side effects.
+  assert.equal(r.status, "decider_dispatch_failed");
+  assert.equal(events.length, 0); // no audit, no PR
+  assert.equal(countRows(dbPath, "red_team_fold_runs"), 0);
+  assert.equal(countRows(dbPath, "red_team_fix_plan_dispositions"), 0);
+  assert.equal(fs.readFileSync(p, "utf8"), art); // artifact byte-unchanged
+  assert.equal(fs.existsSync(foldSidecarPathFor(p)), false); // no .fold.md
+});
+
+test("runFold: an invalid decider disposition is recorded as apply_failed, not dropped", async () => {
+  const dbPath = mkTempDb();
+  const art = "line one\nUNIQUE\nline three\n";
+  const p = writeTmp(art);
+  const r = await runFold({
+    artifactPath: p,
+    dbPath,
+    dryRun: false,
+    openPr: false,
+    foldMd: "SYSTEM",
+    fixPlanSource: { fixPlan: fpWithMoves(2), sourceRunId: "r1", artifactHash: sha256Hex(art) },
+    // One valid reject (m1) + one INVALID row (m2 accept with no patch →
+    // parseDispositions drops it into invalid[] with reason accept_without_patch).
+    deciderFn: async () => ({
+      raw_output: JSON.stringify({
+        dispositions: [
+          { move_id: "m1", disposition: "reject", rationale: "false premise" },
+          { move_id: "m2", disposition: "accept", rationale: "no patch supplied" },
+        ],
+      }),
+      input_tokens: 10,
+      output_tokens: 10,
+      error: null,
+    }),
+  });
+  assert.equal(r.status, "ok");
+  // The invalid entry is NOT dropped — it survives as apply_failed alongside
+  // the valid reject (design §12: recorded, not silently discarded).
+  assert.equal(r.dispositions.length, 2);
+  assert.equal(r.rejected_count, 1);
+  assert.equal(r.apply_failed_count, 1);
+  const m2 = r.dispositions.find((d) => d.move_id === "m2");
+  assert.equal(m2?.disposition, "apply_failed");
+  // Audit: BOTH dispositions land in the DB, not just the valid one.
+  assert.equal(countRows(dbPath, "red_team_fix_plan_dispositions"), 2);
+  // Decision log renders the apply_failed move too.
+  const foldLog = fs.readFileSync(foldSidecarPathFor(p), "utf8");
+  assert.equal(foldLog.includes("m2"), true);
+  assert.equal(foldLog.includes("APPLY_FAILED"), true);
+});
+
 test("rt1: buildDeciderEnv keeps model auth, drops repo/publishing creds", () => {
   const env = buildDeciderEnv({
     HOME: "/home/me",

@@ -551,14 +551,20 @@ export function recordPersonaStats(
 }
 
 const FOLD_RUN_INSERT_SQL =
-  "INSERT INTO red_team_fold_runs (fold_run_id, source_run_id, stage, " +
+  "INSERT OR REPLACE INTO red_team_fold_runs (fold_run_id, source_run_id, stage, " +
   "artifact_relative_path, artifact_hash, fix_plan_hash, repo, pr_number, " +
   "decider_model, accepted_count, modified_count, rejected_count, " +
   "apply_failed_count, cost_usd, duration_s) " +
   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-/** Insert one red_team_fold_runs row - one row per fix-plan fold decision
- *  cycle (accept/modify/reject/apply-failed tallies + cost/duration). */
+/** Insert/upsert one red_team_fold_runs row - one row per fix-plan fold
+ *  decision cycle (accept/modify/reject/apply-failed tallies + cost/duration).
+ *  `INSERT OR REPLACE` on the `fold_run_id` UNIQUE constraint makes this
+ *  idempotent: `fold_run_id` is deterministic (`fold-<sourceRunId>-<hash8>`),
+ *  so a legitimate identical rerun (e.g. re-folding a byte-identical artifact)
+ *  replaces the prior row with the updated counts rather than throwing a
+ *  UNIQUE violation - mirroring how `recordDispositions` upserts (rt2 "next
+ *  run reconciles"). */
 export function recordFoldRun(row: FoldRunRow, dbPath: string): void {
   const db = connect(dbPath);
   try {

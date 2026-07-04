@@ -41,6 +41,18 @@ function readFoldRun(dbPath: string, foldRunId: string): Record<string, unknown>
   }
 }
 
+function countFoldRuns(dbPath: string, foldRunId: string): number {
+  const db = connect(dbPath);
+  try {
+    const r = db
+      .prepare("SELECT count(*) AS c FROM red_team_fold_runs WHERE fold_run_id = ?")
+      .get(foldRunId) as { c: number };
+    return Number(r.c);
+  } finally {
+    db.close();
+  }
+}
+
 function readDispositions(
   dbPath: string,
   foldRunId: string,
@@ -193,6 +205,42 @@ test("recordDispositions is a no-op for an empty batch", () => {
   recordDispositions([], dbPath);
   const rows = readDispositions(dbPath, "nonexistent");
   assert.equal(rows.length, 0);
+});
+
+test("recordFoldRun is idempotent — same fold_run_id upserts to the updated counts", () => {
+  const dbPath = mkTempDb();
+  initRedTeamTables(dbPath);
+
+  const base = {
+    fold_run_id: "f-dup",
+    source_run_id: "r1",
+    stage: "design",
+    decider_model: "claude-opus-4-8",
+    accepted_count: 1,
+    modified_count: 0,
+    rejected_count: 0,
+    apply_failed_count: 0,
+    cost_usd: 0.1,
+    duration_s: 1,
+  };
+  recordFoldRun(base, dbPath);
+
+  // A legitimate identical rerun: fold_run_id is deterministic
+  // (`fold-<sourceRunId>-<hash8>`), so re-folding a byte-identical artifact
+  // reuses the same key. This must upsert (rt2 "next run reconciles"), not
+  // throw a SQLite UNIQUE violation.
+  recordFoldRun(
+    { ...base, accepted_count: 0, rejected_count: 3, cost_usd: 0.2, duration_s: 2 },
+    dbPath,
+  );
+
+  // Exactly ONE row, carrying the UPDATED counts.
+  assert.equal(countFoldRuns(dbPath, "f-dup"), 1);
+  const row = readFoldRun(dbPath, "f-dup");
+  assert.equal(row.accepted_count, 0);
+  assert.equal(row.rejected_count, 3);
+  assert.equal(row.cost_usd, 0.2);
+  assert.equal(row.duration_s, 2);
 });
 
 test("initRedTeamTables is idempotent across the new fold-run tables", () => {

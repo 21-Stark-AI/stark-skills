@@ -575,7 +575,8 @@ export type FoldStatus =
   | "skipped_budget_exhausted_fold"
   | "no_fix_plan_found"
   | "stale_fix_plan"
-  | "source_run_id_required";
+  | "source_run_id_required"
+  | "decider_dispatch_failed";
 
 /** Result of a fold run (design §5.5). */
 export interface FoldResult {
@@ -973,6 +974,28 @@ export async function runFold(opts: RunFoldOpts): Promise<FoldResult> {
   const cost = computeDispatchCost(deciderModel, out.input_tokens, out.output_tokens);
   const durationS = (Date.now() - t0) / 1000;
 
+  // 3b) Decider dispatch failure — bail BEFORE any write, audit, or PR.
+  //     `dispatchDecider` sets `error` to claude_unavailable/timeout/non-zero
+  //     exit; on those `raw_output` is empty, so parseDispositions yields
+  //     nothing and the rest of the pipeline would persist a "0 accepted /
+  //     0 modified / 0 rejected" artifact + `.fold.md` + audit row (+ PR)
+  //     under status "ok" — indistinguishable from a genuine "reviewed
+  //     everything, changed nothing" fold. A dispatch failure is NOT a clean
+  //     empty fold, so it gets its own terminal status and writes nothing
+  //     (audit integrity). Cost is $0 on dispatch errors (tokens are 0), so
+  //     the budget gate below never catches this path.
+  if (out.error !== null) {
+    return makeFoldResult({
+      status: "decider_dispatch_failed",
+      fold_run_id: foldRunId,
+      source_run_id: src.sourceRunId,
+      decider_model: deciderModel,
+      revised_doc: artifactText,
+      cost_usd: cost,
+      duration_s: durationS,
+    });
+  }
+
   // 4) Budget gate — BEFORE any write, audit, or PR (rt5).
   if (cost > cfg.max_cost_usd) {
     return makeFoldResult({
@@ -987,8 +1010,25 @@ export async function runFold(opts: RunFoldOpts): Promise<FoldResult> {
   }
 
   // 5) Parse + validate dispositions, apply to a working copy.
-  const { dispositions: parsed } = parseDispositions(out.raw_output, src.fixPlan.moves);
-  const applied = applyFold(artifactText, parsed);
+  //     Invalid decider rows are NOT dropped: per design §12 every one must
+  //     still appear in the tally, the decision log, and the audit, recorded
+  //     as apply_failed so the fold trail is complete (audit integrity). Each
+  //     carries patch:null, so applyFold's accept/modify-with-patch filter
+  //     skips it and it flows through untouched into counts/log/audit.
+  //     FOLLOW-UP: design §12 also calls for one bounded decider retry before
+  //     recording an invalid entry as apply_failed; that retry is deferred —
+  //     the required audit-integrity behavior (record, don't drop) lands here.
+  const { dispositions: parsed, invalid } = parseDispositions(out.raw_output, src.fixPlan.moves);
+  const movesById = new Map(src.fixPlan.moves.map((m) => [m.id, m]));
+  const invalidAsFailed: MoveDisposition[] = invalid.map((iv) => ({
+    move_id: iv.move_id,
+    addressed_finding_ids: [],
+    disposition: "apply_failed",
+    rationale: `decider produced an invalid disposition (${iv.reason}); recorded as apply_failed for audit completeness`,
+    patch: null,
+    move_snapshot_json: JSON.stringify(movesById.get(iv.move_id) ?? {}),
+  }));
+  const applied = applyFold(artifactText, [...parsed, ...invalidAsFailed]);
   const counts = tallyDispositions(applied.dispositions);
 
   // 6) Render the decision log.
