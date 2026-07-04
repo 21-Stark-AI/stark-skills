@@ -487,42 +487,6 @@ export function recordPersonaStats(
   }
 }
 
-/** Update the persisted fix-plan state for an existing red-team run.
- *  Throws when no row exists for runId. */
-export function recordFixPlan(
-  runId: string,
-  opts: {
-    fixPlanMd: string | null;
-    fixPlanJson: string | null;
-    fixPlanCostUsd: number | null;
-    fixPlanStatus: string;
-  },
-  dbPath: string,
-): void {
-  const sanitizedJson = sanitizeFixPlanJson(opts.fixPlanJson);
-  const db = connect(dbPath);
-  try {
-    const stmt = db.prepare(
-      "UPDATE red_team_runs " +
-        "SET fix_plan_md = ?, fix_plan_json = ?, fix_plan_cost_usd = ?, " +
-        "fix_plan_status = ? " +
-        "WHERE run_id = ?",
-    );
-    const info = stmt.run(
-      opts.fixPlanMd,
-      sanitizedJson,
-      opts.fixPlanCostUsd,
-      opts.fixPlanStatus,
-      runId,
-    );
-    if (info.changes !== 1) {
-      throw new Error(`red_team_runs row not found for run_id=${JSON.stringify(runId)}`);
-    }
-  } finally {
-    db.close();
-  }
-}
-
 /** Delete rows older than `retentionDays` from runs + findings.
  *  Returns total rows deleted (sum across both tables). */
 export function pruneRedTeamMetrics(
