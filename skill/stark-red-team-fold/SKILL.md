@@ -49,9 +49,16 @@ node --experimental-strip-types "$TOOLS/preflight.ts" --workflow stark-red-team-
 - `overall == "degraded"` → warn, continue.
 - `overall == "ready"` → continue silently.
 
-Preflight doesn't ship a `stark-red-team-fold`-specific profile; the unknown
-workflow degrades to the generic environment check (Claude CLI + git + GitHub
-App auth), which is exactly what the fold needs.
+Preflight doesn't ship a `stark-red-team-fold`-specific profile, and its check
+registry is workflow-independent — so a fold run still executes the **critical**
+red-team **challenge**-transport checks `check_red_team_transport_auth` and
+`check_red_team_model_rates`. Those require `OPENAI_API_KEY` for the challenge
+model (`red_team.model`, default `gpt-5.5-pro` on the Responses API), even though
+the fold **decider** is Claude-only and never needs it. So a Claude-only
+environment — all the decider actually requires — reports `blocked` on transport
+auth. Run the fold with `--skip-check check_red_team_transport_auth
+check_red_team_model_rates` to drop the two challenge-only checks (the preflight
+CLI supports a repeatable `--skip-check`).
 
 ## Arguments
 
@@ -65,12 +72,17 @@ Raw input: `$ARGUMENTS`
 - `--fix-plan-json <path>` — optional. An explicit fix-plan JSON file. **Highest
   precedence** — overrides sidecar/DB resolution entirely.
 - `--source-run-id <id>` — optional. Name the prior red-team run whose fix plan
-  to fold. Used as the DB fallback when the sidecar can't name the run (or when
-  DB resolution is ambiguous and reports `source_run_id_required`).
+  to fold. **Takes precedence when supplied** — the resolver uses the passed id
+  over the sidecar's `Run ID`: it's the DB source when the sidecar can't name the
+  run, and overrides the sidecar's Run ID when it can.
 - `--force-stale` — fold even when the fix plan's recorded artifact hash no
   longer matches the current artifact (i.e. the doc moved on since the challenge).
-  Off by default: a stale plan is **refused** (`stale_fix_plan`) rather than
-  silently folded into a doc it no longer describes.
+  **Forward-looking (v1):** the challenge doesn't yet record an artifact hash, so
+  the staleness guard always passes and `stale_fix_plan` never fires through the
+  CLI — this flag is a no-op today, threaded through for when challenge-side
+  hashing lands. Once it does, a stale plan is **refused** (`stale_fix_plan`)
+  unless this flag is set, rather than silently folded into a doc it no longer
+  describes. (Full caveat under Operational controls.)
 - `--model <id>` — optional. Override the decider model (`red_team.fold.model`).
   **Claude CLI only** — the decider is always Claude, so this does not change the
   transport or the posting identity.
@@ -170,9 +182,11 @@ output=$(node --experimental-strip-types "$TOOLS/red_team_fold.ts" \
 
 The dispatcher:
 
-1. Resolves the fix plan (§1.2 precedence) and enforces the **staleness guard**:
-   a plan whose recorded artifact hash no longer matches is refused as
-   `stale_fix_plan` unless `--force-stale` is set.
+1. Resolves the fix plan (§1.2 precedence) and applies the **staleness guard**:
+   a plan whose recorded artifact hash no longer matches would be refused as
+   `stale_fix_plan` unless `--force-stale` is set. *(Forward-looking in v1: the
+   challenge records no artifact hash yet, so this guard always passes — see the
+   caveat under Operational controls.)*
 2. Runs the **least-privilege Claude decider** once, which returns one
    disposition per move (`accept` / `modify` / `reject`, each with a rationale).
 3. Applies the `accept` + `modify` patches to the doc; logs `reject` (and any
@@ -261,14 +275,14 @@ skills). The dispatcher's order is fixed and rt1-safe:
 
 | Status | Exit | Meaning |
 |--------|------|---------|
-| `ok` | 0 | Decider ran; dispositions applied. Check the counts — `ok` with `applied==modified==0` means every move was rejected (decision log + audit written, doc PR skipped). |
+| `ok` | 0 | Decider ran; dispositions applied. Check the counts — `ok` with `applied==modified==0` means every move was rejected or apply-failed (decision log + audit written, doc PR skipped). |
 | `no_moves` | 0 | The fix plan had no moves to triage. |
 | `no_fix_plan_found` | 0 | No fix plan resolved (no sidecar `Run ID`, no `--fix-plan-json`/`--source-run-id`, or DB miss). Generate one first. |
-| `stale_fix_plan` | 0 | The fix plan's artifact hash no longer matches the current doc. Re-run with `--force-stale` to fold anyway. |
-| `source_run_id_required` | 0 | DB resolution is ambiguous — pass `--source-run-id`. |
+| `stale_fix_plan` | 0 | The fix plan's artifact hash no longer matches the current doc. Re-run with `--force-stale` to fold anyway. **Forward-looking (v1): not reachable via the CLI** — the challenge records no artifact hash, so the staleness check always passes. |
+| `source_run_id_required` | 0 | DB resolution is ambiguous — pass `--source-run-id`. **Forward-looking (v1): not reachable on the normal CLI path.** |
 | `skipped_budget_exhausted_fold` | 0 | Fold budget exhausted; the decider was not dispatched. |
 | `decider_dispatch_failed` | 1 | The Claude decider subprocess failed (unavailable, timeout, or unparseable output). See the status/error. |
-| `error` | 2 | Argument/file error (artifact / source-spec / fix-plan-json not found, or a bad flag). |
+| `error` | 2 | Argument/file error (artifact / source-spec / fix-plan-json not found, or a bad flag). An unexpected internal throw in `runFold` also emits `{status:"error"}` but exits **1**. |
 
 The skill does **not** halt the calling pipeline — exit codes are advisory.
 Manual invocation is informational; the fold PR is the reviewable output.
@@ -283,9 +297,15 @@ Manual invocation is informational; the fold PR is the reviewable output.
   sidecar can't (or when the run reports `source_run_id_required`). Feeds the
   audit-DB `fix_plan_json` lookup.
 - **`--force-stale`** — override the staleness guard and fold a fix plan whose
-  recorded artifact hash no longer matches the current doc. Use sparingly — the
-  point of the guard is to stop folding counter-proposals into a doc that has
-  since moved on.
+  recorded artifact hash no longer matches the current doc. **Forward-looking
+  (v1):** the red-team challenge doesn't yet record an artifact hash, so the
+  guard always passes and `stale_fix_plan` never fires through the CLI — this
+  flag is a no-op today, threaded through for when challenge-side hashing lands.
+  Until then a doc edited after its challenge still folds; the mitigation is that
+  the decider triages against the **current** doc text and every fold lands as a
+  never-merged, reviewable PR. Once challenge-side hashing lands the guard goes
+  live — its point is to stop folding counter-proposals into a doc that has since
+  moved on — and `--force-stale` becomes the deliberate override.
 
 ## Notes
 
