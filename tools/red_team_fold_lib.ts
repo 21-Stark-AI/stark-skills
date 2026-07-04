@@ -432,3 +432,52 @@ export async function dispatchDecider(a: {
     error: null,
   };
 }
+
+// ── Task 8: decision-log renderer (design §5.4) ──────────────────────────
+
+/**
+ * Per-move section-header label for each `Disposition` (design §5.4's
+ * illustrative `REJECTED` / `MODIFIED`) — a past-tense/state label, not a
+ * raw uppercase of the disposition verb (`"reject".toUpperCase()` would
+ * render `REJECT`, not `REJECTED`).
+ */
+const DISPOSITION_LABEL: Record<Disposition, string> = {
+  accept: "ACCEPTED",
+  modify: "MODIFIED",
+  reject: "REJECTED",
+  apply_failed: "APPLY_FAILED",
+};
+
+/**
+ * Render the `<artifact>.fold.md` decision-log body: a header line with
+ * accept/modify/reject (+ apply-failed, when present) counts, followed by
+ * one `##` section per move showing its disposition, the finding IDs it
+ * addresses, and the decider's rationale.
+ *
+ * This is a plain audit-trail renderer over already-decided
+ * `MoveDisposition[]` — no re-derivation of the dispositions themselves
+ * (that's `parseDispositions`/`applyFold`'s job); it only formats what it is
+ * given.
+ */
+export function renderFoldLog(a: {
+  artifactPath: string;
+  sourceRunId: string;
+  deciderModel: string;
+  dispositions: MoveDisposition[];
+}): string {
+  const c = { accept: 0, modify: 0, reject: 0, apply_failed: 0 };
+  for (const d of a.dispositions) c[d.disposition]++;
+  const lines = [
+    `# Fold decision log — ${a.artifactPath}`,
+    `Fix plan: ${a.sourceRunId}  ·  Decider: ${a.deciderModel}  ·  ` +
+      `${c.accept} accepted / ${c.modify} modified / ${c.reject} rejected` +
+      (c.apply_failed ? ` / ${c.apply_failed} apply-failed` : ""),
+    "",
+  ];
+  for (const d of a.dispositions) {
+    lines.push(`## ${d.move_id} — ${DISPOSITION_LABEL[d.disposition]}`);
+    lines.push(`Addresses: ${d.addressed_finding_ids.join(", ") || "—"}`);
+    lines.push(d.rationale, "");
+  }
+  return lines.join("\n");
+}

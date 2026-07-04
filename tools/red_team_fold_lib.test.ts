@@ -7,6 +7,7 @@ import {
   parseDispositions,
   applyFold,
   assembleFoldPrompt,
+  renderFoldLog,
   type MoveDisposition,
 } from "./red_team_fold_lib.ts";
 import { scrubEnv } from "./red_team_lib.ts";
@@ -202,4 +203,18 @@ test("assembleFoldPrompt: forged RED_TEAM_INPUT open delimiter in body is escape
     findings: [] });
   assert.equal(p.includes(forgedOpen), false); // forged delimiter never appears raw
   assert.equal(p.includes("second"), true);    // surrounding text survives
+});
+
+// ── Task 8: decision-log renderer ────────────────────────────────────────
+
+test("renderFoldLog: counts + per-move sections", () => {
+  const md = renderFoldLog({ artifactPath: "x.md", sourceRunId: "run-1", deciderModel: "claude-opus-4-8",
+    dispositions: [
+      { move_id: "m1", addressed_finding_ids: ["rt1"], disposition: "reject", rationale: "false premise", patch: null, move_snapshot_json: "{}" },
+      { move_id: "m2", addressed_finding_ids: ["rt2"], disposition: "modify", rationale: "narrowed", patch: { move_id:"m2", old:"a", new:"b" }, move_snapshot_json: "{}" },
+    ]});
+  assert.equal(md.includes("# Fold decision log"), true);
+  assert.equal(md.includes("m1"), true);
+  assert.equal(md.includes("REJECTED"), true);
+  assert.equal(md.includes("0 accepted / 1 modified / 1 rejected"), true);
 });
