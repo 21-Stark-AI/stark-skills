@@ -258,6 +258,38 @@ test("assemblePrompt wraps artifact + source_spec in guarded envelopes", () => {
   assert.ok(dataIdx >= 0 && secIdx >= 0 && dataIdx < secIdx);
 });
 
+test("assemblePrompt threads design_dispositions block only when provided", () => {
+  const prompts = loadPersonaPrompts();
+  const without = assemblePrompt({
+    prompts,
+    personas: ["data"],
+    artifact: "PLAN_BODY",
+    sourceSpec: "SPEC_BODY",
+  });
+  assert.ok(!without.includes('name="design_dispositions"'));
+
+  const withDisp = assemblePrompt({
+    prompts,
+    personas: ["data"],
+    artifact: "PLAN_BODY",
+    sourceSpec: "SPEC_BODY",
+    designDispositions: "RESOLVED_DESIGN_CONCERNS",
+  });
+  assert.match(withDisp, /<<<RED_TEAM_INPUT name="design_dispositions">>>/);
+  assert.match(withDisp, /<<<RED_TEAM_INPUT_END name="design_dispositions">>>/);
+  assert.match(withDisp, /RESOLVED_DESIGN_CONCERNS/);
+
+  // Whitespace-only dispositions are treated as absent (no empty block).
+  const blank = assemblePrompt({
+    prompts,
+    personas: ["data"],
+    artifact: "PLAN_BODY",
+    sourceSpec: "SPEC_BODY",
+    designDispositions: "   \n  ",
+  });
+  assert.ok(!blank.includes('name="design_dispositions"'));
+});
+
 // ── Redaction ─────────────────────────────────────────────────────────
 
 test("redact strips OpenAI / GitHub / base64 / PII patterns", () => {

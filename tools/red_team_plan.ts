@@ -18,6 +18,7 @@ import {
   redTeamPromptsDir,
   resolveDbPath,
   type PersonaSlug,
+  sidecarPathFor,
   VALID_PERSONAS,
 } from "./red_team_lib.ts";
 
@@ -27,6 +28,8 @@ const DEFAULT_TIMEOUT_MS = 900_000;
 interface CliArgs {
   plan: string;
   sourceSpec: string | null;
+  designDispositions: string | null;
+  noDesignDispositions: boolean;
   model: string;
   noSidecar: boolean;
   noAudit: boolean;
@@ -41,6 +44,8 @@ function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     plan: "",
     sourceSpec: null,
+    designDispositions: null,
+    noDesignDispositions: false,
     model: DEFAULT_MODEL,
     noSidecar: false,
     noAudit: false,
@@ -63,6 +68,12 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--source-spec":
         args.sourceSpec = next();
+        break;
+      case "--design-dispositions":
+        args.designDispositions = next();
+        break;
+      case "--no-design-dispositions":
+        args.noDesignDispositions = true;
         break;
       case "--model":
         args.model = next();
@@ -113,6 +124,7 @@ function parseArgs(argv: string[]): CliArgs {
 function printHelp(): void {
   process.stdout.write(`usage: red_team_plan.ts [-h] --plan PLAN
                         [--source-spec SOURCE_SPEC]
+                        [--design-dispositions PATH] [--no-design-dispositions]
                         [--model MODEL]
                         [--no-sidecar] [--no-audit] [--json]
                         [--replay-transcript PATH]
@@ -124,7 +136,11 @@ Adversarial red-team review of an execution plan doc (TS port).
 options:
   -h, --help                       show this help message and exit
   --plan PLAN                      Path to the plan markdown file.
-  --source-spec SOURCE_SPEC        Optional source-spec file.
+  --source-spec SOURCE_SPEC        Optional source-spec (design) file.
+  --design-dispositions PATH       Design-stage red-team sidecar to thread in for
+                                   plan-stage dedup. Default: auto-discover the
+                                   source-spec's <design>.red-team.md sidecar.
+  --no-design-dispositions         Disable design-dispositions threading.
   --model MODEL                    Override the configured red-team model.
   --no-sidecar                     Skip writing the <plan>.red-team.md sidecar.
   --no-audit                       Skip the SQLite audit row.
@@ -170,6 +186,43 @@ async function main(argv: string[]): Promise<number> {
     ? fs.readFileSync(sourceSpecPath, "utf8")
     : artifact;
 
+  // Task #5 — plan-stage dedup. Thread the design's resolved red-team sidecar
+  // (`<design>.red-team.md`) into the plan committee so it stops re-deriving
+  // concerns already raised + resolved at the design stage. Resolution order:
+  //   explicit --design-dispositions PATH  >  auto: the source-spec's sidecar
+  // `--no-design-dispositions` opts out entirely. Missing/unreadable → silent
+  // skip (the plan committee just runs without the dedup context).
+  let designDispositions: string | null = null;
+  if (!args.noDesignDispositions) {
+    let dispPath: string | null = null;
+    if (args.designDispositions) {
+      dispPath = path.resolve(args.designDispositions);
+      if (!fs.existsSync(dispPath)) {
+        const envelope = {
+          status: "error",
+          error: `design-dispositions file not found: ${dispPath}`,
+        };
+        process.stdout.write(JSON.stringify(envelope, null, 2) + "\n");
+        return 2;
+      }
+    } else if (sourceSpecPath) {
+      const auto = sidecarPathFor(sourceSpecPath);
+      if (auto !== planPath && fs.existsSync(auto)) dispPath = auto;
+    }
+    if (dispPath) {
+      try {
+        designDispositions = fs.readFileSync(dispPath, "utf8");
+        process.stderr.write(
+          `red_team_plan: threading design dispositions from ${dispPath}\n`,
+        );
+      } catch (err) {
+        process.stderr.write(
+          `red_team_plan: could not read design dispositions ${dispPath} (non-fatal): ${(err as Error).message}\n`,
+        );
+      }
+    }
+  }
+
   const resolved = resolveDbPath();
   const ctx = buildRunContext({
     stage: "plan",
@@ -186,6 +239,7 @@ async function main(argv: string[]): Promise<number> {
     personas: args.personas,
     artifact,
     sourceSpec,
+    designDispositions: designDispositions ?? undefined,
     model: args.model,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     dbPath: resolved.db_path,

@@ -31,6 +31,16 @@ failure story — what happens when things go wrong, partially, or slowly.
   *Counter-proposal:* "Write the state file via atomic rename (write to
   temp file + os.rename)."
 
+## When to stay silent
+
+Your failure-mode findings carry real signal — keep them sharp and **do not
+self-censor a genuine reliability concern.** But scope-match first: a single-user
+tool with no concurrency, no distributed components, and no partial-failure
+surface has no distributed-systems failure story to attack. Don't manufacture a
+retry-storm, backpressure, or SPOF concern for a laptop-run script that has
+none — emit **zero** findings. A real data-loss window or idempotency gap always
+stays; an imagined one for a system that can't exhibit it goes.
+
 ## When to REQUEST_HUMAN_REVIEW
 
 When the failure story depends on SLOs or traffic patterns you can't infer from
