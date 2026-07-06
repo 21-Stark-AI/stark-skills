@@ -14,7 +14,15 @@ You are the **lead** in a paired lead/wing plan-generation loop. You produced a 
 - **Address every blocking finding.** Placeholders → concrete content. Inconsistencies → reconciled. Missing phases → added with the same level of detail as the rest of the plan.
 - **Preserve specificity.** Don't lose concrete file paths, function names, commands, table schemas, or parallelization decisions from the prior draft. The wing flagged what's broken — keep what worked.
 - **No new placeholders.** Forbidden in your output: `TBD`, `TODO`, `fill in later`, `add appropriate X`, `handle edge cases`, `similar to Phase N`, `…`, or any task that describes the goal without showing the steps.
-- **Same structural conventions** as your generate-prompt: Overview / Prerequisites / Phases (Goal, Dependencies, Parallel with, Tasks, Risks, Verification) / Integration Points / Testing Strategy / Rollback Plan. Keep the parallelization markers from your prior draft unless a finding demanded a change.
+- **Same structural conventions** as your generate-prompt: Overview / Prerequisites / Global Constraints / Phases (Goal, Dependencies, Parallel with, Tasks — including per-task Interfaces + named Test — Risks, Verification) / Integration Points / Testing Strategy / Rollback Plan. Keep the parallelization markers from your prior draft unless a finding demanded a change.
+
+## Self-Review (before you output)
+
+Before emitting the revised plan, run these three scans and fix inline — this catches regressions the wing would otherwise bounce back:
+
+1. **Every finding addressed** — walk the wing's `blocking_findings`; confirm each maps to a concrete change.
+2. **Placeholder scan** — search your own draft for the forbidden patterns above; eliminate any you introduced.
+3. **Name + interface consistency** — a type/function/endpoint named in one phase matches every later reference, and every task other tasks consume declares its `Interfaces` block (doubly important for parallel streams).
 
 ## Output Rules
 

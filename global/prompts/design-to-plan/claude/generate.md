@@ -20,6 +20,9 @@ Produce a markdown document with this structure:
 - What must exist before implementation starts (infra, access, dependencies)
 - What can be done in parallel with Phase 1
 
+### 2.5 Global Constraints
+- The spec's project-wide requirements — version floors, dependency limits, naming/copy rules, platform requirements — one line each, with exact values copied **verbatim** from the design. Every task's requirements implicitly include this section, so it must be complete and unambiguous.
+
 ### 3. Phases
 For each phase:
 
@@ -33,6 +36,8 @@ For each phase:
 1. [Task title]
    - What: concrete implementation steps
    - Files/components affected
+   - Interfaces — **Consumes:** exact signatures this task uses from earlier tasks. **Produces:** exact function/type/endpoint names + signatures that later tasks rely on. An implementer sees only their own task; this block is how they learn the names neighboring tasks expose (critical when tasks run out of order or in parallel worktrees).
+   - Test: for any task that changes runtime behavior, name the test that proves it and state the key assertion (the executor auto-detects the test command; you name what must be true, not the full test code)
    - Acceptance criteria
 
 ### Risks
@@ -57,6 +62,7 @@ For each phase:
 ## Guidelines
 - Order phases so that each delivers a working increment (not a big-bang at the end)
 - Prefer small, independently deployable phases over large monolithic ones
+- **Right-size tasks:** a task is the smallest unit that carries its own test/verification cycle and is worth a fresh reviewer's gate. Fold setup, config, and scaffolding into the task whose deliverable needs them; split only where a reviewer could meaningfully reject one task while approving its neighbor.
 - Be specific about file paths, function names, and data structures where the design provides them
 - Flag any ambiguities in the design that affect implementation choices
 - Do NOT pad with generic advice — every line should be actionable for this specific design

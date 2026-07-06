@@ -79,11 +79,14 @@ PROMPTS="${STARK_REVIEW_PROMPTS:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review
 
 ```bash
 pr_number=$(gh pr view --json number --jq .number 2>/dev/null)
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
 ```
 
-Store for Phase 4 if present.
+Store both for Phase 3. **Every run's plan + review summary must land on a PR** (workspace rule: reviews/comments live on a PR). If a PR already exists it's reused; **if none exists, Phase 3 opens one** and pushes the generated plan + review summary (skipped only under `--dry-run`).
 
-### 1.3 Authenticate (only if PR detected)
+### 1.3 Authenticate
+
+The plan/summary always post to a PR (existing or freshly opened) unless `--dry-run`, so authenticate whenever `--dry-run` is not set. The token is re-minted under the **lead's** GitHub App at post time (Phase 3d) so the PR and its comment share one identity; this early mint is just to fail fast on auth problems:
 
 ```bash
 export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude token)
@@ -179,19 +182,21 @@ Write the approved plan alongside the design file:
 - If design is `docs/specs/2026-03-27-auth-design.md`
 - Plan goes to `docs/specs/2026-03-27-auth-plan.md`
 
-Naming: replace `-design.md` with `-plan.md`. If the design filename doesn't end with `-design.md`, append `.plan.md`.
+Naming: replace `-design.md` with `-plan.md`. If the design filename doesn't end with `-design.md`, append `.plan.md`. Store the result as `$plan_path` (referenced in 3d).
 
 ### 3c. Write review summary (skip in --dry-run)
 
-Write per-round details to `{design-name}.d2p-review.md` alongside the design file.
+Write per-round details to `{design-name}.d2p-review.md` alongside the design file. Store the result as `$review_summary_path` (referenced in 3d).
 
 Contents:
 - Per-round verdict, blocking findings, non-blocking suggestions, summary
 - Total duration, round count, lead/wing identities
 
-### 3d. Post to PR (if PR detected and not --dry-run)
+### 3d. Open-or-reuse the PR and post the review summary (skip in --dry-run)
 
-Post the summary under the lead's GitHub App identity:
+The plan + review summary always land on a PR. If a PR already exists, post the summary comment to it. **If none exists, open one** — cut a branch, push the generated plan + review summary, and create the PR — so the findings live with the plan. All of 3d is skipped under `--dry-run`.
+
+Resolve the lead's GitHub App identity (the PR and its comment share one identity):
 
 | Lead | App identity |
 |---|---|
@@ -200,7 +205,65 @@ Post the summary under the lead's GitHub App identity:
 | `gemini` | stark-gemini |
 
 ```bash
-node --experimental-strip-types "$TOOLS/github_app.ts" --app $lead_app pr review $pr_number --comment --body "$summary"
+lead_app="stark-$lead"   # stark-claude | stark-codex | stark-gemini
+
+# Open a fresh PR this run? Only when none exists (never in --dry-run — 3d is skipped entirely there).
+open_pr=0
+[ -z "$pr_number" ] && open_pr=1
+```
+
+**3d.i — Ensure a working branch (never commit to the default branch).** The design is already committed (Phase 1 aborts on a dirty design without `--force`); the plan + summary written in 3b/3c are new files to land on a branch:
+
+```bash
+default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+default_branch=${default_branch:-main}
+stem=$(basename -- "$path" | sed -E 's/\.[^.]+$//')
+cur=$(git branch --show-current)
+if [ "$cur" = "$default_branch" ] || [ -z "$cur" ]; then
+  branch="spec-to-plan/${stem}-$(date +%Y%m%d-%H%M%S)"
+  git switch -c "$branch"
+else
+  branch="$cur"
+fi
+```
+
+Commits use the repo's own `user.name`/`user.email` (per workspace policy, `21-Stark-AI` repos commit as `Aryeh Stark <aryeh@21stark.com>`).
+
+**3d.ii — Commit the plan + review summary** (path-pathspec form; never `git commit -a`):
+
+```bash
+git add -- "$plan_path" "$review_summary_path"
+git commit -m "docs(plan): implementation plan for $(basename -- "$path")
+
+Lead: $lead · Wing: $wing · Rounds: $rounds ($final_verdict)" \
+  -- "$plan_path" "$review_summary_path"
+```
+
+If the commit fails (hook rejection, nothing new to commit), warn and continue — the files are already on disk from 3b/3c.
+
+**3d.iii — Open the PR and push (only when none exists):**
+
+```bash
+if [ "$open_pr" = 1 ]; then
+  git push -u origin HEAD
+  created=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app "$lead_app" \
+      --repo "$REPO" pr create \
+      --head "$branch" \
+      --base "$default_branch" \
+      --title "Plan: $(basename -- "$path")" \
+      --body "Implementation plan generated from \`$path\` (lead \`$lead\`, wing \`$wing\`). Plan at \`$plan_path\`; per-round review summary at \`$review_summary_path\`.")
+  pr_number=$(printf '%s\n' "$created" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
+fi
+```
+
+Push/create failure → warn and continue; the commit is durable locally and the user can open the PR manually. For an **existing** PR, do **not** push — the user controls when the branch goes up; the comment below still posts via the API.
+
+**3d.iv — Post the review summary comment** under the lead's App (skip if there's still no `pr_number`, e.g. the open in 3d.iii failed). Post as an issue comment (`pr comment`), not a PR review — review comments live under `/pulls/N/reviews` and are harder to surface:
+
+```bash
+export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app "$lead_app" token)
+[ -n "$pr_number" ] && node --experimental-strip-types "$TOOLS/github_app.ts" --app "$lead_app" \
+  pr comment "$pr_number" --body "$summary"
 ```
 
 ## Phase 4: Persist history

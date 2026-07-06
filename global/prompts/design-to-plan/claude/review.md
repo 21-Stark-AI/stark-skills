@@ -19,6 +19,8 @@ Walk every item. Each missed item → blocking finding.
 6. **Verification + rollback** — Every phase has explicit verification steps (commands to run, tests to pass) and a rollback procedure.
 7. **Operational tasks named** — Infrastructure provisioning (Terraform, cloud resources, IAM, DB setup), monitoring, retention jobs, partition maintenance, certificate rotation must be explicit first-class tasks, not "notes" or "future work".
 8. **Auth threading** — If the design mandates auth headers / tokens / IAM, every verification curl/test in the plan must include them.
+9. **Interface contracts declared** — Every task whose output another task consumes must declare its `Interfaces` block (Consumes / Produces with exact names + signatures). A task that produces something later tasks depend on but names no interface is a blocking gap — the parallel/out-of-order implementer can't coordinate without it.
+10. **Behavior-changing tasks name a test** — Every task that changes runtime behavior must name the test that proves it and its key assertion. "Acceptance criteria" prose with no named test is a gap. (Don't demand full test code — demand that the proving test is identified.)
 
 ## Calibration
 

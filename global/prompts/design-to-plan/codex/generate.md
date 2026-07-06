@@ -19,6 +19,9 @@ Produce a markdown document with this structure:
 - Environment, tooling, access, and dependency requirements
 - Setup commands where applicable
 
+### 2.5 Global Constraints
+- The design's project-wide requirements — version floors, dependency limits, naming rules, platform requirements — one line each, exact values copied **verbatim** from the design. Every task implicitly inherits this section, so make it complete and unambiguous.
+
 ### 3. Phases
 For each phase:
 
@@ -32,6 +35,8 @@ For each phase:
 1. [Task title]
    - Concrete implementation steps
    - Files and components touched
+   - Interfaces — **Consumes:** exact signatures this task uses from earlier tasks. **Produces:** exact function/type/endpoint names + signatures later tasks depend on. An implementer sees only their own task; this block is how they learn what neighboring tasks expose (critical when tasks run out of order or in parallel worktrees).
+   - Test: for any task that changes runtime behavior, name the test that proves it and its key assertion (the executor auto-detects the test command; you name what must hold, not full test code)
    - Done-when criteria
 
 ### Risks
@@ -55,6 +60,7 @@ For each phase:
 ## Guidelines
 - Every task should be concrete enough to implement without re-reading the design
 - Include actual file paths and function signatures where the design specifies them
+- **Right-size tasks:** a task is the smallest unit that carries its own test/verification cycle and is worth a fresh reviewer's gate. Fold setup, config, and scaffolding into the task whose deliverable needs them; split only where a reviewer could reject one task while approving its neighbor.
 - Flag design gaps that force implementation guesses
 - Prefer incremental delivery — each phase should leave the system in a working state
 - No filler — if a section has nothing to say, omit it

@@ -20,6 +20,8 @@ Walk every item. Each missed item → blocking finding.
 7. **Verification + rollback** — Every phase has explicit verification commands and a rollback procedure. Verification commands must run as-written.
 8. **Infrastructure provisioning** — Terraform, cloud resources, IAM, DB schemas, secrets, monitoring, retention, partition maintenance, cert rotation must be explicit first-class tasks in specific phases.
 9. **Auth threading** — Every verification curl / test / API call that needs auth must show the auth header / token explicitly. "Assume auth is set up" is not acceptable.
+10. **Interface contracts declared** — Every task whose output another task consumes must declare its `Interfaces` block (Consumes / Produces with exact names + signatures). A task that produces something later tasks depend on but names no interface is a blocking gap — the parallel/out-of-order implementer can't coordinate without it.
+11. **Behavior-changing tasks name a test** — Every task that changes runtime behavior must name the test that proves it and its key assertion. "Acceptance criteria" prose with no named test is a gap. (Don't demand full test code — demand that the proving test is identified.)
 
 ## Calibration
 

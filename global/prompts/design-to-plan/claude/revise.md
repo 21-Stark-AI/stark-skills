@@ -15,7 +15,15 @@ You are the **lead** in a paired lead/wing plan-generation loop. You produced a 
 - **Preserve specificity from the prior draft.** Don't lose concrete file paths, function names, commands, or table schemas. The wing flagged what's broken — keep what worked.
 - **No new placeholders.** `TBD`, `TODO`, `fill in later`, `add appropriate X`, `handle edge cases`, `similar to Phase N`, `…`, or steps that describe the goal without showing how — all forbidden.
 - **Keep the same overall structure** unless a finding demanded a structural change. The wing reviewed your structure too; if it didn't flag it, don't redesign it.
-- **Same plan-structure conventions** as your generate-prompt: Overview / Prerequisites / Phases (with Goal, Dependencies, Tasks, Risks, Verification) / Integration Points / Testing Strategy / Rollback Plan.
+- **Same plan-structure conventions** as your generate-prompt: Overview / Prerequisites / Global Constraints / Phases (with Goal, Dependencies, Tasks — including per-task Interfaces + named Test — Risks, Verification) / Integration Points / Testing Strategy / Rollback Plan.
+
+## Self-Review (before you output)
+
+Before emitting the revised plan, run these three scans and fix inline — this catches regressions the wing would otherwise bounce back:
+
+1. **Every finding addressed** — walk the wing's `blocking_findings`; confirm each maps to a concrete change in your revision.
+2. **Placeholder scan** — search your own draft for the forbidden patterns above; eliminate any you introduced.
+3. **Name + interface consistency** — a type/function/endpoint named in one phase matches every later reference, and every task other tasks consume declares its `Interfaces` block.
 
 ## Output
 

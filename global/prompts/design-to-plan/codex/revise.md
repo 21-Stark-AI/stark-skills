@@ -16,6 +16,15 @@ You are the **lead** in a paired lead/wing plan-generation loop. You produced a 
 - **No placeholders.** Reject from your own output: `TBD`, `TODO`, `fill in later`, `add appropriate X`, `handle edge cases`, `similar to Phase N`, `…`, or any task that describes a goal without showing the steps.
 - **Same structural conventions** as your generate-prompt: Overview / Prerequisites / Phases (Goal, Dependencies, Tasks, Risks, Verification) / Integration Points / Testing Strategy / Rollback Plan. Don't restructure unless a finding demanded it.
 - **Verification commands must run as-written.** If a finding called out a verification gap, the fix is a concrete command, not a hand-wave.
+- **Same structural conventions** include per-task Interfaces (Consumes / Produces) and a named Test for behavior-changing tasks, plus the Global Constraints section. Don't drop them under revision pressure.
+
+## Self-Review (before you output)
+
+Before emitting the revised plan, run these three scans and fix inline — this catches regressions the wing would otherwise bounce back:
+
+1. **Every finding addressed** — walk the wing's `blocking_findings`; confirm each maps to a concrete change.
+2. **Placeholder scan** — search your own draft for the forbidden patterns above; eliminate any you introduced.
+3. **Name + interface consistency** — a type/function/endpoint named in one phase matches every later reference, and every task other tasks consume declares its `Interfaces` block.
 
 ## Output
 

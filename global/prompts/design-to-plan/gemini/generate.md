@@ -20,6 +20,9 @@ Produce a markdown document with this structure:
 - Required infrastructure, access, tools, and dependencies
 - Parallel-ready prep work
 
+### 2.5 Global Constraints
+- The design's project-wide requirements — version floors, dependency limits, naming rules, platform requirements — one line each, exact values copied **verbatim** from the design. Every task implicitly inherits this section; make it complete and unambiguous.
+
 ### 3. Phases
 For each phase:
 
@@ -34,6 +37,8 @@ For each phase:
 1. [Task title]
    - Implementation steps
    - Affected components
+   - Interfaces — **Consumes:** exact signatures this task uses from earlier tasks. **Produces:** exact function/type/endpoint names + signatures later tasks depend on. An implementer sees only their own task; this block is how they learn what neighboring tasks expose — doubly important for the parallel work streams you mark below.
+   - Test: for any task that changes runtime behavior, name the test that proves it and its key assertion (the executor auto-detects the test command; you name what must hold, not full test code)
    - Acceptance criteria
 
 ### Risks
@@ -61,6 +66,7 @@ For each phase:
 ## Guidelines
 - Explicitly mark which phases can execute in parallel vs. which are sequential
 - Front-load risky or uncertain work — don't leave the hardest parts for last
+- **Right-size tasks:** a task is the smallest unit that carries its own test/verification cycle and is worth a fresh reviewer's gate. Fold setup, config, and scaffolding into the task whose deliverable needs them; split only where a reviewer could reject one task while approving its neighbor.
 - Be specific: file paths, function names, data structures from the design
 - Call out design ambiguities that need resolution before implementation
 - Every phase must leave the system deployable, even if incomplete
