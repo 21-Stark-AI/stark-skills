@@ -108,9 +108,9 @@ Dispatch the paired lead/wing loop. The dispatcher runs the lead in round 1, the
 ```bash
 node --experimental-strip-types "$TOOLS/plan_dispatch.ts" \
   --design-file "$path" \
-  --generate-prompt-file "$PROMPTS/design-to-plan/$lead/generate.md" \
-  --review-prompt-file "$PROMPTS/design-to-plan/$wing/review.md" \
-  --revise-prompt-file "$PROMPTS/design-to-plan/$lead/revise.md" \
+  --generate-prompt-file "$PROMPTS/spec-to-plan/$lead/generate.md" \
+  --review-prompt-file "$PROMPTS/spec-to-plan/$wing/review.md" \
+  --revise-prompt-file "$PROMPTS/spec-to-plan/$lead/revise.md" \
   --lead "$lead" \
   --wing "$wing" \
   --max-rounds "$max_rounds" \
@@ -186,7 +186,7 @@ Naming: replace `-design.md` with `-plan.md`. If the design filename doesn't end
 
 ### 3c. Write review summary (skip in --dry-run)
 
-Write per-round details to `{design-name}.d2p-review.md` alongside the design file. Store the result as `$review_summary_path` (referenced in 3d).
+Write per-round details to `{design-name}.s2p-review.md` alongside the design file. Store the result as `$review_summary_path` (referenced in 3d).
 
 Contents:
 - Per-round verdict, blocking findings, non-blocking suggestions, summary
@@ -269,7 +269,7 @@ export GH_TOKEN=$(node --experimental-strip-types "$TOOLS/github_app.ts" --app "
 ## Phase 4: Persist history
 
 ```bash
-mkdir -p ~/.claude/code-review/history/design-to-plan/{design-filename}
+mkdir -p ~/.claude/code-review/history/spec-to-plan/{design-filename}
 ```
 
 Write:

@@ -82,7 +82,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 - `global/config.json` — default config schema (models, runtime, triage, cost, etc.)
 - `global/prompts/{claude,codex,gemini}/` — per-agent × per-domain PR review prompts (6 domains: architecture, behavior, type-safety, security, test-coverage, spec-conformance) + `agent.md` preamble + `classifier.md`; codex also has `fixer.md`
 - `global/prompts/{design-review,plan-review}/` — per-agent + shared `domains/` doc review prompts
-- `global/prompts/design-to-plan/` — per-agent `generate`/`review`/`revise` plan-generation prompts
+- `global/prompts/spec-to-plan/` — per-agent `generate`/`review`/`revise` plan-generation prompts
 - `global/prompts/copilot/` — `/stark-copilot` lead/wing `implement`/`review` prompts
 - `global/prompts/triage/` — domain triage prompts and manifest
 - `standards/templates/` — PR template, ADR template, MkDocs scaffold, staleness config
