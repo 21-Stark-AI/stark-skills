@@ -6,7 +6,7 @@ If sub-agents return 0 findings or errors, check the dispatch layer:
   (codex, gpt-5.5, `model_reasoning_effort=xhigh`) reviews each domain in
   parallel via `child_process.spawn`; the wing (claude, opus-4-8) emits JSON
   patches that the host applies. There is no Gemini agent in this flow.
-- **Prompts dir**: `--prompts-dir design-review` — loads from `global/prompts/design-review/{agent}/`
+- **Prompts dir**: `--prompts-dir spec-review` — loads from `global/prompts/spec-review/{agent}/`
 - **CLI flags per agent**:
   - Lead — Codex: `codex exec -c ... --ephemeral --json -o <tmpfile> -` (prompt via stdin, output from `-o` file)
   - Wing — Claude: `claude -p - --output-format text --model claude-opus-4-8` (prompt via stdin)

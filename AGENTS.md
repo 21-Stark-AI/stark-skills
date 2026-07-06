@@ -81,7 +81,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 ### Config & prompts
 - `global/config.json` — default config schema (models, runtime, triage, cost, etc.)
 - `global/prompts/{claude,codex,gemini}/` — per-agent × per-domain PR review prompts (6 domains: architecture, behavior, type-safety, security, test-coverage, spec-conformance) + `agent.md` preamble + `classifier.md`; codex also has `fixer.md`
-- `global/prompts/{design-review,plan-review}/` — per-agent + shared `domains/` doc review prompts
+- `global/prompts/{spec-review,plan-review}/` — per-agent + shared `domains/` doc review prompts
 - `global/prompts/spec-to-plan/` — per-agent `generate`/`review`/`revise` plan-generation prompts
 - `global/prompts/copilot/` — `/stark-copilot` lead/wing `implement`/`review` prompts
 - `global/prompts/triage/` — domain triage prompts and manifest
@@ -110,7 +110,7 @@ All skills live in `skill/stark-*/SKILL.md`; `install.sh` symlinks them for Clau
 - `/stark-copilot <plan-or-prompt> [--lead AGENT] [--wing AGENT] [--plan-slug SLUG]` — autonomous implementation with paired lead/wing subagents; issue-driven mode when plan has been decomposed via `/stark-plan-to-tasks`
 - `/stark-review [PR_NUMBER]` — single-agent PR code review (1 LLM × triage-selected domains, fast/cheap). Fix-loop `test_command` is auto-detected from the **trusted** `--config-root` (never the PR worktree) via `detectTestCommand()` when unset — no brittle pinned command required.
 - `/stark-review-improvement [--prompts-dir DIR]` — improve prompts based on review assessment (PR or design/plan review)
-- `/stark-review-spec-improvement` — improve design review prompts (wraps /stark-review-improvement with --prompts-dir design-review)
+- `/stark-review-spec-improvement` — improve design review prompts (wraps /stark-review-improvement with --prompts-dir spec-review)
 
 ### Workflow & Ops
 

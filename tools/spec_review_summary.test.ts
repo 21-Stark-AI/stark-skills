@@ -24,10 +24,10 @@ import {
   type Finding,
   type RoundData,
   type SummaryInput,
-} from "./design_review_summary.ts";
+} from "./spec_review_summary.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.join(HERE, "design_review_summary.ts");
+const CLI = path.join(HERE, "spec_review_summary.ts");
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -341,9 +341,9 @@ test("CLI runs when invoked through a symlink (Node 25 strip-types regression)",
     return;
   }
   const realScript = fileURLToPath(
-    new URL("./design_review_summary.ts", import.meta.url),
+    new URL("./spec_review_summary.ts", import.meta.url),
   );
-  const linkedScript = path.join(tmpDir, "design_review_summary.ts");
+  const linkedScript = path.join(tmpDir, "spec_review_summary.ts");
   try {
     fs.symlinkSync(realScript, linkedScript);
     const res = spawnSync(
@@ -354,7 +354,7 @@ test("CLI runs when invoked through a symlink (Node 25 strip-types regression)",
     // Assert on the actual --help output, not just any non-empty stream:
     // a loader or parser failure would also print to stderr and falsely pass.
     assert.equal(res.status, 0, `exit ${res.status}; stderr=${res.stderr}`);
-    assert.match(res.stdout, /Usage: design_review_summary/);
+    assert.match(res.stdout, /Usage: spec_review_summary/);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

@@ -1,4 +1,4 @@
-# Security Review — Design Documents
+# Security Review — Spec Documents
 
 **Persona: Security Architect**
 

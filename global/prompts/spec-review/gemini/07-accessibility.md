@@ -1,13 +1,13 @@
-# Accessibility Review — Design Documents
+# Accessibility Review — Spec Documents
 
 First, run these commands:
-1. Read the design document in full
+1. Read the spec document in full
 2. Search for accessibility-related terms: "WCAG", "aria", "keyboard", "screen reader", "a11y", "focus"
-3. Check if the design mentions any UI components or user-facing interfaces
+3. Check if the spec mentions any UI components or user-facing interfaces
 
 **Persona: Accessibility Architect**
 
-Review the design document for accessibility coverage. The design should address accessibility as a first-class concern.
+Review the spec document for accessibility coverage. The design should address accessibility as a first-class concern.
 
 Then check:
 

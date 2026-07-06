@@ -130,14 +130,14 @@ test("loadPlanReviewConfig: repo section overrides global", () => {
   }
 });
 
-test("loadPlanReviewConfig: custom config section (design_review)", () => {
+test("loadPlanReviewConfig: custom config section (spec_review)", () => {
   const dir = tmp();
   try {
     fs.writeFileSync(
       path.join(dir, "config.json"),
-      JSON.stringify({ design_review: { agents: ["codex", "gemini"] } }),
+      JSON.stringify({ spec_review: { agents: ["codex", "gemini"] } }),
     );
-    const cfg = loadPlanReviewConfig(null, dir, "design_review");
+    const cfg = loadPlanReviewConfig(null, dir, "spec_review");
     assert.deepEqual(cfg.agents, ["codex", "gemini"]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

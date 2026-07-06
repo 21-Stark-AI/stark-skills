@@ -344,9 +344,9 @@ export function renderPromptImprovementPlaceholder(): string {
     "",
     "| Signal | Recommended Level | File |",
     "|--------|-------------------|------|",
-    "| <!-- e.g. claude false positives in `general` across designs --> | Global | `global/prompts/design-review/{agent}/{domain}.md` |",
-    "| <!-- e.g. claude false positives only in this repo --> | Repo | `{repo}/.code-review/design-prompts/{agent}/{domain}.md` |",
-    "| <!-- e.g. all agents miss same issue found during fixing --> | Global (all agents) | `global/prompts/design-review/*/{domain}.md` |",
+    "| <!-- e.g. claude false positives in `general` across designs --> | Global | `global/prompts/spec-review/{agent}/{domain}.md` |",
+    "| <!-- e.g. claude false positives only in this repo --> | Repo | `{repo}/.code-review/spec-prompts/{agent}/{domain}.md` |",
+    "| <!-- e.g. all agents miss same issue found during fixing --> | Global (all agents) | `global/prompts/spec-review/*/{domain}.md` |",
     "| <!-- e.g. findings irrelevant to this design type --> | Repo config | `disabled_domains` in config |",
   ].join("\n");
 }
@@ -375,7 +375,7 @@ function parseArgs(argv: string[]): { input: string; asJson: boolean } {
     else if (arg === "--json") asJson = true;
     else if (arg === "-h" || arg === "--help") {
       console.log(
-        "Usage: design_review_summary [--input PATH | -] [--json]\n" +
+        "Usage: spec_review_summary [--input PATH | -] [--json]\n" +
           "\n" +
           "Reads the SummaryInput JSON from --input (or stdin if '-') and\n" +
           "emits the Phase 4 markdown summary on stdout.",

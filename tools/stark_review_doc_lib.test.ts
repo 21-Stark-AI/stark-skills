@@ -342,7 +342,7 @@ describe("discoverDomains + resolveDocPromptSources", () => {
   test("merges per-agent and shared domains, agent wins", () => {
     const tmp = mkdtempSync(path.join(os.tmpdir(), "doc-prompts-"));
     try {
-      const promptsDir = path.join(tmp, "design-review");
+      const promptsDir = path.join(tmp, "spec-review");
       mkdirSync(path.join(promptsDir, "codex"), { recursive: true });
       mkdirSync(path.join(promptsDir, "claude"), { recursive: true });
       mkdirSync(path.join(promptsDir, "domains"), { recursive: true });
@@ -358,7 +358,7 @@ describe("discoverDomains + resolveDocPromptSources", () => {
         agent: "codex",
         domain: "completeness",
         promptsDir,
-        repoSubdir: "design-prompts",
+        repoSubdir: "spec-prompts",
       });
       assert.equal(c.agentMd, "CODEX_AGENT_MD");
       assert.equal(c.domainPrompt, "AGENT_CODEX");
@@ -368,7 +368,7 @@ describe("discoverDomains + resolveDocPromptSources", () => {
         agent: "codex",
         domain: "security",
         promptsDir,
-        repoSubdir: "design-prompts",
+        repoSubdir: "spec-prompts",
       });
       assert.equal(s.domainPrompt, "SECURITY_DOMAIN");
     } finally {
@@ -379,14 +379,14 @@ describe("discoverDomains + resolveDocPromptSources", () => {
   test("repo override beats global", () => {
     const tmp = mkdtempSync(path.join(os.tmpdir(), "doc-prompts-"));
     try {
-      const promptsDir = path.join(tmp, "design-review");
+      const promptsDir = path.join(tmp, "spec-review");
       mkdirSync(path.join(promptsDir, "codex"), { recursive: true });
       writeFileSync(path.join(promptsDir, "codex", "01-completeness.md"), "GLOBAL");
 
       const repoDir = path.join(tmp, "repo");
-      mkdirSync(path.join(repoDir, ".code-review", "design-prompts", "codex"), { recursive: true });
+      mkdirSync(path.join(repoDir, ".code-review", "spec-prompts", "codex"), { recursive: true });
       writeFileSync(
-        path.join(repoDir, ".code-review", "design-prompts", "codex", "01-completeness.md"),
+        path.join(repoDir, ".code-review", "spec-prompts", "codex", "01-completeness.md"),
         "REPO_OVERRIDE",
       );
 
@@ -395,7 +395,7 @@ describe("discoverDomains + resolveDocPromptSources", () => {
         domain: "completeness",
         promptsDir,
         repoDir,
-        repoSubdir: "design-prompts",
+        repoSubdir: "spec-prompts",
       });
       assert.equal(r.domainPrompt, "REPO_OVERRIDE");
     } finally {
@@ -406,14 +406,14 @@ describe("discoverDomains + resolveDocPromptSources", () => {
   test("throws when prompt cannot be resolved anywhere", () => {
     const tmp = mkdtempSync(path.join(os.tmpdir(), "doc-prompts-"));
     try {
-      const promptsDir = path.join(tmp, "design-review");
+      const promptsDir = path.join(tmp, "spec-review");
       mkdirSync(promptsDir, { recursive: true });
       assert.throws(
         () => resolveDocPromptSources({
           agent: "codex",
           domain: "nope",
           promptsDir,
-          repoSubdir: "design-prompts",
+          repoSubdir: "spec-prompts",
         }),
         /domain prompt not found/,
       );

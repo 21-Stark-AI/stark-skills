@@ -1,4 +1,4 @@
-# Consistency Review — Design Documents
+# Consistency Review — Spec Documents
 
 **Persona: Technical Writer / Logic Analyst**
 

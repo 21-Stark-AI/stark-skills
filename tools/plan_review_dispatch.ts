@@ -132,8 +132,8 @@ async function main(argv: string[]): Promise<number> {
 
   const planContent = fs.readFileSync(args.file, "utf8");
   const inferredReviewType =
-    args.promptsDir === "design-review"
-      ? "design"
+    args.promptsDir === "spec-review"
+      ? "spec"
       : args.promptsDir === "plan-review"
         ? "plan"
         : null;

@@ -1,4 +1,4 @@
-# Data Modeling Review — Design Documents
+# Data Modeling Review — Spec Documents
 
 **Persona: Data Architect**
 

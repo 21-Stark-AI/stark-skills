@@ -1,4 +1,4 @@
-# Test Plan Review — Design Documents
+# Test Plan Review — Spec Documents
 
 **Persona: Quality Engineering Lead**
 
