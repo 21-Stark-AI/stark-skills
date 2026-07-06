@@ -1,14 +1,15 @@
 # Reviewing logs — the checklist
 
-Apply this to any diff that adds or changes logging. Each item is a **reject
-condition**: if it's true, leave a comment and ask for the fix. Ordered by how
-often it catches something real.
+Apply this to any diff that adds or changes logging. Each item is a **pass
+criterion** — verify it holds. Where it **doesn't**, that's your reject
+condition: leave a comment and ask for the fix. Ordered by how often each one
+catches something real.
 
 ## Structure — is it an event or a sentence?
 
 - [ ] **Message is a constant.** No `fmt.Sprintf`, `%s`, `%v`, or `+` building
   the message string. Variable data lives in fields, not the message.
-  → *"Move `%s` into a field so these lines aggregate: `log.Info("user synced", "user", email)`."*
+  → *"Move `%s` into a field so these lines aggregate: `log.Info("user synced", "user_id", id)`."*
 - [ ] **Fields are typed, not stringified.** `"count", n` not `"count", strconv.Itoa(n)`;
   `"duration_ms", d.Milliseconds()` not `"took", d.String()`.
 - [ ] **Keys match the repo's names.** Same concept → same key everywhere
@@ -18,9 +19,10 @@ often it catches something real.
 ## Level — audience and action
 
 - [ ] **Level matches the audience+action table**, not the emotional weight.
-- [ ] **No expected condition at ERROR.** 404-not-found, `context.Canceled` on
+- [ ] **No handled condition at ERROR.** 404-not-found, `context.Canceled` on
   shutdown, retried-then-succeeded, skipped-malformed-record → WARN or INFO.
-  Ask: *"if this fired 10k times tonight, is it a page?"* No → not ERROR.
+  Test: *"did the operation fail, or did we handle it?"* Handled → not ERROR.
+  (Levels label events; paging is an SLO/metrics decision, not "an ERROR fired.")
 - [ ] **No failure buried at INFO/DEBUG.** A real lost-work failure must be ERROR.
 - [ ] **INFO reads as a story.** Only lifecycle + notable state changes at INFO.
   Per-item, per-iteration, per-page detail → DEBUG.
@@ -39,7 +41,7 @@ often it catches something real.
 
 - [ ] **Failure lines carry the error.** `"error", err` present on every failure.
 - [ ] **Failure lines carry the subject.** *Which* resource/user/request failed
-  (`resource_id`, `user`, `request_id`).
+  (`resource_id`, `user_id`, `request_id`) — a stable id, not PII.
 - [ ] **Operations carry outcome + cost.** A canonical completion line with
   `duration_ms`, counts (`written`/`skipped`/`failed`), and `status`.
 - [ ] **Message names the operation.** `"group write failed"` not `"error"` /
@@ -48,10 +50,14 @@ often it catches something real.
 ## Safety — nothing that shouldn't be in a log
 
 - [ ] **No secrets.** Tokens, passwords, API keys, auth headers, cookies,
-  private keys, connection strings. Prefer structural redaction at the handler.
-- [ ] **No PII beyond what's needed.** Log ids, not full profiles; not full
-  request/response bodies.
+  private keys, connection strings — kept out of fields, messages, *and* error
+  strings. A handler denylist is a backstop, not a license to pass them.
+- [ ] **No PII beyond what's needed.** Log a stable id (`user_id`), not emails,
+  names, or full profiles; not full request/response bodies.
 - [ ] **No giant payloads.** Truncate/size-cap large values; don't dump blobs.
+- [ ] **No log injection.** User-controlled data (incl. the message) is escaped
+  for newlines/control chars so it can't forge extra log lines — put it in
+  fields, not the message string.
 
 ## Volume — will it flood?
 

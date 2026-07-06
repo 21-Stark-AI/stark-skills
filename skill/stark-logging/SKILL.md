@@ -50,31 +50,37 @@ by **who needs to read it** and **what they must do**.
 | DEBUG | you, diagnosing later | internal steps: cache miss, page N fetched, chosen branch | none in normal ops; on in the local run folder, off on the console | high, fine |
 | INFO | the operator | **the story of the run**: lifecycle + notable state changes (started, connected, N processed, done) | none — this is the happy path narrative | **low.** If the INFO stream doesn't read like a story, it's wrong |
 | WARN | the operator, eventually | unexpected but **handled**: retried, fell back, degraded, skipped a bad record | glance when convenient; a *pattern* of WARN is the real signal | low |
-| ERROR | on-call | an operation **failed and could not complete**; work was lost or skipped | investigate — but the process keeps running | ~zero in a healthy run |
+| ERROR | on-call / triage | an operation or request **failed**, or an invariant broke | investigate the failure | ~zero in a healthy run |
 | FATAL | on-call | the process **cannot continue**; log then exit non-zero | the program is down; immediate | at most once, ever |
 
-Two decisive questions:
+**Levels label events; they are not your alerting system.** Paging comes from
+SLOs and metrics (error *rate*, latency, saturation) — not from "an ERROR was
+logged." A single failed request is legitimately ERROR without paging anyone.
+Keep the two ideas separate.
 
-1. **"If this fired 10,000 times tonight, would I want to be paged?"**
-   No → it is not ERROR. Expected-and-handled is WARN; expected-and-fine is INFO/DEBUG.
-2. **"Can a new operator read only the INFO lines and know what the run did?"**
-   No → your INFO is either too sparse (add lifecycle events) or too noisy
+Two heuristics that settle most disputes:
+
+1. **ERROR vs WARN — "did the operation fail, or did we handle it?"** A retried
+   timeout that then succeeded, a skipped malformed row, a `context.Canceled` on
+   shutdown, an expected 404 the contract allows — all **handled** → WARN or
+   INFO. ERROR is for a failure the code could not paper over.
+2. **INFO bar — "can a new operator read only the INFO lines and know what the
+   run did?"** No → INFO is too sparse (add lifecycle events) or too noisy
    (demote per-item chatter to DEBUG).
 
-An expected 404, a retried timeout, a skipped malformed row are **not ERROR**.
-A `context.Canceled` on shutdown is not ERROR. ERROR means *someone lost work.*
-
-## The eight rules
+## The rules
 
 1. **Constant message, data in fields.**
    `log.Error("connector sync failed", "connector", name, "error", err)` —
    never `log.Error(fmt.Sprintf("sync %s failed: %v", name, err))`.
    Constant messages aggregate and alert; interpolated ones are unique strings.
 
-2. **Log once, at the boundary.**
-   Deep in the stack, **wrap and return** (`fmt.Errorf("fetch groups: %w", err)`).
-   Log it **exactly once**, at the top, where it is handled or swallowed.
-   Log-and-return produces the same error N times with N stack depths.
+2. **Log a failure once — don't duplicate the same error chain.**
+   Deep in the stack, **wrap and return** (`fmt.Errorf("fetch groups: %w", err)`);
+   log the failure at the boundary that handles or swallows it. Logging *and*
+   returning the same error prints it N times at N stack depths. (This forbids
+   *duplicating one failure* — a retry, a fallback, or a swallowed-but-notable
+   error each still deserve their own event, usually WARN or DEBUG.)
 
 3. **Thread context; never retype it.**
    At the start of a unit of work, bind it once:
@@ -88,24 +94,37 @@ A `context.Canceled` on shutdown is not ERROR. ERROR means *someone lost work.*
    file and `user_id` in the next means you can't correlate across the codebase.
    Keep the key list in the repo's logging doc.
 
-5. **One canonical event per operation.**
+5. **Emit a canonical completion event; don't scatter breadcrumbs.**
    End each unit of work with **a single wide line** carrying the outcome and
    metrics — `log.Info("sync complete", "written", 98, "skipped", 2, "duration_ms", 8123, "status", "ok")` —
-   rather than twenty breadcrumbs at INFO. Breadcrumbs are DEBUG. One rich event
-   beats ten thin ones for both humans and dashboards.
+   instead of twenty thin INFO breadcrumbs (those are DEBUG). A long-running job
+   may also emit a **start**, a **state-transition**, and periodic **progress/
+   heartbeat** events — keep them few, wide, and sampled, never per-item.
 
-6. **Level = audience + action** (the table above). Never ERROR an expected
-   condition; never bury a failure at INFO.
+6. **Level = audience + action** (the table above). Never ERROR an expected,
+   handled condition; never bury a real failure at INFO.
 
-7. **Never log secrets or PII — structurally.**
-   Redact at the **handler** (denylist keys: token, secret, password,
-   authorization, api_key, cookie, …), not by remembering at each call site.
-   Never log whole request/response bodies, auth headers, or raw tokens.
+7. **Never log secrets or PII — and don't trust redaction to save you.**
+   The rule is upstream: never pass a token, credential, auth header, or full
+   request/response body to the logger, and log a **stable id** (`user_id`), not
+   an email or name. A handler-level denylist (token, secret, authorization,
+   api_key, cookie, …) is a **backstop** — it blanks matching *keys*, but it
+   cannot see a secret hidden in a message, an `error` string, a URL/DSN, or an
+   opaque struct. Redaction is the last line of defense, not the first.
 
-8. **Bound the volume.**
-   No unbounded per-item INFO inside a loop over N records — log the **summary**.
-   Per-item detail is DEBUG; hot paths get sampled or rate-limited. A log that
-   floods is a log nobody reads.
+8. **Bound the volume — summarize and sample.**
+   No unbounded per-item INFO in a loop over N records — log the **summary**
+   (`"processed", n, "failed", f`); per-item detail is DEBUG. For hot paths pick
+   a concrete pattern: **first-N-then-every-Kth**, **keyed sampling** (one line
+   per distinct error kind per interval + a suppressed count), or a **per-interval
+   rollup**. Never sample audit/security events; never drop the *first*
+   occurrence. Guard expensive fields behind a level check
+   (`if log.Enabled(ctx, LevelDebug) { … }`) so a disabled log costs nothing.
+
+9. **Correlate.** `With` threads a `run_id` within a process; across services
+   propagate a trace/span id and prefer the context-aware calls
+   (`log.InfoContext(ctx, …)`) so a handler can pull ids/deadlines from
+   `context.Context`. On GCP, emit `logging.googleapis.com/trace` to join logs to traces.
 
 ## Before → after
 
@@ -121,20 +140,23 @@ func (c *Conn) Sync(u User) error {
     return nil
 }
 
-// ✅ Constant messages + fields, context bound once, handled-once,
-//    secret never passed, outcome is one canonical event.
+// ✅ Constant messages + fields, context bound once, failure handled once,
+//    a stable id (not PII/secret), and the operation ends as one canonical event.
 func (c *Conn) Sync(ctx context.Context, u User) error {
-    log := c.log.With("operation", "sync_user", "user", u.Email) // no token
-    log.Debug("writing user")
+    log := c.log.With("operation", "sync_user", "user_id", u.ID) // id, not email; no token
+    log.Debug("writing user")                                    // per-user detail → DEBUG
     if err := c.write(ctx, u); err != nil {
-        return fmt.Errorf("write user %s: %w", u.Email, err) // wrap, don't log
+        return fmt.Errorf("write user %s: %w", u.ID, err)         // wrap+return; caller logs
     }
-    log.Info("user synced")
     return nil
 }
-// caller (the boundary) logs the failure exactly once, with counts:
-//   if err := conn.Sync(ctx, u); err != nil {
-//       log.Error("sync failed", "user", u.Email, "error", err); failed++
+// The boundary logs each failure once (id, not PII) and emits ONE summary:
+//   for _, u := range users {
+//       if err := conn.Sync(ctx, u); err != nil {
+//           log.Error("user sync failed", "user_id", u.ID, "error", err); failed++
+//           continue
+//       }
+//       ok++
 //   }
 //   log.Info("run complete", "synced", ok, "failed", failed, "duration_ms", ms)
 ```
@@ -148,10 +170,11 @@ func (c *Conn) Sync(ctx context.Context, u User) error {
 | `log.Error(err); return err` | duplicate lines up the stack | wrap+return; log once at boundary |
 | `log.Info` inside a big loop | floods the story; hides real events | summarize; per-item → DEBUG |
 | `userId` here, `user_id` there | correlation breaks | one key name per concept |
-| logging the token / full body / headers | secret & PII leak | redact at handler; log ids not bodies |
-| ERROR on expected 404 / canceled ctx | pages on-call for nothing | WARN or INFO by action |
+| logging the token / full body / headers / email | secret & PII leak (redaction won't catch it in a string) | don't pass it; log a stable id, not bodies |
+| ERROR on expected 404 / canceled ctx | noise on a handled condition | WARN or INFO by action |
 | "failed" with no error, id, or count | not actionable | add `error`, subject id, outcome counts |
 | bare `log.Error("error")` message | says nothing on its own | describe *what operation* failed |
+| newline/user data in the message string | log injection — forges lines | data in fields; sanitize the message |
 
 ## Reviewing someone else's logs
 
@@ -172,16 +195,21 @@ For a CLI that should leave a **local, greppable trail** — human *and* machine
 readable — drop in `references/cli_logger.go`. It gives every run:
 
 ```
-logs/<cmd>/<UTC-timestamp>/
+logs/<cmd>/<UTC-ts>-<run_id>/
   run.log     # human: aligned, colorized on a TTY, DEBUG+ (full detail)
   run.jsonl   # machine: one JSON object per line, DEBUG+, GCP severity
-logs/<cmd>/latest -> <timestamp>   # symlink for `tail -f`
+logs/<cmd>/latest -> <UTC-ts>-<run_id>   # atomically-updated symlink for `tail -f`
 ```
 
 Console (stderr) shows INFO+ so the operator sees the story; the files keep
-everything down to DEBUG. `run_id` correlates the two. TRACE and FATAL are
-wired in (slog has neither natively); `Fatal()` logs then exits non-zero.
-Secret redaction is structural — denylisted keys never reach any sink.
+everything down to DEBUG. `run_id` correlates the two (and disambiguates
+same-second runs). The console level is a live `*slog.LevelVar` (`Verbose` for
+DEBUG; adjustable at runtime). TRACE and FATAL are wired in (slog has neither);
+`CLILogger.Fatal()` logs, closes the files, then exits non-zero — call it only
+from `main`. Redaction is a **backstop** that blanks denylisted keys (incl.
+sensitive group names) and escapes control chars — it is not a guarantee; keep
+secrets/PII out of messages, errors, and bodies (rule 7). Note: the run folder
+grows unbounded — rotate/prune old runs (`logrotate`, or a cleanup on start).
 
 ```go
 lg, err := obs.NewCLI("gws-sync", obs.Options{
