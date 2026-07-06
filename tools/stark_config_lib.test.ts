@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   DEFAULT_FORGE,
   DEFAULT_MODELS,
+  DEFAULT_MODEL_LIMITS,
   DEFAULT_MODEL_RATES,
   DEFAULT_RED_TEAM,
   DEFAULT_RUNTIME,
@@ -20,6 +21,8 @@ import {
   getForgeConfig,
   getForgedReviewConfig,
   getModelId,
+  getModelLimit,
+  getModelLimits,
   getModelRates,
   getModelsConfig,
   getRedTeamConfig,
@@ -149,6 +152,41 @@ test("getModelRates: extra entries from global config are merged in", async () =
     assert.deepEqual(rates["gpt-5.5-pro"], {
       input_per_1m_usd: 25,
       output_per_1m_usd: 100,
+    });
+  });
+});
+
+test("getModelLimit: gpt-5.5-pro returns its verified 128k/1.05M limits", async () => {
+  await withScratchHome(() => {
+    assert.deepEqual(getModelLimit("gpt-5.5-pro"), {
+      max_output_tokens: 128_000,
+      context_window: 1_050_000,
+    });
+  });
+});
+
+test("getModelLimit: unknown model falls back to the conservative floor", async () => {
+  await withScratchHome(() => {
+    assert.deepEqual(getModelLimit("no-such-model"), DEFAULT_MODEL_LIMITS._fallback);
+  });
+});
+
+test("getModelLimits: global config override merges over defaults", async () => {
+  await withScratchHome((home) => {
+    writeGlobalConfig(home, {
+      model_limits: {
+        "custom-model": { max_output_tokens: 4096, context_window: 32000 },
+      },
+    });
+    const limits = getModelLimits();
+    assert.deepEqual(limits["custom-model"], {
+      max_output_tokens: 4096,
+      context_window: 32000,
+    });
+    // Verified default survives the merge.
+    assert.deepEqual(limits["gpt-5.5-pro"], {
+      max_output_tokens: 128_000,
+      context_window: 1_050_000,
     });
   });
 });

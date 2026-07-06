@@ -29,6 +29,7 @@ import {
   type RewriteAction,
   type RewriteProposal,
 } from "./skill_validate.ts";
+import { getModelLimit } from "./stark_config_lib.ts";
 
 type Mode = "api" | "plan";
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -457,8 +458,11 @@ function parseArgs(argv: string[]): CliOptions {
     reasoningEffort: "medium",
     reuseProposal: false,
     skillTargets: [],
-    maxOutputTokens: 16000,
+    // 0 = unset; resolved from the model's limits after parsing (below),
+    // unless --max-output-tokens is passed explicitly.
+    maxOutputTokens: 0,
   };
+  let maxOutputTokensExplicit = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -559,9 +563,17 @@ function parseArgs(argv: string[]): CliOptions {
         readValue(argv, ++index, "--max-output-tokens"),
         10,
       );
+      maxOutputTokensExplicit = true;
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  // Default the output ceiling to the resolved model's full capacity (e.g.
+  // gpt-5.5-pro → 128,000) so long rewrites aren't silently truncated. It's a
+  // ceiling, not a target — a bigger cap adds no cost for normal-length output.
+  if (!maxOutputTokensExplicit) {
+    options.maxOutputTokens = getModelLimit(options.model).max_output_tokens;
   }
 
   if (!Number.isFinite(options.maxOutputTokens) || options.maxOutputTokens <= 0) {

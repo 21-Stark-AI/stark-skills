@@ -316,6 +316,16 @@
       "output_per_1m_usd": 300
     }
   },
+  "model_limits": {
+    "gpt-5.5-pro": {
+      "max_output_tokens": 128000,
+      "context_window": 1050000
+    },
+    "_fallback": {
+      "max_output_tokens": 16000,
+      "context_window": 128000
+    }
+  },
   "automation": {
     "model": "claude-opus-4-8",
     "repos": [

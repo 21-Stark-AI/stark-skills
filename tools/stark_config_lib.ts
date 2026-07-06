@@ -178,6 +178,27 @@ export const DEFAULT_MODEL_RATES: Record<string, ModelRate> = {
   _fallback: { input_per_1m_usd: 100.0, output_per_1m_usd: 300.0 },
 };
 
+/** Per-model capacity limits. `max_output_tokens` is the request-time output
+ *  ceiling (a cap, not a target — the model stops when done, so a higher value
+ *  only prevents truncation, it does not add cost); `context_window` is the
+ *  model's total input+output token capacity, used for input budgeting.
+ *  Single source of truth for anything dispatching a given model. */
+export interface ModelLimits {
+  max_output_tokens: number;
+  context_window: number;
+}
+
+export const DEFAULT_MODEL_LIMITS: Record<string, ModelLimits> = {
+  // gpt-5.5-pro: verified from OpenAI docs (developers.openai.com,
+  // /api/docs/models/gpt-5.5-pro) — 1,050,000 context window, 128,000 max
+  // output tokens.
+  "gpt-5.5-pro": { max_output_tokens: 128_000, context_window: 1_050_000 },
+  // Conservative floor for models without an explicit entry. Deliberately
+  // small so an unknown model never over-promises capacity it may not have;
+  // add a real entry (with a sourced number) rather than relying on this.
+  _fallback: { max_output_tokens: 16_000, context_window: 128_000 },
+};
+
 // ---------------------------------------------------------------------------
 // Remaining config sections (mirror `scripts/config_loader.py:DEFAULT_*`).
 // These complete the port beyond preflight's original needs — the Phase 3
@@ -416,6 +437,18 @@ export function getModelsConfig(): Record<string, ModelEntry> {
 
 export function getModelRates(): Record<string, ModelRate> {
   return deepMerge(DEFAULT_MODEL_RATES, loadGlobalConfig()["model_rates"]);
+}
+
+/** Merged per-model limits (defaults + global `model_limits` override). */
+export function getModelLimits(): Record<string, ModelLimits> {
+  return deepMerge(DEFAULT_MODEL_LIMITS, loadGlobalConfig()["model_limits"]);
+}
+
+/** Resolve one model's limits, falling back to the `_fallback` entry for an
+ *  unknown model id. Never throws. */
+export function getModelLimit(modelId: string): ModelLimits {
+  const limits = getModelLimits();
+  return limits[modelId] ?? limits._fallback;
 }
 
 export function isAgentEnabled(agent: string): boolean {
