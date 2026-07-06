@@ -3,7 +3,7 @@
  * stark_review_doc — multi-round doc review with lead/wing fix loop.
  *
  * Shared dispatcher for /stark-review-spec and /stark-review-plan.
- * Selected with `--prompts-dir design-review|plan-review`.
+ * Selected with `--prompts-dir spec-review|plan-review`.
  *
  *   Lead:  codex (gpt-5.5) at xhigh reasoning, dispatched per-domain in
  *          parallel (capped via --max-codex-concurrent).
@@ -65,17 +65,17 @@ const CLAUDE_DEFAULT_MODEL = "claude-opus-4-8";
 const CODEX_REASONING_EFFORT_XHIGH = 'model_reasoning_effort="xhigh"';
 const DEFAULT_OUTPUT_CAP = 32 * 1024 * 1024;
 
-const VALID_PROMPTS_DIRS = ["design-review", "plan-review"] as const;
+const VALID_PROMPTS_DIRS = ["spec-review", "plan-review"] as const;
 type PromptsDir = (typeof VALID_PROMPTS_DIRS)[number];
 
 // Repo-override subdirectory under .code-review/. Mirrors dispatcher_base.py
-// convention (design-review → design-prompts, plan-review → plan-prompts).
+// convention (spec-review → spec-prompts, plan-review → plan-prompts).
 function repoSubdirFor(promptsDir: PromptsDir): string {
-  return promptsDir === "design-review" ? "design-prompts" : "plan-prompts";
+  return promptsDir === "spec-review" ? "spec-prompts" : "plan-prompts";
 }
 
 function configSectionFor(promptsDir: PromptsDir): string {
-  return promptsDir === "design-review" ? "design_review" : "plan_review";
+  return promptsDir === "spec-review" ? "spec_review" : "plan_review";
 }
 
 // ─── Subprocess runner (lean, signal-aware) ────────────────────────────
@@ -1203,11 +1203,11 @@ interface CliArgs {
 
 function usage(): string {
   return [
-    "Usage: stark_review_doc.ts --doc PATH --prompts-dir design-review|plan-review [options]",
+    "Usage: stark_review_doc.ts --doc PATH --prompts-dir spec-review|plan-review [options]",
     "",
     "Required:",
     "  --doc PATH                 path to design/plan markdown file (repo-relative or absolute)",
-    "  --prompts-dir DIR          one of: design-review, plan-review",
+    "  --prompts-dir DIR          one of: spec-review, plan-review",
     "",
     "Options:",
     "  --repo-dir DIR             repo root (default: current working directory)",
@@ -1229,7 +1229,7 @@ function usage(): string {
 function parseArgs(argv: ReadonlyArray<string>): CliArgs {
   const args: CliArgs = {
     doc: "",
-    promptsDir: "design-review",
+    promptsDir: "spec-review",
     promptsBase: DEFAULT_PROMPTS_BASE,
     repoDir: process.cwd(),
     dryRun: false,

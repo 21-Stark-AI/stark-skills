@@ -38,7 +38,7 @@ describe("stark_review_doc CLI", () => {
   });
 
   test("--doc and --prompts-dir are required", () => {
-    const r = runTool(["--prompts-dir", "design-review"]);
+    const r = runTool(["--prompts-dir", "spec-review"]);
     assert.equal(r.code, 2);
     assert.match(r.stderr, /--doc is required/);
   });
@@ -51,7 +51,7 @@ describe("stark_review_doc CLI", () => {
 
   test("--rounds rejects out-of-range values", () => {
     const r = runTool([
-      "--doc", "x.md", "--prompts-dir", "design-review",
+      "--doc", "x.md", "--prompts-dir", "spec-review",
       "--rounds", "999",
     ]);
     assert.equal(r.code, 2);
@@ -60,7 +60,7 @@ describe("stark_review_doc CLI", () => {
 
   test("--codex-concurrent rejects 0", () => {
     const r = runTool([
-      "--doc", "x.md", "--prompts-dir", "design-review",
+      "--doc", "x.md", "--prompts-dir", "spec-review",
       "--codex-concurrent", "0",
     ]);
     assert.equal(r.code, 2);
@@ -77,19 +77,19 @@ describe("stark_review_doc early errors → receipt JSON", () => {
       // Build a minimal valid prompts tree so dispatch advances past the
       // prompts_dir_missing check and reaches doc_not_found.
       const promptsBase = path.join(tmp, "prompts");
-      mkdirSync(path.join(promptsBase, "design-review", "codex"), { recursive: true });
+      mkdirSync(path.join(promptsBase, "spec-review", "codex"), { recursive: true });
       writeFileSync(
-        path.join(promptsBase, "design-review", "codex", "01-completeness.md"),
+        path.join(promptsBase, "spec-review", "codex", "01-completeness.md"),
         "domain content",
       );
       writeFileSync(
-        path.join(promptsBase, "design-review", "codex", "agent.md"),
+        path.join(promptsBase, "spec-review", "codex", "agent.md"),
         "agent prelude",
       );
 
       const r = runTool([
         "--doc", "does-not-exist.md",
-        "--prompts-dir", "design-review",
+        "--prompts-dir", "spec-review",
         "--prompts-base", promptsBase,
         "--repo-dir", tmp,
         "--dry-run",
@@ -110,7 +110,7 @@ describe("stark_review_doc early errors → receipt JSON", () => {
       writeFileSync(path.join(tmp, "doc.md"), "# doc");
       const r = runTool([
         "--doc", "doc.md",
-        "--prompts-dir", "design-review",
+        "--prompts-dir", "spec-review",
         "--prompts-base", path.join(tmp, "no-such-prompts"),
         "--repo-dir", tmp,
         "--dry-run",
@@ -138,15 +138,15 @@ describe("stark_review_doc early errors → receipt JSON", () => {
       writeFileSync(path.join(tmp, "doc.md"), "# v2 dirty");
 
       const promptsBase = path.join(tmp, "prompts");
-      mkdirSync(path.join(promptsBase, "design-review", "codex"), { recursive: true });
+      mkdirSync(path.join(promptsBase, "spec-review", "codex"), { recursive: true });
       writeFileSync(
-        path.join(promptsBase, "design-review", "codex", "01-completeness.md"),
+        path.join(promptsBase, "spec-review", "codex", "01-completeness.md"),
         "domain content",
       );
 
       const r = runTool([
         "--doc", "doc.md",
-        "--prompts-dir", "design-review",
+        "--prompts-dir", "spec-review",
         "--prompts-base", promptsBase,
         "--repo-dir", tmp,
       ]);

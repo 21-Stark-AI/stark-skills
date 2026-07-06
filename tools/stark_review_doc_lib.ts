@@ -134,7 +134,7 @@ export function resolveDocPromptSources(opts: {
   promptsDir: string;
   repoDir?: string | null;
   /** Repo override subdirectory under `.code-review/`. Matches the Python
-   * dispatcher_base convention (`design-prompts`, `plan-prompts`). */
+   * dispatcher_base convention (`spec-prompts`, `plan-prompts`). */
   repoSubdir: string;
 }): PromptSources {
   const { agent, domain, promptsDir, repoSubdir } = opts;

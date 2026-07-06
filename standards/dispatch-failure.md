@@ -25,7 +25,7 @@ node --experimental-strip-types "$TOOLS/plan_review_dispatch.ts" --prompts-dir <
   --file "$path" --round $round --agents claude --timeout 60
 ```
 
-`<prompts-dir>` is `design-review` or `plan-review`. The single-agent probe
+`<prompts-dir>` is `spec-review` or `plan-review`. The single-agent probe
 isolates whether the failure is per-agent (one CLI broken / unauthenticated)
 or systemic (all CLIs missing, network down).
 
@@ -52,4 +52,4 @@ the normal summary:
 {e.g., "Check API keys/auth", "CLI not installed", "Network issue"}
 ```
 
-Replace `{Doc}` with `Design` or `Plan`.
+Replace `{Doc}` with `Spec` or `Plan`.

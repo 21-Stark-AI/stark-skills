@@ -35,12 +35,12 @@ describe("defaults", () => {
 // --- buildLeadGeneratePrompt -----------------------------------------------
 
 describe("buildLeadGeneratePrompt", () => {
-  test("appends design content under the H2 header", () => {
+  test("appends spec content under the H2 header", () => {
     const out = buildLeadGeneratePrompt("GENERATE-TEMPLATE", "DESIGN-CONTENT");
     assert.match(out, /GENERATE-TEMPLATE/);
-    assert.match(out, /## Design document to plan from/);
+    assert.match(out, /## Spec document to plan from/);
     assert.match(out, /DESIGN-CONTENT/);
-    // Template comes before design (lead reads instructions, then doc).
+    // Template comes before spec (lead reads instructions, then doc).
     assert.ok(out.indexOf("GENERATE-TEMPLATE") < out.indexOf("DESIGN-CONTENT"));
   });
 });
@@ -48,10 +48,10 @@ describe("buildLeadGeneratePrompt", () => {
 // --- buildWingReviewPayload ------------------------------------------------
 
 describe("buildWingReviewPayload", () => {
-  test("includes review template, design, and draft", () => {
+  test("includes review template, spec, and draft", () => {
     const out = buildWingReviewPayload("REVIEW-TEMPLATE", "DESIGN-X", "DRAFT-Y", []);
     assert.match(out, /REVIEW-TEMPLATE/);
-    assert.match(out, /## Design document the plan must implement/);
+    assert.match(out, /## Spec document the plan must implement/);
     assert.match(out, /DESIGN-X/);
     assert.match(out, /## Plan draft under review/);
     assert.match(out, /DRAFT-Y/);
@@ -103,7 +103,7 @@ describe("buildRevisePrompt", () => {
 
 describe("runPlanDispatch preflight", () => {
   const baseOpts = {
-    designContent: "DESIGN",
+    specContent: "DESIGN",
     generatePrompt: "G",
     reviewPrompt: "R",
     revisePrompt: "V",
@@ -158,7 +158,7 @@ describe("CLI", () => {
     assert.match(out, /Usage: plan_dispatch/);
   });
 
-  test("missing --design-file exits 2", () => {
+  test("missing --spec-file exits 2", () => {
     const file = path.resolve(import.meta.dirname ?? "", "plan_dispatch.ts");
     try {
       execFileSync(
