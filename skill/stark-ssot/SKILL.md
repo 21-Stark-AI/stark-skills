@@ -48,24 +48,48 @@ one?**
   data shape, lifecycle, or product context) → *not* duplication. Same shape ≠
   same responsibility. Keep them separate and say why (below).
 
-## Where the owners already live in this repo
+## Find THIS repo's owners first
 
-This isn't abstract here — the fleet already centralizes the exact things people
-reflexively hardcode. Reach for the owner:
+The owner is a repo-local fact — don't assume it, discover it. Before you copy a
+value or a rule, spend two minutes learning where the target repo already keeps
+its single sources of truth, then route through those. Look for:
 
-| You're about to hardcode… | The owner to call instead |
-|---|---|
-| a **model id** (`claude-opus-4-8`, `gpt-5.5`…) | `stark_config_lib.getModelId()` / `isAgentEnabled()` — never a literal in a tool |
-| a **GCP project / Vertex location** | `vertex_config_lib.resolveVertexProject()` / `resolveVertexLocation()` — resolved at runtime, never committed in source |
-| `~/.claude/code-review/{tools,prompts,...}` | `asset_root_lib.assetRoot()/assetPromptsDir()/stateRoot()` — the plugin-resolution seam; a literal breaks installed-plugin runs |
-| a **GitHub App id / installation / keychain entry** | the `APPS` map in `github_app_lib.ts` — the single source; skills mint tokens through it |
-| a **token→USD cost** calc | `cost_lib.computeDispatchCost()` — one home so challenge/fix-plan/fold agree |
-| the **audit DB path** | `red_team_db_resolver` (its `--db > env > config > default` precedence) |
-| an agent **dispatch/env helper** (`run`, `buildAgentEnv`, gemini-home, Vertex env, output parsers) | import from `copilot_dispatch.ts` — `plan_dispatch`/`iac_review` already do; don't re-paste |
-| a **red-team locked field** (personas, model, `enabled`, `stages`, `fix_plan.*`…) | `stark_config_lib.getRedTeamConfig()` enforces them — a repo override that reaches in is rejected by design |
+- **Config / constants:** a config package or loader, a `constants`/`const`
+  block, `locals`/`variables` in Terraform, `.env` schema, a settings module.
+- **Registries / routing:** a provider map, a model/agent/tool registry, a
+  handler or route table, a plugin/connector index.
+- **Domain / calculation modules:** the package that owns a business rule
+  (pricing, quotas, permissions, state machines) rather than each caller.
+- **Type definitions:** a shared enum / union / `const` object the value should
+  come from instead of a magic string.
 
-If you find yourself typing one of the left-column values into a new file, stop:
-the drift the right column prevents is the whole point of this skill.
+Quick discovery moves: grep the exact literal you're about to write (a model id,
+project id, threshold, URL) — if it already appears in a `config`/`registry`/
+`locals`/`const` file, that file is the owner, import from it. Grep the codebase
+for the *concept name* (`timeout`, `model`, `project`, `threshold`) to find the
+canonical key. Read the repo's `CLAUDE.md`/`AGENTS.md` — fleets often name their
+owners and their "never hardcode X" rules there. Only if no owner exists do you
+create the smallest one at the natural module boundary (workflow step 2).
+
+**Worked example — what that discovery yields in `stark-skills`.** This repo has
+already centralized the things people reflexively hardcode; in another repo the
+*shape* is the same but the names differ — find the local equivalents.
+
+| You're about to hardcode… | The owner this repo exposes | The general pattern |
+|---|---|---|
+| a **model id** (`claude-opus-4-8`, `gpt-5.5`…) | `stark_config_lib.getModelId()` / `isAgentEnabled()` | model choice → a config/registry, never a literal in a tool |
+| a **GCP project / region / location** | `vertex_config_lib.resolveVertexProject()` / `resolveVertexLocation()` | environment identity → runtime resolver, never committed in source |
+| a machine-specific **path** (`~/.claude/code-review/{tools,prompts}`) | `asset_root_lib.assetRoot()/assetPromptsDir()/stateRoot()` | path roots → one resolver seam, so relocation/packaging doesn't break |
+| a **credential/App id / key location** | the `APPS` map in `github_app_lib.ts` | auth identity → one map; callers mint through it |
+| a **cost / unit-conversion** calc | `cost_lib.computeDispatchCost()` | shared math → one function so every caller agrees |
+| a **resource path with precedence** (DB, cache) | `red_team_db_resolver` (`--db > env > config > default`) | resolution order → one resolver, not re-implemented per caller |
+| a **dispatch/env helper** (`run`, `buildAgentEnv`, gemini-home, parsers) | import from `copilot_dispatch.ts` (`plan_dispatch`/`iac_review` already do) | shared plumbing → export once, import; don't re-paste |
+| a **policy/config field** that must stay authoritative | `stark_config_lib.getRedTeamConfig()` locked fields | protected policy → owner rejects overrides by design |
+
+The right-hand *pattern* is what travels; the middle column is just this repo's
+instance of it. In a Terraform repo the "owner" is a `locals` block or a shared
+module output; in a Go service it's a `config` struct or a registry package —
+same principle, find the local name.
 
 ## When NOT to unify
 
@@ -101,10 +125,11 @@ that failing case as a regression test at the call site.
    constant, enum, route, model id, timeout, regex, calculation, parser, state
    transition, or decision phrase. Read both the producer and the consumer path.
    Classify the match: exact / semantic / only superficial.
-2. **Find the owner — existing before new.** Prefer a registry, config, shared
-   service, domain util, provider interface, or type that already exists (see
-   the table). Only if none fits, create the **smallest** owner at the natural
-   module boundary — not a new abstraction layer.
+2. **Find the owner — existing before new** (see "Find THIS repo's owners
+   first"). Prefer a registry, config, shared service, domain util, provider
+   interface, `locals`/module output, or type that already exists in *this*
+   repo. Only if none fits, create the **smallest** owner at the natural module
+   boundary — not a new abstraction layer.
 3. **Decide whether to unify** using the one test above. Unify when both places
    answer the same question or must change together. Otherwise record why the
    duplication is intentional and drift-safe.
@@ -118,7 +143,11 @@ that failing case as a regression test at the call site.
    duplicated logic; delete dead exports the consolidation orphaned; confirm the
    behavior is now driven only from the owner.
 
-## Before → after (this repo)
+## Before → after
+
+The first example is a `stark-skills` instance (model id + GCP project → their
+resolvers); the second is domain-agnostic (a pricing threshold → one owner). The
+*move* is identical — replace the literal with a call to the owner.
 
 ```ts
 // ❌ Two sources of truth: the model id and the GCP project are hardcoded here,
@@ -148,13 +177,13 @@ const remaining = Math.max(0, FREE_SHIPPING_THRESHOLD - cartTotal);          // 
 
 ## Anti-pattern quick reference
 
-| Smell in the diff | Why it's bad | Fix |
+| Smell in the diff | Why it's bad | Fix (owner in this repo) |
 |---|---|---|
-| hardcoded model id / GCP project / API URL / timeout in a tool | drifts from config the day it changes | call `stark_config_lib` / `vertex_config_lib` |
-| `~/.claude/code-review/{tools,prompts}` typed out | breaks installed-plugin runs | route through `asset_root_lib` |
-| a GitHub App id / key literal | second source vs the `APPS` map | mint via `github_app_lib` |
-| a hand-rolled token→USD cost | challenge/fold/fix-plan disagree | `cost_lib.computeDispatchCost` |
-| re-pasted `run`/`buildAgentEnv`/gemini-home helper | copies drift silently | import from `copilot_dispatch` |
+| hardcoded model id / GCP project / API URL / timeout in a tool | drifts from config the day it changes | call the repo's config/env resolver (`stark_config_lib` / `vertex_config_lib`) |
+| a machine-specific path typed out (`~/.claude/code-review/{tools,prompts}`) | breaks when relocated/packaged | route through the path resolver (`asset_root_lib`) |
+| a credential / App id / key literal | second source vs the auth map | mint through the auth owner (the `APPS` map / `github_app_lib`) |
+| a hand-rolled cost / unit conversion | callers disagree as rates change | one shared function (`cost_lib.computeDispatchCost`) |
+| re-pasted plumbing helper (`run`/`buildAgentEnv`/env setup) | copies drift silently | import the shared helper (`copilot_dispatch`) |
 | the same calculation in UI and server | one moves, the other lies | one owner; UI formats, doesn't re-derive |
 | "just this one" local branch for behavior owned elsewhere | how a registry rots | put the decision in the provider/router |
 | a parser/regex copied into a second component | two copies diverge silently | export one shared parser |
