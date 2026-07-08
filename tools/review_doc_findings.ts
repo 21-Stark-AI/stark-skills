@@ -26,6 +26,7 @@
  */
 import fs from "node:fs";
 import { realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 import {
   apiGet,
@@ -220,16 +221,50 @@ async function threadIdForComment(opts: {
   return null;
 }
 
-/** Resolve a review thread by its node id. */
+/**
+ * Resolve a review thread by its node id.
+ *
+ * GitHub App installation tokens get "Resource not accessible by integration"
+ * on `resolveReviewThread` even with `pull_requests: write` — the mutation
+ * isn't available to Apps. So resolve through the operator's `gh` user (which
+ * owns the repo and can resolve), and fall back to the App token only if `gh`
+ * is unavailable (e.g. a headless context) — that fallback will no-op-fail
+ * cleanly rather than throw.
+ */
 async function resolveThread(threadId: string, app: AppName): Promise<boolean> {
-  const mutation = `
-    mutation($threadId:ID!){
-      resolveReviewThread(input:{threadId:$threadId}){ thread{ isResolved } }
-    }`;
-  const data = (await graphql(mutation, { app, variables: { threadId } })) as {
-    data?: { resolveReviewThread?: { thread?: { isResolved?: boolean } } };
-  };
-  return data.data?.resolveReviewThread?.thread?.isResolved === true;
+  const mutation =
+    "mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}";
+
+  // 1) operator's gh user (the reliable path).
+  try {
+    const res = spawnSync(
+      "gh",
+      ["api", "graphql", "-f", `query=${mutation}`, "-f", `threadId=${threadId}`],
+      { encoding: "utf-8" },
+    );
+    if (res.status === 0 && res.stdout) {
+      const data = JSON.parse(res.stdout) as {
+        data?: { resolveReviewThread?: { thread?: { isResolved?: boolean } } };
+      };
+      if (data.data?.resolveReviewThread?.thread?.isResolved === true) return true;
+    } else if (res.status !== 0) {
+      log(`gh resolve failed (${res.status}): ${(res.stderr ?? "").trim()}`);
+    }
+  } catch (err) {
+    log(`gh unavailable for resolve: ${(err as Error).message}`);
+  }
+
+  // 2) App-token fallback (usually blocked, but try so headless callers still
+  //    have a chance if the App ever gains the capability).
+  try {
+    const data = (await graphql(mutation, { app, variables: { threadId } })) as {
+      data?: { resolveReviewThread?: { thread?: { isResolved?: boolean } } };
+    };
+    return data.data?.resolveReviewThread?.thread?.isResolved === true;
+  } catch (err) {
+    log(`app-token resolve failed: ${(err as Error).message}`);
+    return false;
+  }
 }
 
 /** Reply-and-resolve a finding's thread. Returns whether it ended resolved. */
