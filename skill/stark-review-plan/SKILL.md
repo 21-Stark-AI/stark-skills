@@ -196,9 +196,16 @@ if [ -n "$WING_ERRORS" ]; then error "Wing fixer issues:"; printf '  %s\n' "$WIN
 [ "$failed" -ne 0 ] && exit 1
 ```
 
-## Phase 5: Success summary + PR posting
+## Phase 5: Post every finding, fix it, resolve its thread
 
-On success, print the human summary:
+**Contract: every finding lands on the PR as its own resolvable thread, every
+finding gets fixed, and each thread is resolved with the fix.** The dispatcher
+already ran the lead/wing loop and auto-fixed what it could; this phase posts
+*all* findings, closes the loop on whatever the wing didn't resolve, and
+resolves each thread. Nothing is dropped and nothing is left open.
+
+Skip this whole phase under `--dry-run` or when no PR was detected/opened in
+Phase 2 (there is nowhere to post). First always print the human summary:
 
 ```text
 Plan Review Complete — {doc}
@@ -212,8 +219,73 @@ Fixes committed: {fixes_committed}
 History: {history_dir}
 ```
 
-If a PR was detected or opened in Phase 2 and `--dry-run` was not set, push any
-dispatcher fix commits (`git push 2>/dev/null || true`), then post the codex raw
+### 5a. Post every finding as a resolvable thread
+
+Write the receipt to a temp file and run the findings poster. For **every**
+distinct finding across every round it opens a file-level (resolvable) review
+thread on the plan; for findings the wing already fixed it replies + resolves
+the thread immediately. It prints the still-open findings (your work list) and
+writes a map file. Re-running is idempotent (findings already posted are
+skipped via an HTML marker).
+
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo "")
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+RECEIPT_FILE=$(mktemp -t stark-review-receipt-XXXXXX)
+MAP_FILE=$(mktemp -t stark-review-map-XXXXXX)
+printf '%s' "$RECEIPT_JSON" > "$RECEIPT_FILE"
+
+POST_OUT=$(node --experimental-strip-types "$TOOLS/review_doc_findings.ts" post \
+    --receipt "$RECEIPT_FILE" --doc "$DOC" --repo "$REPO" --pr "$pr_number" \
+    --map "$MAP_FILE" --app stark-claude ${HEAD_SHA:+--commit-sha "$HEAD_SHA"})
+printf '%s\n' "$POST_OUT"
+```
+
+The `open` array in `$POST_OUT` (re-readable any time via
+`review_doc_findings.ts list --map "$MAP_FILE"`) is the set of findings you must
+still fix by hand.
+
+### 5b. Fix every open finding — ask when unclear
+
+For **each** finding in the `open` list, in order:
+
+1. Read the finding (`title`, `severity`, `domain`, `section`, `description`,
+   `suggestion`) and the plan section it points at.
+2. Decide the fix:
+   - If the fix is clear, apply it to `$DOC` with `Edit`.
+   - **If the fix is ambiguous, has multiple reasonable options, or needs a
+     scope/sequencing decision, STOP and ask the operator** via the
+     `AskUserQuestion` tool with the concrete options — never guess. Apply the
+     operator's choice. ("Ask me" is part of the contract.)
+   - Below-threshold / low-severity findings still get fixed. If, when asked,
+     the operator decides a finding shouldn't be actioned, that decision is a
+     valid resolution — resolve the thread noting why.
+3. Commit the fix(es) to the feature branch and push (**push all commits**):
+
+```bash
+git add -- "$DOC"
+git commit -m "docs(review-plan): fix <finding title> (<domain>/<severity>)"
+git push
+FIX_SHA=$(git rev-parse HEAD)
+```
+
+4. Resolve the finding's thread with a one-line summary of what changed:
+
+```bash
+node --experimental-strip-types "$TOOLS/review_doc_findings.ts" resolve \
+    --map "$MAP_FILE" --finding-id "<id>" \
+    --reply "<what you changed>" --commit-sha "$FIX_SHA"
+```
+
+You may batch several related fixes into one commit and then resolve each of
+their threads against that commit's sha. When done, run
+`review_doc_findings.ts list --map "$MAP_FILE"` and confirm it reports
+`count: 0` — no finding left open.
+
+### 5c. Post the run-summary comments
+
+Retain the two consolidated summary comments for at-a-glance context (these are
+non-resolvable, in addition to the per-finding threads above): the codex raw
 findings under `stark-codex[bot]` and the wing summary under `stark-claude[bot]`:
 
 ```bash
