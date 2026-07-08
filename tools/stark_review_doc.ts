@@ -725,6 +725,10 @@ interface Receipt {
       attempted: number;
       applied: number;
       skipped_by_wing: number;
+      /** finding ids the wing applied a patch for this round. */
+      applied_finding_ids: string[];
+      /** finding ids the wing explicitly declined to patch this round. */
+      skipped_finding_ids: string[];
       patch_failures: Array<{ finding_id: string; old: string; reason: string }>;
       wing_error: string | null;
       commit_sha: string | null;
@@ -951,6 +955,8 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
       attempted: wingOutcome.attempted.length,
       applied: wingOutcome.applied.length,
       skipped_by_wing: wingOutcome.skipped.length,
+      applied_finding_ids: wingOutcome.applied.map((p) => p.finding_id),
+      skipped_finding_ids: wingOutcome.skipped.map((s) => s.finding_id),
       patch_failures: wingOutcome.patch_failures.map((pf) => ({
         finding_id: pf.patch.finding_id,
         old: snippet(pf.patch.old, 100),

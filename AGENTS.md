@@ -32,6 +32,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 - `tools/dispatcher_base_lib.ts` — shared dispatch base: hierarchical review-config discovery, model resolution, agent registry, domain/prompt resolution
 - `tools/multi_review.ts` + `multi_review_lib.ts` — PR review orchestrator (parallel agent×domain sub-agent dispatch)
 - `tools/plan_review_dispatch.ts` + `plan_review_dispatch_lib.ts` — plan/spec document review dispatch (N agents × M domains)
+- `tools/review_doc_findings.ts` + `review_doc_findings_lib.ts` — per-finding post/resolve layer for `/stark-review-spec` + `/stark-review-plan` (every finding → resolvable PR thread → fixed → resolved). `post` threads every receipt finding (auto-resolving wing-fixed ones), `resolve` replies+resolves a thread after a fix, `list` prints open findings; `collectFindings` derives each finding's fix status from the dispatcher receipt
 - `tools/refactor_planner.ts` + `refactor_planner_lib.ts` — multi-agent repository refactor-planning dispatcher (`/stark-refactor-plan`). Modes `dry-run` / `run` / `validate`; 10 focused subagents over size-capped context packs; deterministic host scan (`refactor_planner_discovery.ts`), context packs (`refactor_planner_context.ts`), provider abstraction with claude/codex/`noop` (`refactor_planner_provider.ts`), host-owned conflict resolution + DAG-valid backlog assembly (`refactor_planner_synth.ts`), 14-section plan + backlog rendering (`refactor_planner_artifacts.ts`), types/validators/gate (`refactor_planner_schemas.ts`). Prompts in `global/prompts/refactor-planner/`. Outputs `REFACTOR_PLAN.md` + `REFACTOR_BACKLOG.json`; planning-only. Doc: `skill/stark-refactor-plan/references/dispatcher.md`.
 
 ### Agent utilities
@@ -104,9 +105,9 @@ All skills live in `skill/stark-*/SKILL.md` and are packaged into marketplace pl
 
 ### Pipeline (end-to-end, in order)
 
-- `/stark-review-spec <path>` — multi-agent spec review (N agents × 9 domains, default N=2)
+- `/stark-review-spec <path>` — multi-agent spec review (N agents × 9 domains, default N=2). Every finding is posted as its own resolvable PR thread, fixed (asking the operator when ambiguous), and resolved with the fix — via `tools/review_doc_findings.ts`.
 - `/stark-spec-to-plan <path>` — generate implementation plan from spec doc via paired lead/wing loop (default lead `claude`, wing `codex`); lead drafts, wing reviews and emits JSON verdict, fix-loop until approved. Cheaper and lower-variance than the prior 3-agent tournament.
-- `/stark-review-plan <path>` — multi-agent execution plan review (N agents × 5 adversarial domains, default N=2)
+- `/stark-review-plan <path>` — multi-agent execution plan review (N agents × 5 adversarial domains, default N=2). Every finding is posted as its own resolvable PR thread, fixed (asking the operator when ambiguous), and resolved with the fix — via `tools/review_doc_findings.ts`.
 - `/stark-plan-to-tasks <path> [--dry-run] [--cleanup <slug>]` — decompose plan into phased GitHub issues (3 LLM passes)
 - `/stark-phase-execute <plan-slug> [--dry-run]` — autonomous phase execution: implement all tasks, PR, review, merge, release, dashboard
 - `/stark-copilot <plan-or-prompt> [--lead AGENT] [--wing AGENT] [--plan-slug SLUG]` — autonomous implementation with paired lead/wing subagents; issue-driven mode when plan has been decomposed via `/stark-plan-to-tasks`
