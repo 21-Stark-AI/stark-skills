@@ -37,6 +37,15 @@ test("stark_handover CLI: save/resume/list use stable JSON and persist content",
   fs.writeFileSync(handoverFile, "## Goal\nShip the handover CLI.\n");
   fs.writeFileSync(progressFile, "# cli-task progress\n\n## Next\n- [ ] continue\n");
 
+  const firstResolve = runCli(["resolve", "--task", "CLI Task"], { cwd, root, home });
+  assert.equal(firstResolve.status, 0, firstResolve.stderr || firstResolve.stdout);
+  const firstResolved = parseStdout(firstResolve);
+  assert.equal(firstResolved["task"], "cli-task");
+  assert.ok(String(firstResolved["dir"]).endsWith(path.join("no-git", "cli-task")));
+  assert.equal(firstResolved["next_seq"], 1);
+  assert.deepEqual(firstResolved["chain"], []);
+  assert.deepEqual(firstResolved["tasks"], []);
+
   const save = runCli(
     ["save", "--task", "CLI Task", "--handover-file", handoverFile, "--progress-file", progressFile],
     { cwd, root, home },
@@ -63,6 +72,18 @@ test("stark_handover CLI: save/resume/list use stable JSON and persist content",
   assert.equal(resumed["progress_content"], "# cli-task progress\n\n## Next\n- [ ] continue\n");
   assert.deepEqual(resumed["task_slugs"], ["cli-task"]);
   assert.equal(Object.prototype.hasOwnProperty.call(resumed, "tasks"), false);
+
+  const resolve = runCli(["resolve"], { cwd, root, home });
+  assert.equal(resolve.status, 0, resolve.stderr || resolve.stdout);
+  const resolved = parseStdout(resolve);
+  assert.equal(resolved["task"], "cli-task");
+  assert.equal(resolved["dir"], path.dirname(handoverPath));
+  assert.equal(resolved["next_seq"], 2);
+  assert.deepEqual(resolved["chain"], [{ seq: 1, file: "handover_1.md" }]);
+  const resolvedTasks = resolved["tasks"] as Array<Record<string, unknown>>;
+  assert.equal(resolvedTasks[0]?.["task"], "cli-task");
+  assert.equal(resolvedTasks[0]?.["latest_seq"], 1);
+  assert.equal(resolvedTasks[0]?.["has_progress"], true);
 
   const list = runCli(["list"], { cwd, root, home });
   assert.equal(list.status, 0, list.stderr || list.stdout);

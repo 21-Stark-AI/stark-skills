@@ -143,6 +143,7 @@ function cmdSave(root: string, ctx: GitContext, args: Args): void {
   } catch {
     fail(`cannot read --progress-file: ${args.progressFile}`);
   }
+  if (progress.trim() === "") fail("--progress-file is empty — refusing to save a blank progress tracker");
 
   const task = args.task ?? pickTask(root, ctx) ?? undefined;
   if (task === undefined) {

@@ -414,7 +414,12 @@ export function saveHandover(opts: SaveOpts): SaveResult {
   let progressPath: string | null = null;
   if (progress !== null) {
     progressPath = path.join(dir, PROGRESS_FILE);
-    atomicWrite(progressPath, progress.content);
+    try {
+      atomicWrite(progressPath, progress.content);
+    } catch (err) {
+      fs.rmSync(handoverPath, { force: true });
+      throw err;
+    }
   }
 
   return { task, dir, seq, handoverPath, progressPath, warnings };
@@ -427,8 +432,9 @@ export function saveHandover(opts: SaveOpts): SaveResult {
 function readIfExists(file: string): string | null {
   try {
     return fs.readFileSync(file, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT") return null;
+    throw err;
   }
 }
 
