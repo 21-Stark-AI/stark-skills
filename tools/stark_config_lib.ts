@@ -252,6 +252,16 @@ export const DEFAULT_COST = {
 };
 
 /**
+ * handover — config for `/stark-handover` (cross-/clear session handovers).
+ * `root` is the storage tree ({root}/{project}/{worktree}/{task}/); it is
+ * user-space output, deliberately NOT under `stateRoot()`. Env override:
+ * `STARK_HANDOVER_ROOT`.
+ */
+export const DEFAULT_HANDOVER = {
+  root: "~/Code/Handovers",
+};
+
+/**
  * iac_review — config for the multi-agent Terraform/Terragrunt reviewers.
  * `agents` lists the LLMs that each run the review as their own subagent,
  * e.g. ["gemini","codex"]. Overridable via the `iac_review` config section.
@@ -487,6 +497,9 @@ export function getSkillActivationConfig(): typeof DEFAULT_SKILL_ACTIVATION {
 }
 export function getContextCompactionConfig(): typeof DEFAULT_CONTEXT_COMPACTION {
   return getSection(DEFAULT_CONTEXT_COMPACTION, "context_compaction");
+}
+export function getHandoverConfig(): typeof DEFAULT_HANDOVER {
+  return getSection(DEFAULT_HANDOVER, "handover");
 }
 export function getCostConfig(): typeof DEFAULT_COST {
   return getSection(DEFAULT_COST, "cost");

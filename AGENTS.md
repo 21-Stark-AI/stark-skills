@@ -17,7 +17,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 
 - `global/` — global config + prompts, installed to `~/.claude/code-review/`
 - `scripts/` — shell helpers + JSON (`register_triggers.sh`, `healer_patterns.json`); installed to `~/.claude/code-review/scripts/`. The orchestrators + dispatch infra were migrated to `tools/` (TypeScript).
-- `skill/` — all skills (`skill/stark-*/SKILL.md`, 19 skills), packaged as marketplace plugins
+- `skill/` — all skills (`skill/stark-*/SKILL.md`, 20 skills), packaged as marketplace plugins
 - `org/evinced/` — Evinced org config overrides
 - `data/` — persona roster, review coverage HTML, generated showcase pages
 - `automation/` — CCR automation fleet: 12 triggers, prompts, logs, cost tracking, reports
@@ -51,6 +51,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 
 ### TUI & session
 - `tools/stark_session_lib.ts` + `tools/stark_session.ts` — `/stark-session` data collector. Subcommands `start` and `end` return structured JSON; Claude renders the briefing/summary directly. Session-state, persona, alerts, skill-suggestions, healer-canary collectors hit pure-TS siblings; only `github_projects.py` remains. Replaces the deleted `session_tui*.py` ANSI/box-drawing renderer.
+- `tools/stark_handover_lib.ts` + `tools/stark_handover.ts` — `/stark-handover` storage engine. Numbered `handover_{N}.md` chain + rewritten-wholesale `PROGRESS.md` tracker under `{root}/{project}/{worktree}/{task}/` (root: `STARK_HANDOVER_ROOT` env > `handover.root` config > `~/Code/Handovers`) so a session can `/clear` and resume from disk. CLI `resolve|save|resume|list [--all]`, JSON stdout; save requires handover/progress content via `--handover-file`/`--progress-file`, allocates chain files exclusively, stores private-mode outputs, and resume returns `task_slugs`.
 
 ### Red-team audit CLIs
 - The red-team subsystem is **pure TypeScript** under `tools/`. All Python red-team modules + CLIs were deleted by end of the 2026-05-16 migration. The Responses-API model allowlist + key resolver previously in `scripts/openai_responses.py` are now inlined into `preflight.py::check_red_team_transport_auth` (its only consumer).
@@ -118,6 +119,7 @@ All skills live in `skill/stark-*/SKILL.md` and are packaged into marketplace pl
 ### Workflow & Ops
 
 - `/stark-session [start|end]` — session management: briefing on start, cleanup on end
+- `/stark-handover [save|resume|status] [--task slug]` — cross-`/clear` continuity: save = numbered `handover_{N}.md` chain + `PROGRESS.md` tracker under `~/Code/Handovers/{project}/{worktree}/{task}/`; resume = load both, zero recap. Engine: `tools/stark_handover.ts`
 - `/stark-release [patch|minor|major]` — cut a release: changelog, tag, GitHub Release
 - `/stark-housekeeping [--dry-run] [--aggressive]` — audit and clean up stale issues, dead branches, worktree remnants
 - `/stark-persona` — session character voices with weighted selection, combos, catchphrases, and feedback
