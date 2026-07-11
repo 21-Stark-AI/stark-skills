@@ -5,6 +5,7 @@ import {
   anchorLine,
   collectFindings,
   findingMarker,
+  isRateLimitError,
   openFindings,
   parseFindingMarker,
   type Receipt,
@@ -170,5 +171,26 @@ describe("markers and rendering", () => {
     assert.match(renderAutofixReply("abcdef1234567890"), /abcdef12/);
     assert.match(renderManualFixReply({ summary: "added limiter", commitSha: "abcdef1234567890" }), /abcdef12/);
     assert.match(renderManualFixReply({ summary: "added limiter" }), /added limiter/);
+  });
+});
+
+describe("isRateLimitError", () => {
+  test("matches GitHub secondary-rate-limit responses (retryable)", () => {
+    assert.equal(isRateLimitError(new Error("403 You have exceeded a secondary rate limit")), true);
+    assert.equal(isRateLimitError(new Error("was submitted too quickly (422)")), true);
+    assert.equal(isRateLimitError(new Error("API rate limit exceeded (403)")), true);
+  });
+  test("does NOT match permission/other 403s (non-retryable)", () => {
+    // The dominant false-positive risk: a plain permission 403 must not be retried.
+    assert.equal(isRateLimitError(new Error("403 Resource not accessible by integration")), false);
+    assert.equal(isRateLimitError(new Error("404 Not Found")), false);
+    assert.equal(isRateLimitError(new Error("submitted too quickly")), false); // no status code
+    assert.equal(isRateLimitError(new Error("500 Internal Server Error")), false);
+  });
+  test("tolerates non-Error / message-less inputs", () => {
+    assert.equal(isRateLimitError(null), false);
+    assert.equal(isRateLimitError(undefined), false);
+    assert.equal(isRateLimitError("403 secondary rate limit"), false); // string, not {message}
+    assert.equal(isRateLimitError({ message: 123 }), false);
   });
 });
