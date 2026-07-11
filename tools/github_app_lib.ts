@@ -730,13 +730,17 @@ export async function prCreate(repo: string, opts: PrCreateOpts): Promise<unknow
  * uses the GraphQL `markPullRequestReadyForReview` mutation (needs the PR node
  * id, resolved from REST). Idempotent: a no-op when the PR is already ready.
  *
- * CAVEAT — App-token limitation: the stark-{claude,codex,gemini} App
- * installations get `Resource not accessible by integration` on this mutation
- * (verified live 2026-07-11 against PR #662), so the App path does not work with
- * the current install permissions. The merge flows deliberately DON'T use this:
- * they un-draft via `gh pr ready` (user token) — see `plugins/stark-gh/tools/lib/gh.ts::markPrReady`,
- * stark-phase-execute §1.5, and skill/remember. Keep this for the day the App
- * gains the grant / for a differently-scoped install; it fails loudly otherwise.
+ * CAVEAT — GitHub platform limitation (NOT a missing permission): all three
+ * stark-{claude,codex,gemini} installs already hold `pull_requests: write` (the
+ * permission this mutation is documented to require — verified live 2026-07-11),
+ * yet every one returns `Resource not accessible by integration` on PR #662.
+ * `markPullRequestReadyForReview` / `convertPullRequestToDraft` are simply NOT
+ * exposed to GitHub App installation tokens — there is no grant that fixes it;
+ * un-drafting needs a user/OAuth token. So the merge flows deliberately un-draft
+ * via `gh pr ready` (the `gh` CLI's user auth) instead — see
+ * `plugins/stark-gh/tools/lib/gh.ts::markPrReady`, stark-phase-execute §1.5, and
+ * skill/remember. This helper is kept for a PAT/user-token caller; it fails
+ * loudly under an App token.
  */
 export async function prReady(
   repo: string,
