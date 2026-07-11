@@ -1,5 +1,14 @@
 # GHA + GHAS cost levers, billing model, and gotchas
 
+> This is the fast, ranked-levers reference. For the deeper "done-right" craft —
+> measurement/FinOps, caching architecture, pipeline design, registry lifecycle,
+> security⇒cost — see `advanced-practices.md`. Runner selection: `matrix-runners.md`.
+>
+> **Pricing note (verify before quoting):** GitHub cut hosted-runner prices ~25–39%
+> on **2026-01-01** (Linux 2-core $0.008→$0.006/min, macOS $0.080→$0.062) and a
+> **$0.002/min self-hosted control-plane fee (Mar 2026) was postponed, not
+> cancelled**. Rates move — pull current numbers from the docs, not memory.
+
 ## The two separate bills (do not conflate)
 
 GitHub bills **compute** and **security seats** on completely different meters.
