@@ -254,3 +254,17 @@ export function renderManualFixReply(opts: {
   const at = opts.commitSha ? ` (\`${opts.commitSha.slice(0, 8)}\`)` : "";
   return `✅ Fixed${at}: ${opts.summary.trim()}`;
 }
+
+/**
+ * Whether an error is a GitHub *secondary* rate-limit / abuse response — the
+ * retryable kind you hit by creating content (comments, review threads) too
+ * quickly. Matches a 403/422 status alongside GitHub's characteristic phrasing.
+ * A plain 403 without that phrasing (e.g. "Resource not accessible by
+ * integration") is a permission error, not rate limiting, and must NOT match —
+ * retrying it just wastes the backoff budget.
+ */
+export function isRateLimitError(err: unknown): boolean {
+  const m = (err as { message?: unknown })?.message;
+  if (typeof m !== "string") return false;
+  return /\b(403|422)\b/.test(m) && /(secondary rate limit|submitted too quickly|rate limit)/i.test(m);
+}

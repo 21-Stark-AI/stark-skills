@@ -41,6 +41,7 @@ import {
   type CollectedFinding,
   collectFindings,
   findingMarker,
+  isRateLimitError,
   openFindings,
   parseFindingMarker,
   type Receipt,
@@ -107,6 +108,30 @@ function writeMap(pathStr: string, map: MapFile): void {
 
 function log(msg: string): void {
   process.stderr.write(`review_doc_findings: ${msg}\n`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** GitHub throttling: pace between content-creation writes, retry on secondary rate limits. */
+const POST_PACE_MS = Number(process.env.REVIEW_DOC_POST_PACE_MS ?? "3000");
+const POST_MAX_RETRIES = Number(process.env.REVIEW_DOC_POST_RETRIES ?? "6");
+
+/** Run a content-creation op, backing off on GitHub secondary-rate-limit responses. */
+async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isRateLimitError(err) || attempt >= POST_MAX_RETRIES) throw err;
+      attempt++;
+      const backoff = Math.min(60000, 5000 * Math.pow(2, attempt - 1));
+      log(`${label}: secondary rate limit — backing off ${Math.round(backoff / 1000)}s (retry ${attempt}/${POST_MAX_RETRIES})`);
+      await sleep(backoff);
+    }
+  }
 }
 
 // ─── GitHub round-trips ────────────────────────────────────────────────────
@@ -214,7 +239,41 @@ async function threadIdForComment(opts: {
           }
         }
       }`;
-    const data = (await graphql(query, {
+    // This is a READ (authorship irrelevant). Prefer the operator's `gh` user:
+    // the App installation token's GraphQL context defaults to a single
+    // installation and fails "Could not resolve to a Repository" on repos in a
+    // different org (e.g. 21-Stark-AI vs GetEvinced). `gh` (repo owner) resolves
+    // either org. Fall back to the App-token graphql only if `gh` is unavailable.
+    let data: {
+      data?: {
+        repository?: {
+          pullRequest?: {
+            reviewThreads?: {
+              pageInfo?: { hasNextPage?: boolean; endCursor?: string };
+              nodes?: Array<{ id: string; comments?: { nodes?: Array<{ databaseId?: number }> } }>;
+            };
+          };
+        };
+      };
+    } | null = null;
+    try {
+      const res = spawnSync(
+        "gh",
+        [
+          "api", "graphql",
+          "-f", `query=${query}`,
+          "-f", `owner=${owner}`,
+          "-f", `name=${name}`,
+          "-F", `number=${opts.pr}`,
+          ...(cursor ? ["-f", `cursor=${cursor}`] : []),
+        ],
+        { encoding: "utf-8", maxBuffer: 20 * 1024 * 1024 },
+      );
+      if (res.status === 0 && res.stdout) data = JSON.parse(res.stdout);
+    } catch {
+      /* fall through to app-token graphql */
+    }
+    if (!data) data = (await graphql(query, {
       app: opts.app,
       variables: { owner, name, number: opts.pr, cursor },
     })) as {
@@ -374,14 +433,16 @@ async function cmdPost(args: PostArgs): Promise<number> {
 
     const line = anchorLine(docText, f.section);
     const body = renderFindingComment(f, { line });
-    const res = await postFindingThread({
-      repo: args.repo,
-      pr: args.pr,
-      app: findingApp,
-      commitSha,
-      path: args.doc,
-      body,
-    });
+    const res = await withRateLimitRetry(`post ${f.id}`, () =>
+      postFindingThread({
+        repo: args.repo,
+        pr: args.pr,
+        app: findingApp,
+        commitSha,
+        path: args.doc,
+        body,
+      }),
+    );
     posted++;
     const entry: MapEntry = {
       ...entryBase,
@@ -395,13 +456,15 @@ async function cmdPost(args: PostArgs): Promise<number> {
     // as the thread author, so each thread stays single-author).
     if (f.status === "autofixed" && res.resolvable && res.comment_id !== null) {
       try {
-        const ok = await replyAndResolve({
-          repo: args.repo,
-          pr: args.pr,
-          app: findingApp,
-          commentId: res.comment_id,
-          reply: renderAutofixReply(args.commitSha),
-        });
+        const ok = await withRateLimitRetry(`resolve ${f.id}`, () =>
+          replyAndResolve({
+            repo: args.repo,
+            pr: args.pr,
+            app: findingApp,
+            commentId: res.comment_id,
+            reply: renderAutofixReply(args.commitSha),
+          }),
+        );
         entry.resolved = ok;
         if (ok) autoresolved++;
       } catch (err) {
@@ -409,7 +472,9 @@ async function cmdPost(args: PostArgs): Promise<number> {
       }
     }
     map.findings[f.id] = entry;
+    writeMap(args.map, map); // persist incrementally so a mid-run failure keeps progress
     log(`posted ${f.id} [${f.status}]${entry.resolved ? " (auto-resolved)" : ""}`);
+    await sleep(POST_PACE_MS); // pace content creation to dodge GitHub secondary rate limits
   }
 
   writeMap(args.map, map);
@@ -457,20 +522,24 @@ async function cmdResolve(args: ResolveArgs): Promise<number> {
 
   if (!entry.resolvable || entry.comment_id === null) {
     // Issue-comment fallback: no resolvable thread — post a follow-up note.
-    await prComment(map.repo, map.pr, `${reply}\n\n${findingMarker(args.findingId)}`, entryApp);
+    await withRateLimitRetry(`note ${args.findingId}`, () =>
+      prComment(map.repo, map.pr, `${reply}\n\n${findingMarker(args.findingId)}`, entryApp),
+    );
     entry.resolved = true;
     writeMap(args.map, map);
     process.stdout.write(JSON.stringify({ ok: true, resolved: false, note_posted: true, finding_id: args.findingId }) + "\n");
     return 0;
   }
 
-  const ok = await replyAndResolve({
-    repo: map.repo,
-    pr: map.pr,
-    app: entryApp,
-    commentId: entry.comment_id,
-    reply,
-  });
+  const ok = await withRateLimitRetry(`resolve ${args.findingId}`, () =>
+    replyAndResolve({
+      repo: map.repo,
+      pr: map.pr,
+      app: entryApp,
+      commentId: entry.comment_id,
+      reply,
+    }),
+  );
   entry.resolved = ok;
   writeMap(args.map, map);
   process.stdout.write(JSON.stringify({ ok: true, resolved: ok, finding_id: args.findingId }) + "\n");
