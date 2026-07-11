@@ -320,6 +320,104 @@ export function archiveOldFiles(
   return results;
 }
 
+// ── Asset symlink self-healing ──────────────────────────────────
+//
+// Distribution is marketplace-only since install.sh was removed, but a legacy
+// set of symlinks under ~/.claude still resolves the stark-skills assets for
+// directly-invoked tools (e.g. stark_review.ts → ~/.claude/code-review/prompts,
+// tokens via ~/.claude/code-review/tools). These links live OUTSIDE any repo,
+// so a workspace reorg that renames their targets (Code/Playground → Code/21Stark,
+// 2026-07-11) leaves them dangling and produces silent, confusing failures.
+// Housekeeping re-points them so the tree self-heals.
+
+// Old→new path-segment renames applied when detecting/repairing target rot.
+// Data-driven so a future reorg is a one-line addition.
+export type RenameMapping = { from: string; to: string };
+
+export const STALE_SEGMENT_RENAMES: RenameMapping[] = [
+  { from: `Code${path.sep}Playground${path.sep}`, to: `Code${path.sep}21Stark${path.sep}` },
+];
+
+// A known stark-skills asset symlink. Both paths are relative to $HOME so the
+// table is home-agnostic (and test-injectable via a synthetic home).
+export type AssetSymlink = {
+  link: string; // link location, relative to home
+  target: string; // corrected/canonical target, relative to home
+};
+
+export const ASSET_SYMLINKS: AssetSymlink[] = [
+  { link: ".claude/code-review/prompts", target: "Code/21Stark/stark-skills/global/prompts" },
+  { link: ".claude/code-review/tools", target: "Code/21Stark/stark-skills/tools" },
+  { link: ".claude/code-review/config.json", target: "Code/21Stark/stark-skills/global/config.json" },
+  { link: ".claude/code-review/scripts", target: "Code/21Stark/stark-skills/scripts" },
+  { link: ".claude/code-review/standards", target: "Code/21Stark/stark-skills/standards" },
+  { link: ".claude/code-review/orchestrator.md", target: "Code/21Stark/stark-skills/global/orchestrator.md" },
+  { link: ".claude/plugins/stark-gh", target: "Code/21Stark/stark-skills/plugins/stark-gh" },
+  { link: ".claude/output-styles/concrete.md", target: "Code/21Stark/stark-skills/config/output-styles/concrete.md" },
+];
+
+export type SymlinkRepair = { path: string; from: string; to: string };
+
+export function healAssetSymlinks(
+  home: string,
+  options: {
+    links?: AssetSymlink[];
+    renames?: RenameMapping[];
+    dryRun?: boolean;
+  } = {},
+): { repaired: SymlinkRepair[]; errors: string[] } {
+  const links = options.links ?? ASSET_SYMLINKS;
+  const renames = options.renames ?? STALE_SEGMENT_RENAMES;
+  const dryRun = options.dryRun ?? false;
+  const repaired: SymlinkRepair[] = [];
+  const errors: string[] = [];
+
+  for (const entry of links) {
+    const linkPath = path.join(home, entry.link);
+    const correctTarget = path.join(home, entry.target);
+
+    // Only heal things that are actually symlinks. A missing entry (nothing on
+    // disk) or a real file/dir is owned by something else — leave it be.
+    let currentTarget: string;
+    try {
+      currentTarget = fs.readlinkSync(linkPath);
+    } catch {
+      continue;
+    }
+
+    // existsSync follows the link, so it is false for a dangling symlink.
+    const dangling = !fs.existsSync(linkPath);
+    const stale = renames.some((r) => currentTarget.includes(r.from));
+    if (!dangling && !stale) continue; // healthy → no-op (idempotent)
+
+    // Never delete a link whose corrected target is missing — report instead.
+    if (!fs.existsSync(correctTarget)) {
+      errors.push(
+        `asset symlink ${linkPath} is ${dangling ? "dangling" : "stale"} ` +
+          `(-> ${currentTarget}) but corrected target ${correctTarget} is missing; left untouched`,
+      );
+      continue;
+    }
+
+    // Already correct? (stale-segment match but target happens to resolve to
+    // the canonical path) — nothing to do.
+    if (currentTarget === correctTarget) continue;
+
+    if (!dryRun) {
+      try {
+        fs.unlinkSync(linkPath);
+        fs.symlinkSync(correctTarget, linkPath);
+      } catch (err) {
+        errors.push(`repoint ${linkPath}: ${(err as Error).message}`);
+        continue;
+      }
+    }
+    repaired.push({ path: linkPath, from: currentTarget, to: correctTarget });
+  }
+
+  return { repaired, errors };
+}
+
 // ── Composition ─────────────────────────────────────────────────
 
 export type CleanupReceipt = {
@@ -330,6 +428,7 @@ export type CleanupReceipt = {
   validationLogsRemoved: string[];
   logsRotated: { path: string; previousLines: number }[];
   artifactsArchived: ArchiveResult[];
+  symlinksRepaired: SymlinkRepair[];
   errors: string[];
 };
 
@@ -420,6 +519,14 @@ export function cleanInfra(opts: CleanupOptions = {}): CleanupReceipt {
     }
   }
 
+  // Heal legacy asset symlinks (dangling or pointing through a renamed path
+  // segment) so directly-invoked tools keep resolving prompts/tools/config.
+  const { repaired: symlinksRepaired, errors: symlinkErrors } = healAssetSymlinks(
+    home,
+    { dryRun },
+  );
+  errors.push(...symlinkErrors);
+
   return {
     dryRun,
     sessionsRemoved: sessionsToRemove,
@@ -428,6 +535,7 @@ export function cleanInfra(opts: CleanupOptions = {}): CleanupReceipt {
     validationLogsRemoved: validationLogs,
     logsRotated,
     artifactsArchived,
+    symlinksRepaired,
     errors,
   };
 }
@@ -459,6 +567,10 @@ function formatText(receipt: CleanupReceipt): string {
   const archiveCount = receipt.artifactsArchived.length;
   const fileCount = receipt.artifactsArchived.reduce((n, a) => n + a.files.length, 0);
   out.push(`  artifacts archived:      ${fileCount} files in ${archiveCount} archives`);
+  out.push(`  asset symlinks repaired: ${receipt.symlinksRepaired.length}`);
+  for (const s of receipt.symlinksRepaired) {
+    out.push(`    - ${s.path}: ${s.from} -> ${s.to}`);
+  }
   if (receipt.errors.length) {
     out.push("  errors:");
     for (const e of receipt.errors) out.push(`    - ${e}`);
