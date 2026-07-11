@@ -8,10 +8,14 @@ description: >-
   "should I self-host runners", "which repo is burning Actions minutes", or wants
   to right-size GitHub security seats (Secret Protection vs Code Security). Also
   triggers on a mystery Actions charge, a runaway workflow, or a billing number
-  that looks wrong. Diagnoses where the money goes (product → repo → workflow →
-  run), applies the highest-value levers via PR, and escalates genuine
-  mis-billing to Support. Reach for it even when the user only says "GitHub is
-  expensive this month" without naming Actions.
+  that looks wrong. Also use for making CI cheaper/faster the right way — slow or
+  expensive pipelines, build/dependency caching that isn't hitting, wide test
+  matrices, merge queues, flaky-test cost, artifact/registry storage, or measuring
+  CI spend (cost-per-PR, budgets, usage APIs). Diagnoses where the money goes
+  (product → repo → workflow → run), applies the highest-value levers via PR, and
+  escalates genuine mis-billing to Support. Reach for it even when the user only
+  says "GitHub is expensive this month" or "our CI is too slow" without naming
+  Actions.
 disable-model-invocation: false
 model: opus
 ---
@@ -75,6 +79,18 @@ find it. If the driver is a **test matrix**, the cost is almost always per-job
 *setup* (token mint, dep download, cold compilation, no cache sharing) × job
 count — not test logic. Read `references/matrix-runners.md` before optimizing it.
 
+**Measure the right number** (`references/advanced-practices.md §1`):
+- **billed ≠ runtime ≠ cost** — every job rounds UP to a whole minute; included
+  minutes carry OS multipliers (Linux 1× / Windows 2× / **macOS 10×**). Summing
+  durations understates spend; a `billed-minutes ÷ actual-runtime` ratio per
+  workflow is the rounding-waste detector.
+- **The dominant CI cost is often developer WAIT time, not runner minutes**
+  (measured wait-to-compute ratios of 25–100×). For a team, the true unit is
+  **cost-per-merged-PR including loaded wait** — so queue-time and pipeline
+  duration are usually the real levers, not $/minute. Free org-wide **Actions
+  Insights** (queue time + failure rate, UI-only) and `self-actuated/actions-usage`
+  (sees free-tier + self-hosted minutes billing hides) are the fast lenses.
+
 ### 2. Decide — Actions minutes, a downstream resource, or a billing anomaly?
 
 The trigger/workflow is rarely the cost itself — **chase the resource the
@@ -134,6 +150,24 @@ files should NOT trigger the macOS/expensive job), and confirm 0 drift after a
 Terraform apply. Config actions that aren't files (disabling CodeQL default
 setup, backfilling secret scanning) are API calls — note them in the PR body.
 
+**Then keep it cut.** A cut regresses the moment attention moves on. Set a GitHub
+**budget** (with a %-alert, or a hard-stop) and/or the org **spending limit** so
+the next regression stops *before* the invoice, and re-check the `billed÷actual`
+ratio after the change to confirm the drop landed. Governance (budgets, cost
+centers, org allowed-actions + SHA-pin policy) is in `references/advanced-practices.md §2`.
+
+## Level up — the "done right" playbook
+
+The steps above stop the bleeding. For the durable craft — quality practices that
+cut cost *and* improve speed/reliability/security — read
+**`references/advanced-practices.md`** (themed, with a table of contents):
+measurement & FinOps discipline (§1–2), caching architecture (§3), pipeline
+architecture that skips work without breaking merges (the **gate job**, merge
+queues, test-impact analysis) (§4), storage/registry lifecycle + the downstream-
+resource trap (§5), and the security⇒cost levers (OIDC, `harden-runner`,
+SHA-pin policy, flaky-test economics) (§6). Runner selection lives in
+`references/matrix-runners.md`.
+
 ## Guardrails
 
 - **Validating a CI cost-fix can itself cost a full run (chicken-and-egg).** An
@@ -145,14 +179,19 @@ setup, backfilling secret scanning) are API calls — note them in the PR body.
   hits cold (e.g. a dependency that stopped resolving after a module move). A
   broken CI blocks *both* cost work and correctness work — fix the correctness
   break first, or they mask each other.
-- **Disabling a workflow that feeds a REQUIRED status check freezes the repo.**
-  If you turn off (or path-filter away) a workflow whose check is required by
-  branch protection, PRs can never satisfy that check → nothing merges. Worse
-  with `enforce_admins: true` (admins can't override either). Before disabling
-  a workflow/check, inspect branch protection
-  (`gh api repos/O/R/branches/BRANCH/protection`) and **remove the check from
-  `required_status_checks` in the same change** — or the repo locks up. Same
-  applies when you disable CodeQL default setup if its check was required.
+- **Disabling / path-filtering a workflow that feeds a REQUIRED status check
+  freezes the repo.** A *skipped workflow* leaves its required check **Pending
+  forever** → nothing merges (worse with `enforce_admins: true`). Note the
+  asymmetry: a skipped **job** reports *Success*, but a skipped **workflow** stays
+  Pending. Two fixes: (a) before disabling, inspect branch protection (`gh api
+  repos/O/R/branches/BRANCH/protection`) and **remove the check from
+  `required_status_checks` in the same change**; (b) the durable pattern — make the
+  *only* required check a **gate job** that `needs: [all real jobs]`, `if: always()`,
+  aggregating via `re-actors/alls-green`, and un-require the individual jobs. The
+  gate job also closes a **security gap**: GitHub counts a *skipped job as passing*,
+  so a required scan skipped by a path filter / upstream failure / `[skip ci]`
+  merges as if it passed — `if: always()` converts skips to an explicit fail.
+  (`references/advanced-practices.md §4`.)
 - **`default_workflow_permissions: read` can break writers.** Scan for workflows
   that push/release/comment via the implicit token and lack an explicit
   `permissions:` block *before* flipping — fix those first.
