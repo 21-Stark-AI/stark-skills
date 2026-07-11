@@ -12,6 +12,7 @@ import { test, type TestContext } from "node:test";
 
 import {
   archiveOldFiles,
+  ASSET_SYMLINKS,
   cleanInfra,
   findStaleCheckpointFiles,
   findStaleLockFiles,
@@ -21,6 +22,7 @@ import {
   rotateLogFile,
   type AgeProvider,
   type AssetSymlink,
+  type LinkOps,
   type StaleClock,
 } from "./housekeeping_infra.ts";
 
@@ -429,7 +431,90 @@ test("healAssetSymlinks dry-run reports the repair without touching the filesyst
   }
 });
 
+test("healAssetSymlinks never deletes the original when the mutation fails mid-repair", (t) => {
+  const fx = symlinkFixture(t);
+  if (!fx) return;
+  try {
+    fs.mkdirSync(path.join(fx.repoDir, "tools"), { recursive: true });
+    const linkPath = path.join(fx.home, ".claude/code-review/tools");
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    const staleTarget = path.join(fx.home, "Code/Playground/stark-skills/tools");
+    fs.symlinkSync(staleTarget, linkPath);
+
+    // Real ops except symlink(), which throws — simulating EACCES/ENOSPC etc.
+    const failingOps: LinkOps = {
+      readlink: (p) => fs.readlinkSync(p),
+      symlink: () => {
+        throw new Error("boom: symlink refused");
+      },
+      rename: (a, b) => fs.renameSync(a, b),
+      unlink: (p) => fs.unlinkSync(p),
+      exists: (p) => fs.existsSync(p),
+    };
+    const { repaired, errors } = healAssetSymlinks(fx.home, {
+      links: fx.links,
+      ops: failingOps,
+    });
+    assert.equal(repaired.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]!, /repoint .*boom/);
+    // The load-bearing link is still present, still pointing at its old target.
+    assert.equal(fs.readlinkSync(linkPath), staleTarget);
+    // No orphaned temp link left behind.
+    assert.equal(fs.existsSync(`${linkPath}.stark-heal-${process.pid}`), false);
+  } finally {
+    fs.rmSync(path.dirname(fx.home), { recursive: true, force: true });
+  }
+});
+
+test("ASSET_SYMLINKS is a sane, deduped table of ~/.claude → stark-skills mappings", () => {
+  assert.equal(ASSET_SYMLINKS.length, 8);
+  const linkSet = new Set<string>();
+  for (const entry of ASSET_SYMLINKS) {
+    assert.ok(entry.link.startsWith(".claude/"), `link under .claude: ${entry.link}`);
+    assert.ok(
+      entry.target.startsWith("Code/21Stark/stark-skills/"),
+      `target under stark-skills: ${entry.target}`,
+    );
+    assert.equal(linkSet.has(entry.link), false, `duplicate link: ${entry.link}`);
+    linkSet.add(entry.link);
+  }
+});
+
 // ── cleanInfra integration ──────────────────────────────────────
+
+test("cleanInfra wires asset-symlink healing into the receipt", (t) => {
+  const tmp = makeTmp(t);
+  if (!tmp) return;
+  try {
+    const home = path.join(tmp, "home");
+    // A real ASSET_SYMLINKS entry pointing through the stale segment, with its
+    // corrected target present under this home.
+    fs.mkdirSync(path.join(home, "Code/21Stark/stark-skills/tools"), { recursive: true });
+    const linkPath = path.join(home, ".claude/code-review/tools");
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    fs.symlinkSync(path.join(home, "Code/Playground/stark-skills/tools"), linkPath);
+
+    const receipt = cleanInfra({
+      homeDir: home,
+      cwd: tmp,
+      dryRun: true, // report the repair without mutating (and without touching /tmp locks)
+      ageProvider: () => days(0),
+      now: NOW,
+      clock: liveClock,
+      tarRunner: () => "",
+    });
+    assert.equal(receipt.symlinksRepaired.length, 1);
+    assert.equal(receipt.symlinksRepaired[0]!.path, linkPath);
+    assert.equal(
+      receipt.symlinksRepaired[0]!.to,
+      path.join(home, "Code/21Stark/stark-skills/tools"),
+    );
+    assert.equal(receipt.errors.length, 0);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 test("cleanInfra dry-run reports counts without mutating", (t) => {
   const tmp = makeTmp(t);

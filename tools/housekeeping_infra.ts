@@ -330,8 +330,10 @@ export function archiveOldFiles(
 // 2026-07-11) leaves them dangling and produces silent, confusing failures.
 // Housekeeping re-points them so the tree self-heals.
 
-// Old→new path-segment renames applied when detecting/repairing target rot.
-// Data-driven so a future reorg is a one-line addition.
+// Old→new path-segment renames. This map is load-bearing for BOTH detection
+// (a link whose target still contains an old segment is stale) AND repair (the
+// remapped target is what a stale link is repointed to). Data-driven so a
+// future reorg is a one-line addition.
 export type RenameMapping = { from: string; to: string };
 
 export const STALE_SEGMENT_RENAMES: RenameMapping[] = [
@@ -339,10 +341,13 @@ export const STALE_SEGMENT_RENAMES: RenameMapping[] = [
 ];
 
 // A known stark-skills asset symlink. Both paths are relative to $HOME so the
-// table is home-agnostic (and test-injectable via a synthetic home).
+// table is home-agnostic (and test-injectable via a synthetic home). `target`
+// is the canonical location, used as the FALLBACK repair target when a link is
+// dangling for a reason the rename map can't explain (e.g. deleted with no
+// stale segment). Stale-segment links are repaired via the rename map instead.
 export type AssetSymlink = {
   link: string; // link location, relative to home
-  target: string; // corrected/canonical target, relative to home
+  target: string; // canonical/fallback target, relative to home
 };
 
 export const ASSET_SYMLINKS: AssetSymlink[] = [
@@ -358,61 +363,117 @@ export const ASSET_SYMLINKS: AssetSymlink[] = [
 
 export type SymlinkRepair = { path: string; from: string; to: string };
 
+// Injectable filesystem seam so a test can force a mid-repair failure (e.g.
+// symlink() throwing) and assert the load-bearing link is never left absent.
+export type LinkOps = {
+  readlink: (p: string) => string;
+  symlink: (target: string, p: string) => void;
+  rename: (from: string, to: string) => void;
+  unlink: (p: string) => void;
+  exists: (p: string) => boolean;
+};
+
+const REAL_LINK_OPS: LinkOps = {
+  readlink: (p) => fs.readlinkSync(p),
+  symlink: (target, p) => fs.symlinkSync(target, p),
+  rename: (from, to) => fs.renameSync(from, to),
+  unlink: (p) => fs.unlinkSync(p),
+  exists: (p) => fs.existsSync(p),
+};
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function applyRenames(target: string, renames: RenameMapping[]): string {
+  let out = target;
+  for (const r of renames) out = out.split(r.from).join(r.to);
+  return out;
+}
+
 export function healAssetSymlinks(
   home: string,
   options: {
     links?: AssetSymlink[];
     renames?: RenameMapping[];
     dryRun?: boolean;
+    ops?: LinkOps;
   } = {},
 ): { repaired: SymlinkRepair[]; errors: string[] } {
   const links = options.links ?? ASSET_SYMLINKS;
   const renames = options.renames ?? STALE_SEGMENT_RENAMES;
   const dryRun = options.dryRun ?? false;
+  const ops = options.ops ?? REAL_LINK_OPS;
   const repaired: SymlinkRepair[] = [];
   const errors: string[] = [];
 
   for (const entry of links) {
     const linkPath = path.join(home, entry.link);
-    const correctTarget = path.join(home, entry.target);
+    const canonicalTarget = path.join(home, entry.target);
 
-    // Only heal things that are actually symlinks. A missing entry (nothing on
-    // disk) or a real file/dir is owned by something else — leave it be.
+    // Only heal things that are actually symlinks. ENOENT (nothing there) and
+    // EINVAL (a real file/dir, not a symlink) are "not ours to heal" → skip
+    // silently. Any other error (EACCES, EIO, ELOOP) is a real problem worth
+    // surfacing rather than swallowing.
     let currentTarget: string;
     try {
-      currentTarget = fs.readlinkSync(linkPath);
-    } catch {
+      currentTarget = ops.readlink(linkPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EINVAL") {
+        errors.push(`readlink ${linkPath}: ${errMsg(err)}`);
+      }
       continue;
     }
 
-    // existsSync follows the link, so it is false for a dangling symlink.
-    const dangling = !fs.existsSync(linkPath);
-    const stale = renames.some((r) => currentTarget.includes(r.from));
+    // The rename map determines the repair target for a stale link; existsSync
+    // follows the link, so it is false for a dangling one. A link that dangles
+    // without a stale segment falls back to the canonical target.
+    const remapped = applyRenames(currentTarget, renames);
+    const stale = remapped !== currentTarget;
+    const dangling = !ops.exists(linkPath);
     if (!dangling && !stale) continue; // healthy → no-op (idempotent)
 
+    const correctedTarget = stale ? remapped : canonicalTarget;
+
     // Never delete a link whose corrected target is missing — report instead.
-    if (!fs.existsSync(correctTarget)) {
+    if (!ops.exists(correctedTarget)) {
       errors.push(
         `asset symlink ${linkPath} is ${dangling ? "dangling" : "stale"} ` +
-          `(-> ${currentTarget}) but corrected target ${correctTarget} is missing; left untouched`,
+          `(-> ${currentTarget}) but corrected target ${correctedTarget} is missing; left untouched`,
       );
       continue;
     }
 
-    // Already correct? (stale-segment match but target happens to resolve to
-    // the canonical path) — nothing to do.
-    if (currentTarget === correctTarget) continue;
+    // Already correct? (stale segment somewhere but resolves to the corrected
+    // path already) — nothing to do.
+    if (currentTarget === correctedTarget) continue;
 
     if (!dryRun) {
+      // Atomic repoint: create the replacement at a temp name, then rename it
+      // over the old link. If symlink() throws, the original is untouched; if
+      // rename() throws, we remove the orphaned temp link. The load-bearing
+      // link is never left absent — unlike a naive unlink-then-symlink.
+      const tmp = `${linkPath}.stark-heal-${process.pid}`;
       try {
-        fs.unlinkSync(linkPath);
-        fs.symlinkSync(correctTarget, linkPath);
+        try {
+          ops.unlink(tmp);
+        } catch {
+          /* no stale temp from a previous crash — fine */
+        }
+        ops.symlink(correctedTarget, tmp);
+        ops.rename(tmp, linkPath);
       } catch (err) {
-        errors.push(`repoint ${linkPath}: ${(err as Error).message}`);
+        try {
+          ops.unlink(tmp);
+        } catch {
+          /* best-effort temp cleanup */
+        }
+        errors.push(`repoint ${linkPath}: ${errMsg(err)}`);
         continue;
       }
     }
-    repaired.push({ path: linkPath, from: currentTarget, to: correctTarget });
+    repaired.push({ path: linkPath, from: currentTarget, to: correctedTarget });
   }
 
   return { repaired, errors };
