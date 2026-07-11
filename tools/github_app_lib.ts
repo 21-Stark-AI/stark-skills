@@ -729,6 +729,14 @@ export async function prCreate(repo: string, opts: PrCreateOpts): Promise<unknow
  * Mark a PR ready-for-review (un-draft). REST has no ready endpoint, so this
  * uses the GraphQL `markPullRequestReadyForReview` mutation (needs the PR node
  * id, resolved from REST). Idempotent: a no-op when the PR is already ready.
+ *
+ * CAVEAT — App-token limitation: the stark-{claude,codex,gemini} App
+ * installations get `Resource not accessible by integration` on this mutation
+ * (verified live 2026-07-11 against PR #662), so the App path does not work with
+ * the current install permissions. The merge flows deliberately DON'T use this:
+ * they un-draft via `gh pr ready` (user token) — see `plugins/stark-gh/tools/lib/gh.ts::markPrReady`,
+ * stark-phase-execute §1.5, and skill/remember. Keep this for the day the App
+ * gains the grant / for a differently-scoped install; it fails loudly otherwise.
  */
 export async function prReady(
   repo: string,
