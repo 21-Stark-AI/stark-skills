@@ -717,9 +717,49 @@ export async function prCreate(repo: string, opts: PrCreateOpts): Promise<unknow
       base: opts.base ?? "main",
       title: opts.title,
       body: opts.body ?? "",
-      draft: opts.draft ?? false,
+      // Draft-by-default policy: a caller that omits `draft` gets a draft PR so
+      // WIP stays out of draft-guarded CI. Callers opt into ready with draft:false.
+      draft: opts.draft ?? true,
     },
     opts.app,
+  );
+}
+
+/**
+ * Mark a PR ready-for-review (un-draft). REST has no ready endpoint, so this
+ * uses the GraphQL `markPullRequestReadyForReview` mutation (needs the PR node
+ * id, resolved from REST). Idempotent: a no-op when the PR is already ready.
+ *
+ * CAVEAT — GitHub platform limitation (NOT a missing permission): all three
+ * stark-{claude,codex,gemini} installs already hold `pull_requests: write` (the
+ * permission this mutation is documented to require — verified live 2026-07-11),
+ * yet every one returns `Resource not accessible by integration` on PR #662.
+ * `markPullRequestReadyForReview` / `convertPullRequestToDraft` are simply NOT
+ * exposed to GitHub App installation tokens — there is no grant that fixes it;
+ * un-drafting needs a user/OAuth token. So the merge flows deliberately un-draft
+ * via `gh pr ready` (the `gh` CLI's user auth) instead — see
+ * `plugins/stark-gh/tools/lib/gh.ts::markPrReady`, stark-phase-execute §1.5, and
+ * skill/remember. This helper is kept for a PAT/user-token caller; it fails
+ * loudly under an App token.
+ */
+export async function prReady(
+  repo: string,
+  number: number,
+  app?: AppName,
+): Promise<unknown> {
+  const pr = (await apiGet(
+    `/repos/${repo}/pulls/${number}`,
+    undefined,
+    app,
+  )) as { node_id: string; draft?: boolean };
+  if (pr.draft === false) return pr; // already ready — idempotent
+  return graphql(
+    `mutation($id: ID!) {
+      markPullRequestReadyForReview(input: { pullRequestId: $id }) {
+        pullRequest { number isDraft }
+      }
+    }`,
+    { variables: { id: pr.node_id }, app },
   );
 }
 
