@@ -319,6 +319,15 @@ test("redact strips OpenAI / GitHub / base64 / PII patterns", () => {
   }
 });
 
+test("redact leaves hyphenated words that merely contain 'sk-' intact", () => {
+  // Regression: "task-transition"/"task-workflow-behavior" contain the
+  // substring "sk-..." but are not tokens; the redactor must not mangle them
+  // into "task-[REDACTED]". A real leaked key preceded by whitespace still redacts.
+  const prose = "task-transition guards and task-workflow-behavior notes";
+  assert.equal(redact(prose), prose);
+  assert.match(redact("key: sk-deadbeefdeadbeefdeadbeef"), /sk-\[REDACTED\]/);
+});
+
 test("redact is idempotent under repeated application", () => {
   const dirty = "leaked: sk-abcdefghijklmnopqrstuvwx and user@evinced.com";
   const once = redact(dirty);
@@ -342,6 +351,20 @@ test("preDispatchSensitiveGate catches OpenAI token + injection directives + GCP
   assert.ok(hits.includes("openai_token"), `expected openai_token in ${hits}`);
   assert.ok(hits.includes("gcp_service_account_key"));
   assert.ok(hits.includes("injection_please_env"));
+});
+
+test("preDispatchSensitiveGate does NOT false-positive on words containing 'sk-'", () => {
+  // Regression: a spec full of hyphenated compounds like "task-workflow-behavior"
+  // and "task-transition" tripped openai_token because "sk-<10+ word chars>"
+  // matched mid-word. The lookbehind fixes it; a real ` sk-<key>` still trips.
+  const prose =
+    "The task-workflow-behavior surface and task-transition guards are canonical.";
+  assert.deepEqual(preDispatchSensitiveGate(prose), []);
+  assert.ok(
+    preDispatchSensitiveGate("api_key = sk-zzzzzzzzzzzzzzzzzzzzzzzz").includes(
+      "openai_token",
+    ),
+  );
 });
 
 test("preDispatchSensitiveGate returns empty for a clean payload", () => {
