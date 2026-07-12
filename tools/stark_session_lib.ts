@@ -61,7 +61,7 @@ const REDACT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/ghp_[A-Za-z0-9_]{10,}/g, "ghp_[REDACTED]"],
   [/ghs_[A-Za-z0-9_]{10,}/g, "ghs_[REDACTED]"],
   [/github_pat_[A-Za-z0-9_]{10,}/g, "github_pat_[REDACTED]"],
-  [/sk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]"],
+  [/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]"],
   [/\bBearer\s+\S+/gi, "Bearer [REDACTED]"],
   [/\btoken\s+\S+/gi, "token [REDACTED]"],
   [/Authorization:\s*\S+/gi, "Authorization: [REDACTED]"],

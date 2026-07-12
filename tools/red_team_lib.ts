@@ -378,7 +378,7 @@ export function assemblePrompt(args: {
 
 const REDACTION_RULES: ReadonlyArray<[RegExp, string]> = [
   // Token-shaped secrets (must come before generic base64).
-  [/sk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]"],
+  [/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]"],
   [/ghp_[A-Za-z0-9]{10,}/g, "ghp_[REDACTED]"],
   [/ghs_[A-Za-z0-9]{10,}/g, "ghs_[REDACTED]"],
   // PII patterns (mirror red_team_audit_text).
@@ -421,7 +421,10 @@ export function redact(text: string): string {
 export function preDispatchSensitiveGate(payload: string): string[] {
   const hits: string[] = [];
   // Secret-shaped tokens.
-  if (/sk-[A-Za-z0-9_-]{10,}/.test(payload)) hits.push("openai_token");
+  // Lookbehind guards against ordinary words that merely contain "sk-"
+  // (e.g. "ta·sk-workflow", "ta·sk-transition"): a real key is never
+  // preceded by an alphanumeric char, whereas the false positives always are.
+  if (/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{10,}/.test(payload)) hits.push("openai_token");
   if (/ghp_[A-Za-z0-9]{10,}/.test(payload)) hits.push("github_pat");
   if (/ghs_[A-Za-z0-9]{10,}/.test(payload)) hits.push("github_install_token");
   // GCP service-account key material.
