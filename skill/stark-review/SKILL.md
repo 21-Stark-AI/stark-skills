@@ -326,6 +326,10 @@ classified `fix` finding from Critical down to nits enters the loop.
 6. Commit + push to the resolved push target. Commit SHA + audit entry land in
    the receipt. A non-final round's fix is re-reviewed by the next round against
    the new HEAD; the final round's fix is verified by step 5's `test_command`
+   **and then by the convergence round** — when the final fix-capable round
+   pushed a fix, the dispatcher runs one extra review-only pass over the new
+   HEAD (no fix step follows it, so it terminates by construction; receipt
+   `convergence` block records `{ran, round, findings, error}`; ADR 0022)
    alone (no further review round runs).
 
 `--max-rounds` caps the loop. Resolution order: explicit `--max-rounds` →

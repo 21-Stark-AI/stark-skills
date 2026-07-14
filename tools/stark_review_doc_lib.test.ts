@@ -593,3 +593,55 @@ describe("run-record durability helpers", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// ─── Convergence pass helpers (ADR 0022) ─────────────────────────────────
+
+import { buildConvergenceInput, resolveConvergencePromptSources } from "./stark_review_doc_lib.ts";
+
+describe("convergence helpers", () => {
+  test("buildConvergenceInput frames delta first, doc as context", () => {
+    const input = buildConvergenceInput({ base: "abc123", delta: "+ new line\n- old line", doc: "# Doc body" });
+    assert.match(input, /## Delta under review \(git diff abc123\.\.HEAD\)/);
+    assert.match(input, /```diff\n\+ new line\n- old line\n```/);
+    assert.match(input, /## Full document \(context only[\s\S]*# Doc body/);
+    assert.ok(input.indexOf("Delta under review") < input.indexOf("Full document"));
+  });
+
+  test("resolveConvergencePromptSources: global prompt + agent.md, repo override wins", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "conv-"));
+    try {
+      const promptsDir = path.join(dir, "plan-review");
+      mkdirSync(path.join(promptsDir, "codex"), { recursive: true });
+      writeFileSync(path.join(promptsDir, "convergence.md"), "GLOBAL CONV");
+      writeFileSync(path.join(promptsDir, "codex", "agent.md"), "AGENT MD");
+
+      const global = resolveConvergencePromptSources({ agent: "codex", promptsDir, repoSubdir: "plan-prompts" });
+      assert.ok(global);
+      assert.equal(global!.domainPrompt, "GLOBAL CONV");
+      assert.equal(global!.agentMd, "AGENT MD");
+
+      const repoDir = path.join(dir, "repo");
+      mkdirSync(path.join(repoDir, ".code-review", "plan-prompts"), { recursive: true });
+      writeFileSync(path.join(repoDir, ".code-review", "plan-prompts", "convergence.md"), "REPO CONV");
+      const overridden = resolveConvergencePromptSources({ agent: "codex", promptsDir, repoDir, repoSubdir: "plan-prompts" });
+      assert.equal(overridden!.domainPrompt, "REPO CONV");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("resolveConvergencePromptSources: null when no convergence.md anywhere", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "conv2-"));
+    try {
+      assert.equal(resolveConvergencePromptSources({ agent: "codex", promptsDir: path.join(dir, "nope"), repoSubdir: "plan-prompts" }), null);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("shipped convergence prompts exist for both prompts-dirs and are not discoverable domains", () => {
+    const promptsBase = path.join(import.meta.dirname, "..", "global", "prompts");
+    for (const pd of ["spec-review", "plan-review"]) {
+      const p = path.join(promptsBase, pd, "convergence.md");
+      assert.ok(existsSync(p), `${p} missing`);
+      const domains = discoverDomains(path.join(promptsBase, pd), ["codex", "claude", "gemini"]);
+      assert.ok(!domains.some((d) => d.key === "convergence"), `${pd}: convergence leaked into discovered domains`);
+    }
+  });
+});

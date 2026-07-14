@@ -380,6 +380,59 @@ node --experimental-strip-types "$TOOLS/github_app.ts" --app stark-claude pr rev
 
 If posting fails for any identity, warn and continue.
 
+## Phase 6: Converge — review the delta of everything after the final review (ADR 0022)
+
+Every mutation before this point was reviewed — except the 5b manual fixes
+(the largest, least-constrained edits of the run). Phase 6 closes that hole
+with a **delta-scoped convergence review** of `last_reviewed_sha..HEAD`, run
+after all fixes are committed and pushed. This is the **terminal phase**:
+nothing may mutate the spec after it except fixes to its own findings
+(bounded below).
+
+Skip only under `--dry-run` or when no PR exists (nowhere to post).
+
+```bash
+LAST_SHA=$(parse '.last_reviewed_sha // ""')
+CONV_BASE_HEAD=$(git -C "$REPO_DIR" rev-parse HEAD)
+set +e
+CONV_RECEIPT=$(node --experimental-strip-types "$TOOLS/stark_review_doc.ts" \
+    --doc "$DOC" --prompts-dir spec-review \
+    --repo-dir "$REPO_DIR" --prompts-base "$PROMPTS_BASE" \
+    ${LEAD_AGENT:+--lead-agent "$LEAD_AGENT"} \
+    ${LEAD_MODEL:+--lead-model "$LEAD_MODEL"} \
+    --converge --base "$LAST_SHA")
+CONV_EXIT=$?
+set -e
+cparse() { printf '%s' "$CONV_RECEIPT" | jq -r "$1"; }
+C_OK=$(cparse '(.ok // false) | tostring')
+C_DELTA=$(cparse '(.converge.delta_chars // 0) | tostring')
+C_FINDINGS=$(cparse '(.unresolved // []) | length')
+```
+
+Outcomes — post ONE convergence comment (stark-claude App, `github_app.ts pr
+review $pr_number --comment`) carrying the exact claim, and print the same
+line as the final operator message. **Silence is not a valid terminal state.**
+
+- `CONV_EXIT != 0` or `C_OK != true` → **`⚠️ NOT converged — delta
+  unreviewed`** (include the receipt `error`); exit 1. An unreviewed delta is
+  a failed run.
+- `C_DELTA = 0` → **`✅ Converged — empty delta`** (nothing changed since the
+  final review round). Done.
+- `C_FINDINGS = 0` → **`✅ Converged — delta reviewed, clean`**. Done.
+- `C_FINDINGS > 0` → they are normal findings under the full contract. Write
+  `CONV_RECEIPT` to a temp file and run the 5a → 5b loop over it (post as
+  resolvable threads via `review_doc_findings.ts post` with a **fresh map
+  file**; fix each — AskUserQuestion when ambiguous; commit + push; resolve
+  each thread with the fix). Then:
+  - if ANY convergence finding was `high`/`critical`: run **one** more
+    convergence pass over the fixes themselves — `--converge --base
+    "$CONV_BASE_HEAD"` — and handle its findings the same way. Never a third
+    pass: post **`✅ Converged — delta reviewed, N findings (all resolved;
+    second pass: M)`**, or **`⚠️ NOT converged — unresolved high-severity
+    delta findings`** + exit 1 if the second pass still produced
+    `high`/`critical`.
+  - else post **`✅ Converged — delta reviewed, N findings (all resolved)`**.
+
 ## Debugging Dispatch Failures
 
 For dispatch troubleshooting (CLI flags per agent, error detection, smoke
