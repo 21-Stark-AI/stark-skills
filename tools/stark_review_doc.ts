@@ -40,6 +40,7 @@ import { realpathSync } from "node:fs";
 import type { AgentName } from "./stark_review_lib.ts";
 import {
   applyPatches,
+  buildConvergenceInput,
   buildFixerPrompt,
   buildReviewerPrompt,
   buildHistoryDir,
@@ -61,7 +62,9 @@ import {
   persistRoundsHistory,
   type PersistedRound,
   pmap,
+  type PromptSources,
   pruneRunDirs,
+  resolveConvergencePromptSources,
   resolveDocPromptSources,
   scaleTimeoutForDocSize,
   selectFindingsToFix,
@@ -756,11 +759,14 @@ async function runLeadReview(opts: {
   leadAgent: LeadAgent;
   model: string;
   reasoningEffort: string;
+  /** Convergence mode: bypass per-domain prompt resolution (there is no
+   * NN-<domain>.md for "convergence") and use these sources for every domain. */
+  promptSourcesOverride?: PromptSources;
 }): Promise<LeadDispatchResult[]> {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "stark-doc-review-"));
   try {
     return await pmap(opts.domains, opts.maxConcurrent, async (domain) => {
-      const sources = resolveDocPromptSources({
+      const sources = opts.promptSourcesOverride ?? resolveDocPromptSources({
         agent: opts.leadAgent,
         domain,
         promptsDir: path.join(opts.promptsBase, opts.promptsDir),
@@ -930,6 +936,9 @@ export interface DispatchOptions {
   maxWingAttempts: number;
   commitFixes: boolean;
   coherencePass: boolean;
+  /** Convergence mode (ADR 0022): review only the git delta base..HEAD of the
+   * doc instead of running the fix loop. Null = normal review. */
+  convergeBase: string | null;
 }
 
 interface Receipt {
@@ -996,6 +1005,12 @@ interface Receipt {
   /** History/analytics writes that failed ("phase: message") — surfaced, never
    * swallowed. Persistence failures warn; they do not fail the run. */
   persistence_errors: string[];
+  /** HEAD after the final review round — the convergence pass diffs from
+   * here (`--converge --base <sha>`). Null on dry runs / git failure. */
+  last_reviewed_sha: string | null;
+  /** Set when this run WAS a convergence pass: the diff base and delta size
+   * (delta_chars 0 = trivially converged, nothing was dispatched). */
+  converge: { base: string; delta_chars: number } | null;
   /** Process-health analytics — monitors and judges the review run itself. */
   analytics: ReviewAnalytics | null;
   coherence: {
@@ -1057,16 +1072,40 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     };
   }
 
-  // Domain discovery + disabled filter
-  const allDomains = discoverDomains(promptsRoot, ["codex", "claude", "gemini"]);
-  const enabledDomains = allDomains.filter((d) => !opts.config.disabled_domains.includes(d.key));
-  if (enabledDomains.length === 0) {
-    return {
-      receipt: errorReceipt(opts, "no_domains", `No domains discovered under ${promptsRoot}`),
-      exitCode: 1,
-    };
+  // Convergence mode (ADR 0022): single "convergence" pseudo-domain with a
+  // root-level prompt; skips domain discovery, the fix loop, and coherence.
+  const convergeMode = opts.convergeBase !== null;
+  let convergeSources: PromptSources | null = null;
+  if (convergeMode) {
+    convergeSources = resolveConvergencePromptSources({
+      agent: opts.leadAgent,
+      promptsDir: promptsRoot,
+      repoDir: opts.repoDir,
+      repoSubdir: repoSubdirFor(opts.promptsDir),
+    });
+    if (!convergeSources) {
+      return {
+        receipt: errorReceipt(opts, "convergence_prompt_missing", `${path.join(promptsRoot, "convergence.md")} not found`),
+        exitCode: 1,
+      };
+    }
   }
-  const domainKeys = enabledDomains.map((d) => d.key);
+
+  // Domain discovery + disabled filter
+  let domainKeys: string[];
+  if (convergeMode) {
+    domainKeys = ["convergence"];
+  } else {
+    const allDomains = discoverDomains(promptsRoot, ["codex", "claude", "gemini"]);
+    const enabledDomains = allDomains.filter((d) => !opts.config.disabled_domains.includes(d.key));
+    if (enabledDomains.length === 0) {
+      return {
+        receipt: errorReceipt(opts, "no_domains", `No domains discovered under ${promptsRoot}`),
+        exitCode: 1,
+      };
+    }
+    domainKeys = enabledDomains.map((d) => d.key);
+  }
 
   // Pre-flight: dirty-doc check
   const docAbs = path.resolve(opts.repoDir, opts.docPath);
@@ -1096,6 +1135,23 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
 
   let currentDoc = fs.readFileSync(docAbs, "utf-8");
   const originalDoc = currentDoc;
+
+  // Convergence delta — everything that changed since the last-reviewed state.
+  let convergeDelta = "";
+  if (convergeMode) {
+    const diff = await runGit(["diff", `${opts.convergeBase}..HEAD`, "--", opts.docPath], opts.repoDir, 30);
+    if (diff.code !== 0) {
+      return {
+        receipt: errorReceipt(opts, "converge_diff_failed", diff.stderr.trim() || `git diff ${opts.convergeBase}..HEAD failed`),
+        exitCode: 1,
+      };
+    }
+    convergeDelta = diff.stdout;
+    log(`converge: base=${opts.convergeBase} delta=${convergeDelta.length} chars`);
+    if (convergeDelta.trim().length === 0) {
+      log("converge: empty delta — nothing changed since the last review (trivially converged)");
+    }
+  }
   const roundStats: RoundStat[] = [];
   let abortedEarly = false;
   let abortReason: string | null = null;
@@ -1188,7 +1244,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     }
   }
 
-  for (let roundNum = 1; roundNum <= maxRounds; roundNum++) {
+  for (let roundNum = 1; !convergeMode && roundNum <= maxRounds; roundNum++) {
     const roundT0 = process.hrtime.bigint();
     log(`── Round ${roundNum} (review-fix) ──`);
 
@@ -1385,7 +1441,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
   // contract; runs even after a circuit-breaker abort (that's when the doc
   // needs it most). Skipped on dispatch failure or dry-run.
   let coherenceReceipt: Receipt["coherence"] = null;
-  if (opts.coherencePass && !dispatchFailureEarlyExit && !opts.dryRun) {
+  if (opts.coherencePass && !convergeMode && !dispatchFailureEarlyExit && !opts.dryRun) {
     log("── Coherence pass ──");
     const cohT0 = process.hrtime.bigint();
     const docBefore = currentDoc;
@@ -1465,13 +1521,18 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     persistRunSnapshot("coherence");
   }
 
-  // Final review-only round (skipped on dispatch failure or dry-run)
+  // Final review-only round (skipped on dispatch failure or dry-run; in
+  // convergence mode this is THE review — delta-scoped — and an empty delta
+  // means there is nothing to dispatch).
   let unresolved: DocFinding[] = [];
-  if (!dispatchFailureEarlyExit && !opts.dryRun) {
-    log("── Final review (review-only) ──");
+  if (!dispatchFailureEarlyExit && !opts.dryRun && !(convergeMode && convergeDelta.trim().length === 0)) {
+    log(convergeMode ? "── Convergence review (delta-scoped) ──" : "── Final review (review-only) ──");
     const finalT0 = process.hrtime.bigint();
+    const reviewInput = convergeMode
+      ? buildConvergenceInput({ base: opts.convergeBase!, delta: convergeDelta, doc: currentDoc })
+      : currentDoc;
     const finalLead = await runLeadReview({
-      doc: currentDoc,
+      doc: reviewInput,
       domains: domainKeys,
       promptsDir: opts.promptsDir,
       promptsBase: opts.promptsBase,
@@ -1481,6 +1542,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
       leadAgent: opts.leadAgent,
       model: opts.leadModel,
       reasoningEffort: CODEX_REASONING_EFFORT_XHIGH,
+      ...(convergeSources ? { promptSourcesOverride: convergeSources } : {}),
     });
     const allRaw: DocFinding[] = finalLead.flatMap((r) => r.findings);
     const classified = classifyFindings(allRaw, {
@@ -1516,6 +1578,21 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
       duration_s: elapsedSec(finalT0),
     });
     persistRunSnapshot("final-review");
+  }
+
+  // Where "last reviewed" is: HEAD after the final review round (fix +
+  // coherence commits included). The convergence pass diffs from here
+  // (`--converge --base <sha>`); the exact reviewed content is snapshotted
+  // into the run dir for forensics and non-committed flows.
+  let lastReviewedSha: string | null = null;
+  if (!opts.dryRun) {
+    const head = await runGit(["rev-parse", "HEAD"], opts.repoDir, 15);
+    lastReviewedSha = head.code === 0 ? head.stdout.trim() : null;
+    try {
+      fs.writeFileSync(path.join(historyDir, "final-reviewed-doc.md"), currentDoc);
+    } catch (err) {
+      persistFailed("final/doc-snapshot", err);
+    }
   }
 
   // Coverage — per-domain completion across the whole run. A domain that
@@ -1580,6 +1657,8 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     run_id: runId,
     history_dir: historyDir,
     persistence_errors: persistenceErrors,
+    last_reviewed_sha: lastReviewedSha,
+    converge: convergeMode ? { base: opts.convergeBase!, delta_chars: convergeDelta.length } : null,
     analytics,
     coherence: coherenceReceipt,
     error: outcome.error,
@@ -1719,6 +1798,8 @@ function errorReceipt(opts: DispatchOptions, code: string, message: string): Rec
     run_id: "",
     history_dir: "",
     persistence_errors: [],
+    last_reviewed_sha: null,
+    converge: null,
     analytics: null,
     coherence: null,
     error: { code, message },
@@ -1745,6 +1826,8 @@ interface CliArgs {
   maxWingAttempts: number;
   commitFixes: boolean;
   coherencePass: boolean;
+  converge: boolean;
+  convergeBase: string | null;
   json: boolean;
 }
 
@@ -1772,6 +1855,9 @@ function usage(): string {
     "  --force                    proceed even if doc has uncommitted changes",
     "  --no-commit                apply fixes in-place but skip git commit",
     "  --no-coherence             skip the post-fix-loop coherence pass (contradictions/repetitions/fluff/leftovers)",
+    "  --converge --base SHA      convergence mode (ADR 0022): review ONLY the git delta base..HEAD of the doc",
+    "                             (post-final-review mutations — wing/coherence/operator fixes). Skips the fix",
+    "                             loop + coherence; --rounds is ignored; incompatible with --dry-run",
     "  --json                     emit receipt JSON to stdout (default true; here for clarity)",
   ].join("\n");
 }
@@ -1795,6 +1881,8 @@ function parseArgs(argv: ReadonlyArray<string>): CliArgs {
     maxWingAttempts: 2,
     commitFixes: true,
     coherencePass: true,
+    converge: false,
+    convergeBase: null,
     json: true,
   };
   const need = (i: number, flag: string): string => {
@@ -1852,6 +1940,8 @@ function parseArgs(argv: ReadonlyArray<string>): CliArgs {
       case "--force":              args.force = true; break;
       case "--no-commit":          args.commitFixes = false; break;
       case "--no-coherence":       args.coherencePass = false; break;
+      case "--converge":           args.converge = true; break;
+      case "--base":               args.convergeBase = need(i, a); i++; break;
       case "--json":               args.json = true; break;
       case "-h": case "--help":    process.stdout.write(usage() + "\n"); process.exit(0);
       default: throw new Error(`unknown arg: ${a}`);
@@ -1876,6 +1966,9 @@ function parseArgs(argv: ReadonlyArray<string>): CliArgs {
   if (args.maxWingAttempts < 1) throw new Error("--max-wing-attempts must be >= 1");
   if (args.leadTimeoutSec <= 0) throw new Error("--lead-timeout must be > 0");
   if (args.wingTimeoutSec <= 0) throw new Error("--wing-timeout must be > 0");
+  if (args.converge && args.convergeBase === null) throw new Error("--converge requires --base <sha>");
+  if (!args.converge && args.convergeBase !== null) throw new Error("--base only applies with --converge");
+  if (args.converge && args.dryRun) throw new Error("--converge cannot be combined with --dry-run");
   return args;
 }
 
@@ -1908,6 +2001,7 @@ async function main(): Promise<number> {
     maxWingAttempts: args.maxWingAttempts,
     commitFixes: args.commitFixes,
     coherencePass: args.coherencePass && config.coherence_pass,
+    convergeBase: args.converge ? args.convergeBase : null,
   };
 
   const { receipt, exitCode } = await dispatchDocReview(dispatchOpts);

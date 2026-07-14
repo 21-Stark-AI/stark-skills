@@ -1,6 +1,6 @@
 # 0022. Convergence pass is the terminal review phase
 
-- **Status:** Proposed (flips to Accepted when slice 3 of [the convergence plan](../plans/review-convergence-and-analytics-2026-07-14.md) merges)
+- **Status:** Accepted (implemented by slice 3 of [the convergence plan](../plans/review-convergence-and-analytics-2026-07-14.md))
 - **Date:** 2026-07-14
 
 ## Context

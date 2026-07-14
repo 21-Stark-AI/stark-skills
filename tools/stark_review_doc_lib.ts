@@ -930,3 +930,63 @@ export function deriveRunOutcome(opts: {
   }
   return { ok: true, exitCode: 0, error: null };
 }
+
+// ─── Convergence pass (ADR 0022) ─────────────────────────────────────────
+
+/**
+ * Resolve the convergence prompt (root-level `convergence.md`, NOT a
+ * discovered domain) + the agent preamble. Repo override first
+ * (`.code-review/<repoSubdir>/convergence.md`), then the global prompts dir.
+ * Returns null when no convergence prompt exists anywhere.
+ */
+export function resolveConvergencePromptSources(opts: {
+  agent: AgentName;
+  promptsDir: string;
+  repoDir?: string | null;
+  repoSubdir: string;
+}): PromptSources | null {
+  const repoDir = opts.repoDir ?? null;
+  let convText: string | null = null;
+  let agentText: string | null = null;
+
+  if (repoDir) {
+    const base = path.join(repoDir, ".code-review", opts.repoSubdir);
+    const c = path.join(base, "convergence.md");
+    if (fs.existsSync(c)) convText = fs.readFileSync(c, "utf-8");
+    const a = path.join(base, opts.agent, "agent.md");
+    if (fs.existsSync(a)) agentText = fs.readFileSync(a, "utf-8");
+  }
+  if (convText === null) {
+    const c = path.join(opts.promptsDir, "convergence.md");
+    if (fs.existsSync(c)) convText = fs.readFileSync(c, "utf-8");
+  }
+  if (agentText === null) {
+    const a = path.join(opts.promptsDir, opts.agent, "agent.md");
+    if (fs.existsSync(a)) agentText = fs.readFileSync(a, "utf-8");
+  }
+  if (convText === null) return null;
+  return { agentMd: agentText ?? "", domainPrompt: convText };
+}
+
+/**
+ * The convergence reviewer's input: the delta under review first, the full
+ * document after it as verification context. Fed to `buildReviewerPrompt` in
+ * place of the bare document.
+ */
+export function buildConvergenceInput(opts: {
+  base: string;
+  delta: string;
+  doc: string;
+}): string {
+  return [
+    `## Delta under review (git diff ${opts.base}..HEAD)`,
+    "",
+    "```diff",
+    opts.delta.trim(),
+    "```",
+    "",
+    "## Full document (context only — verify the delta against it, do not re-review it)",
+    "",
+    opts.doc,
+  ].join("\n");
+}
