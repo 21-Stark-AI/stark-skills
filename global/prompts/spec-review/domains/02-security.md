@@ -18,6 +18,10 @@ You are reviewing an architecture document / system design / technical spec for 
 - Are audit logs planned for security-relevant actions? Is log content sanitized — no credentials, tokens, or raw PII?
 - Are relevant compliance requirements addressed (GDPR, SOC2, FedRAMP, HIPAA) where the system handles regulated data?
 
+## Scope Proportionality
+
+Match the threat model to what the document says it **is**. For a single-user, local, playground-scoped tool (one operator, laptop, no external users, no untrusted input), do **not** demand credential/token rotation, secret-management ceremony, tamper-evident audit trails, homoglyph / adversarial-input / injection hardening, or compliance controls (GDPR/SOC2/FedRAMP/HIPAA) — those are answers to threats this artifact does not face. A missing rotation policy on a local single-writer store is not a finding. Reserve these objections for artifacts that take external input, serve other users, or handle regulated data. If the document declares its scope, that declaration answers the concern.
+
 ## Severity Guide
 - critical: Authentication bypass, unencrypted PII exposure, or a design that an attacker can trivially exploit without authorization
 - high: Missing authz model, secrets stored in plaintext or in code, no encryption at a required trust boundary

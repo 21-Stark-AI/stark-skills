@@ -30,6 +30,10 @@ You are reviewing an architecture document / system design / technical spec for 
 - Are there open questions or TODOs that must be resolved before implementation?
 - Are all referenced external systems, services, or libraries described with enough detail to evaluate their suitability?
 
+## Scope Proportionality
+
+"Missing" is only a gap relative to the document's declared scope. For a single-user, local, playground-scoped tool, the **absence** of error-recovery machinery, migration/backfill plans, observability stacks, or failover sections is not incompleteness — it is correct restraint. Do not file a completeness finding that would push a laptop-scoped tool to specify distributed-recovery semantics, append-only history, or 10x-scale capacity. A concrete unspecified behavior the tool actually needs to work is a gap; a production subsystem the tool does not need is not.
+
 ## Severity Guide
 - critical: A core component or behavior is entirely unspecified — implementation would require guessing — OR the spec fundamentally cannot achieve its stated goal
 - high: A significant architectural decision is missing or unsound; a major section (error handling, migration, observability) is missing and would block implementation

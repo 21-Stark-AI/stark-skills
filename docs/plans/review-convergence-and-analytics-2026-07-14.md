@@ -545,6 +545,53 @@ if (!opts.dryRun) {
 
 ---
 
+# Slice 5 — playground-scope prevention + breaker teeth (PR 5, 2026-07-15)
+
+Motivated by two real runs that slipped the Slice 4 guard: **mimir** `feat/ai-tidy`
+(spec grew 4.5× with churn + no convergence — over-engineered a single-user vault
+tidy with distributed-recovery, revision-counter migration, homoglyph defenses,
+audit trails) and **manual-auditor-ingest** `migrate-to-ev-manual-auditor-kb`
+(spec quadrupled 188→657 lines by inventing an inbox/journal/CDC apparatus, then
+flagging it as disproportionate). Root cause was upstream of the breaker: the
+doc-review committee lacked the red-team's playground-scope discipline, so
+security/completeness/data-modeling domains demanded production hardening and the
+wing amplified it into committed growth. #675's growth breaker is a backstop that
+(a) can't fire until 3 rounds accrue (a 4.5× balloon lands at round 1-2) and (b)
+leaves the operator holding the bloat.
+
+### Task 5.1: Playground-scope guard in the prompts (prevention)
+- Ported the red-team `preamble.md` scope-match section into all six doc-review
+  preambles (`{spec,plan}-review/{codex,claude,gemini}/agent.md`).
+- Added a **Scope Proportionality** block to the domains that manufacture the
+  hardening: spec-review `02-security` / `01-completeness` / `05-data-modeling`,
+  plan-review `02-security` / `01-completeness` / `04-viability`.
+
+### Task 5.2: Scope-aware wing (stop the amplifier)
+- `WING_FIXER_CONTRACT` (`stark_review_doc_lib.ts`) now carries a **SCOPE GUARD**:
+  on a declared-playground doc, a finding that would add production machinery is
+  `skipped` ("out of scope for declared playground scope"), never patched.
+
+### Task 5.3: Hard growth cap + rollback (breaker teeth)
+- New `hard_doc_growth_ratio` threshold (default 3×) aborts **unconditionally on
+  the round first seen** — no 3-round wait — so a fast balloon dies at round 1-2.
+- On a padding abort (hard cap or invent-then-condemn), the doc is **rolled back
+  to its pre-review state** and the revert committed (`rollback_on_hard_growth`,
+  default true); coherence + final passes are skipped.
+
+### Task 5.4: Invent-then-condemn detector
+- `RoundStat.scope_findings` counts high/critical `scope`-domain findings per
+  round; when the doc breached the soft limit AND that count is > 0, abort
+  (`invent_then_condemn`, grade runaway). The scope reviewer — not the char-ratio
+  — discriminates padding from gap-fill, so this does **not** re-trip the #675
+  false positive (declining findings + silent scope domain → ack, not abort).
+
+**Live proof:** unit matrix in `stark_review_doc_analytics_lib.test.ts` (hard-cap
+round-1 abort, invent-then-condemn abort+rollback, #675 non-regression, rollback
+scoped to padding aborts). Full re-run against a mimir/manual-auditor-shaped spec
+pending the next real review.
+
+---
+
 ## Analytics contract — enforcement map
 
 | Requirement | Enforced by |

@@ -52,10 +52,21 @@ Lead/wing multi-round execution plan review:
   and a health grade (`healthy`/`degraded`/`runaway`), written to
   `analytics.json` in the history dir, a `<plan>.review-analytics.md` sidecar
   next to the doc, and the receipt's `analytics` block. Inline guards stop the
-  loop early when the doc grows past `analytics.max_doc_growth_ratio` (default
-  2x the original) or findings fail to decline for
-  `analytics.non_convergent_rounds` consecutive rounds — no more 200-line plans
-  ballooning through 10 rounds.
+  loop early. **Soft growth** past `analytics.max_doc_growth_ratio` (default 2x)
+  while findings decline only warns + requires an operator ack (#675). Two
+  signals hard-stop: **non-convergence** (findings fail to decline for
+  `analytics.non_convergent_rounds` rounds) and the **hard growth cap**
+  (`analytics.hard_doc_growth_ratio`, default 3x — aborts on the round it's seen,
+  before non-convergence is even measurable, catching a fast 4.5x balloon). A
+  hard-cap abort is unambiguous padding, so the doc is **rolled back to its
+  pre-review state** (`analytics.rollback_on_hard_growth`, default true) instead
+  of leaving you the bloat. (The invent-then-condemn breaker keys off a `scope`
+  domain, which plan-review doesn't ship, so it doesn't fire here.) Prevention
+  lives upstream too: the review preambles + domains carry a **playground-scope
+  guard** — a single-user/local/playground plan is not held to HA, secrets-
+  rotation, migration, or capacity-planning standards, and the wing refuses to
+  *add* that machinery to resolve an over-scoped finding. No more 200-line plans
+  ballooning through 10 rounds of invented production hardening.
 
 **This skill assumes the plan will fail and hunts for where it will break.**
 

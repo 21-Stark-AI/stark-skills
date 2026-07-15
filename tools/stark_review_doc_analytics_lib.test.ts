@@ -76,6 +76,62 @@ test("growth AND non-convergence together hard-stop with a composite reason", ()
   assert.equal(judgeGrade(v.flags), "runaway");
 });
 
+test("hard growth cap aborts unconditionally on round 1 — before non-convergence is measurable", () => {
+  // The mimir feat/ai-tidy shape: 4.5× balloon at round 1-2, findings still
+  // nominally declining, no 3 rounds yet for the non-convergence signal.
+  const rounds = [
+    stat({ round: 1, to_fix: 5, doc_chars_before: 1000, doc_chars_after: 4500 }),
+  ];
+  const v = evaluateGuards(1000, rounds, DEFAULT_ANALYTICS_THRESHOLDS);
+  assert.equal(v.abort, true);
+  assert.equal(v.rollback_recommended, true);
+  assert.equal(v.growth_ack_required, false);
+  assert.ok(v.flags.includes("runaway_growth_hard"));
+  assert.match(v.abort_reason!, /hard cap/);
+  assert.equal(judgeGrade(v.flags), "runaway");
+});
+
+test("invent-then-condemn: soft-growth breach + scope domain condemning it aborts with rollback", () => {
+  // The manual-auditor-ingest shape: doc grew 2.5× while the scope domain
+  // flagged the invented apparatus as disproportionate.
+  const rounds = [
+    stat({ round: 1, to_fix: 4, doc_chars_after: 1800 }),
+    stat({ round: 2, to_fix: 3, doc_chars_before: 1800, doc_chars_after: 2500, scope_findings: 2 }),
+  ];
+  const v = evaluateGuards(1000, rounds, DEFAULT_ANALYTICS_THRESHOLDS);
+  assert.equal(v.abort, true);
+  assert.equal(v.rollback_recommended, true);
+  assert.ok(v.flags.includes("invent_then_condemn"));
+  assert.match(v.abort_reason!, /invented scope it is now condemning/);
+  assert.equal(judgeGrade(v.flags), "runaway");
+});
+
+test("invent-then-condemn does NOT fire on legit growth with no scope findings (#675 false-positive guard)", () => {
+  // 2.6× growth, findings declining, scope domain silent → the #675 case:
+  // ack required, but no abort and no invent-then-condemn.
+  const rounds = [
+    stat({ round: 1, to_fix: 5, doc_chars_after: 1600 }),
+    stat({ round: 2, to_fix: 2, doc_chars_before: 1600, doc_chars_after: 2600, scope_findings: 0 }),
+  ];
+  const v = evaluateGuards(1000, rounds, DEFAULT_ANALYTICS_THRESHOLDS);
+  assert.equal(v.abort, false);
+  assert.equal(v.growth_ack_required, true);
+  assert.equal(v.rollback_recommended, false);
+  assert.ok(!v.flags.includes("invent_then_condemn"));
+});
+
+test("non-convergence-only abort does not recommend rollback (may hold partial progress)", () => {
+  const rounds = [
+    stat({ round: 1, to_fix: 4, doc_chars_after: 1050 }),
+    stat({ round: 2, to_fix: 5, doc_chars_before: 1050, doc_chars_after: 1080 }),
+    stat({ round: 3, to_fix: 6, doc_chars_before: 1080, doc_chars_after: 1100 }),
+  ];
+  const v = evaluateGuards(1000, rounds, DEFAULT_ANALYTICS_THRESHOLDS);
+  assert.equal(v.abort, true);
+  assert.ok(v.flags.includes("non_convergent"));
+  assert.equal(v.rollback_recommended, false);
+});
+
 test("non-convergence over N consecutive rounds aborts", () => {
   const rounds = [
     stat({ round: 1, to_fix: 4 }),

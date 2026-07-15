@@ -34,6 +34,10 @@ Claims like "safe to re-run", "no data loss", "minimal impact" are assertions, n
 - Is data migration addressed? What happens to existing data during and after the change?
 - Is the testing strategy defined with coverage for critical paths?
 
+## Scope Proportionality
+
+"Missing step" is only a gap relative to the plan's declared scope. For a single-user, local, playground-scoped change, the absence of data-migration, rollback runbooks, observability hooks, or failover steps is correct restraint, not incompleteness — do not require them. Flag a missing step only when the plan actually needs it to execute or to avoid losing the operator's own data; do not push a laptop-scoped plan toward production-grade ceremony it never claimed.
+
 ## Severity Guide
 - critical: Fundamental flaw — core step missing, plan cannot execute from a blank slate, unsubstantiated safety claim
 - high: Significant gap — missing pre/post-flight check, undefined error path on a critical step, missing observability hook

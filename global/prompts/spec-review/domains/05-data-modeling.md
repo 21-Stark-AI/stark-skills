@@ -28,6 +28,10 @@ You are reviewing an architecture document / system design / technical spec for 
 - Is schema evolution addressed? Are migration strategies (additive-only, versioned schemas, backfill) defined?
 - Are indexing requirements specified? Are query access patterns documented to justify index decisions?
 
+## Scope Proportionality
+
+Match the data-modeling rigor to the store's actual scale and concurrency. For a **local, single-writer** store (one operator, no concurrent writers, no external consumers), do **not** demand schema-version counters, migration frameworks, backfill plans, revision counters, or write-conflict/consistency machinery — a single writer has no conflicts and a local store can be re-derived or hand-edited. Those are answers to multi-writer, multi-service, or evolving-production-schema problems this artifact does not have. Flag migration only when the document states the schema will evolve under live multi-consumer load.
+
 ## Severity Guide
 - critical: Schema cannot support the required queries or write patterns; a fundamental consistency guarantee is absent where correctness demands it
 - high: Ownership is ambiguous across services; no migration strategy for a schema that will evolve; write conflicts are unaddressed
