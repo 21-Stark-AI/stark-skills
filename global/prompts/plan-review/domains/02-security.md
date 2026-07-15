@@ -34,6 +34,10 @@ Flag **FAIL** if any identity's lifecycle is incomplete — creation without bin
 - Are network access controls defined — firewalls, VPC, private endpoints?
 - Is there a plan for security testing (pen test, SAST/DAST) before go-live?
 
+## Scope Proportionality
+
+Match the security bar to what the plan says it builds. For a single-user, local, playground-scoped tool, do **not** require secrets rotation, IAM lifecycle, network isolation, pen-test/SAST/DAST gates, or audit trails — those secure multi-user production surfaces this artifact does not expose. A missing rotation or network-control step on a laptop-scoped tool is not a finding. Reserve these for plans that stand up shared infrastructure, take external input, or handle regulated data.
+
 ## Severity Guide
 - critical: Fundamental security flaw — authentication bypass, unencrypted PII exposure, identity with no lifecycle
 - high: Significant gap — missing authz model, no secrets rotation, overly broad IAM roles

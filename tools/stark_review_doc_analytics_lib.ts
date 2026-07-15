@@ -32,11 +32,23 @@ export interface RoundStat {
   patches_applied: number;
   patch_failures: number;
   duration_s: number;
+  /** High/critical findings the scope (over-engineering) domain raised this
+   * round. Non-zero means the committee is condemning the document's own
+   * scope — the invent-then-condemn signal when the doc has also grown.
+   * Optional: 0 when the dispatcher predates scope tracking. */
+  scope_findings?: number;
 }
 
 export interface AnalyticsThresholds {
-  /** Abort when final doc chars exceed this multiple of the original. */
+  /** Soft growth limit: doc chars past this multiple of the original raise
+   * `runaway_growth` and require an operator ack (but do not abort on their
+   * own — gap-filling a thin doc looks like this). */
   max_doc_growth_ratio: number;
+  /** Hard growth limit: doc chars past this multiple of the original abort
+   * UNCONDITIONALLY on the round they are first observed — no plausible
+   * gap-fill triples a document, so this needs no convergence corroboration
+   * and fires before the 3-round non-convergence signal can accrue. */
+  hard_doc_growth_ratio: number;
   /** Flag (degraded) when a single round grows the doc by more than this multiple. */
   max_round_growth_ratio: number;
   /** Abort when `to_fix` fails to decline for this many consecutive review-fix rounds. */
@@ -47,19 +59,22 @@ export interface AnalyticsThresholds {
 
 export const DEFAULT_ANALYTICS_THRESHOLDS: AnalyticsThresholds = {
   max_doc_growth_ratio: 2.0,
+  hard_doc_growth_ratio: 3.0,
   max_round_growth_ratio: 1.5,
   non_convergent_rounds: 2,
   churn_recurring_share: 0.5,
 };
 
 export type HealthFlag =
-  | "runaway_growth"      // doc grew past max_doc_growth_ratio × original
-  | "round_growth_spike"  // a single round grew the doc past max_round_growth_ratio
-  | "non_convergent"      // to_fix did not decline for N consecutive rounds
-  | "no_net_convergence"  // the run ended with as many findings as it started with
-  | "churn"               // recurring findings dominate — fixes aren't sticking
-  | "patch_thrash"        // most attempted patches failed to apply
-  | "coverage_gap";       // ≥1 domain never completed a review in any round
+  | "runaway_growth"       // doc grew past max_doc_growth_ratio × original (soft)
+  | "runaway_growth_hard"  // doc grew past hard_doc_growth_ratio × original — unconditional abort
+  | "invent_then_condemn"  // doc breached soft growth AND the scope domain is condemning it
+  | "round_growth_spike"   // a single round grew the doc past max_round_growth_ratio
+  | "non_convergent"       // to_fix did not decline for N consecutive rounds
+  | "no_net_convergence"   // the run ended with as many findings as it started with
+  | "churn"                // recurring findings dominate — fixes aren't sticking
+  | "patch_thrash"         // most attempted patches failed to apply
+  | "coverage_gap";        // ≥1 domain never completed a review in any round
 
 export type HealthGrade = "healthy" | "degraded" | "runaway";
 
@@ -74,6 +89,12 @@ export interface GuardVerdict {
    * continues, but the operator must ack the growth before findings are
    * posted (the skills' Phase 4 gate). */
   growth_ack_required: boolean;
+  /** The abort was caused by unambiguous padding (hard growth cap breached, or
+   * the scope domain condemning a doc that also ballooned). The dispatcher
+   * should restore the document to its pre-loop state rather than leave the
+   * operator holding the bloat. False for convergence-only aborts (which may
+   * carry legitimate partial progress) and when not aborting. */
+  rollback_recommended: boolean;
 }
 
 export interface ReviewAnalytics {
@@ -152,14 +173,19 @@ export function evaluateGuards(
     }
   }
 
-  // Growth vs original — a real signal but NOT a hard stop on its own:
-  // legitimate gap-filling on a thin document is indistinguishable from
-  // padding by this ratio alone (a real spec review tripped at 2.63× while
-  // findings were declining — correct behavior, punished). Growth alone
-  // demands an operator ack; growth AND non-convergence together abort.
+  // Growth vs original. The SOFT limit is a real signal but not a hard stop on
+  // its own: legitimate gap-filling on a thin document is indistinguishable
+  // from padding by this ratio alone (a real spec review tripped at 2.63× while
+  // findings were declining — correct behavior, punished). Soft growth alone
+  // demands an operator ack. The HARD limit is different: no plausible gap-fill
+  // triples a document, so a hard breach aborts UNCONDITIONALLY the round it is
+  // first seen — before the 3-round non-convergence signal can accrue (a 4.5×
+  // balloon lands at round 1-2, long before non-convergence is measurable).
   const growthRatio = last ? ratio(last.doc_chars_after, originalChars) : 0;
   const growthBreach = growthRatio > thresholds.max_doc_growth_ratio;
+  const hardBreach = growthRatio > thresholds.hard_doc_growth_ratio;
   if (growthBreach) flags.add("runaway_growth");
+  if (hardBreach) flags.add("runaway_growth_hard");
 
   // Non-convergence — to_fix did not decline for N consecutive rounds: the
   // wing is spinning its wheels. Aborts on its own.
@@ -176,7 +202,25 @@ export function evaluateGuards(
   }
   if (nonConvergent) flags.add("non_convergent");
 
-  if (nonConvergent && growthBreach) {
+  // Invent-then-condemn — the doc breached the SOFT growth limit AND the scope
+  // (over-engineering) domain is now raising high/critical findings against it.
+  // The committee manufactured scope it is now condemning. Crucially, the scope
+  // reviewer — not the blunt char-ratio — is the discriminator here: on
+  // legitimate thin-doc gap-fill the scope domain stays silent (the growth is
+  // filling real gaps, not padding), so this does NOT re-trip the #675 false
+  // positive. It fires only when the doc actually ballooned AND a human-proxy
+  // scope judgment says "disproportionate."
+  const scopeCondemn = growthBreach && (last?.scope_findings ?? 0) > 0;
+  if (scopeCondemn) flags.add("invent_then_condemn");
+
+  // Abort precedence — most specific / most confident reason first.
+  if (hardBreach) {
+    abort = true;
+    abortReason = `doc grew ${growthRatio.toFixed(2)}x vs original — past the hard cap of ${thresholds.hard_doc_growth_ratio}x. No legitimate gap-fill triples a document; this is padding. Stopping now (before non-convergence can even be measured).`;
+  } else if (scopeCondemn) {
+    abort = true;
+    abortReason = `doc grew ${growthRatio.toFixed(2)}x vs original (past ${thresholds.max_doc_growth_ratio}x) AND the scope domain raised ${last?.scope_findings ?? 0} high/critical over-engineering finding(s) — the review invented scope it is now condemning. Stopping.`;
+  } else if (nonConvergent && growthBreach) {
     abort = true;
     abortReason = `doc grew ${growthRatio.toFixed(2)}x vs original (limit ${thresholds.max_doc_growth_ratio}x) AND findings did not decline for ${n} consecutive rounds — the loop is padding, not converging`;
   } else if (nonConvergent) {
@@ -189,16 +233,24 @@ export function evaluateGuards(
     abort_reason: abortReason,
     flags: [...flags],
     growth_ack_required: growthBreach && !abort,
+    rollback_recommended: abort && (hardBreach || scopeCondemn),
   };
 }
 
 // ─── Final judgment ──────────────────────────────────────────────────────
 
 export function judgeGrade(flags: readonly HealthFlag[]): HealthGrade {
-  // Growth alone is degraded, not runaway: it needs an operator's judgment
-  // (gap-filling vs padding), not a verdict. Non-convergence — with or
-  // without growth — is the loop demonstrably failing: runaway.
-  if (flags.includes("non_convergent")) return "runaway";
+  // Soft growth alone is degraded, not runaway: it needs an operator's judgment
+  // (gap-filling vs padding), not a verdict. Non-convergence, a hard-growth
+  // breach, and invent-then-condemn are all the loop demonstrably failing:
+  // runaway.
+  if (
+    flags.includes("non_convergent") ||
+    flags.includes("runaway_growth_hard") ||
+    flags.includes("invent_then_condemn")
+  ) {
+    return "runaway";
+  }
   if (flags.length > 0) return "degraded";
   return "healthy";
 }

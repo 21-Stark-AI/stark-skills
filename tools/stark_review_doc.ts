@@ -108,6 +108,13 @@ const DEFAULT_OUTPUT_CAP = 32 * 1024 * 1024;
 const VALID_PROMPTS_DIRS = ["spec-review", "plan-review"] as const;
 type PromptsDir = (typeof VALID_PROMPTS_DIRS)[number];
 
+// Domain ids whose findings mean "this document is over-engineered." A
+// high/critical finding here while the doc has also breached the growth limit
+// is the invent-then-condemn signal (the review manufactured scope it now
+// condemns). spec-review ships an over-engineering domain (`scope`);
+// plan-review has no direct analog, so the signal simply never fires there.
+const SCOPE_DOMAIN_IDS = new Set<string>(["scope"]);
+
 // Repo-override subdirectory under .code-review/. Mirrors dispatcher_base.py
 // convention (spec-review → spec-prompts, plan-review → plan-prompts).
 function repoSubdirFor(promptsDir: PromptsDir): string {
@@ -737,9 +744,14 @@ function loadDocReviewConfig(promptsDir: PromptsDir): DocReviewConfig {
       typeof v === "number" && Number.isFinite(v) && v >= min ? v : null;
     cfg.analytics = {
       max_doc_growth_ratio: num(a.max_doc_growth_ratio, 1) ?? cfg.analytics.max_doc_growth_ratio,
+      hard_doc_growth_ratio: num(a.hard_doc_growth_ratio, 1) ?? cfg.analytics.hard_doc_growth_ratio,
       max_round_growth_ratio: num(a.max_round_growth_ratio, 1) ?? cfg.analytics.max_round_growth_ratio,
       non_convergent_rounds: num(a.non_convergent_rounds, 1) ?? cfg.analytics.non_convergent_rounds,
       churn_recurring_share: num(a.churn_recurring_share, 0) ?? cfg.analytics.churn_recurring_share,
+      rollback_on_hard_growth:
+        typeof a.rollback_on_hard_growth === "boolean"
+          ? a.rollback_on_hard_growth
+          : cfg.analytics.rollback_on_hard_growth,
     };
   }
   return cfg;
@@ -1155,6 +1167,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
   const roundStats: RoundStat[] = [];
   let abortedEarly = false;
   let abortReason: string | null = null;
+  let rolledBackToOriginal = false;
   const maxRounds = opts.maxRoundsOverride !== null
     ? Math.min(MAX_ROUNDS_CEILING, Math.max(1, opts.maxRoundsOverride))
     : opts.config.max_rounds;
@@ -1288,6 +1301,13 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     log(`round ${roundNum}: ${allRaw.length} raw findings → ${toFix.length} to fix (threshold=${opts.config.fix_threshold})`);
     const docBeforeRound = currentDoc;
     const recurringCount = toFix.filter((f) => f.classification === "recurring").length;
+    // High/critical over-engineering findings from the scope domain — the
+    // invent-then-condemn signal. Counted from all raw findings (not just
+    // above-threshold) since even a demoted scope critique proves the
+    // committee is condemning the doc's own scope.
+    const scopeFindings = allRaw.filter(
+      (f) => SCOPE_DOMAIN_IDS.has(f.domain) && (f.severity === "high" || f.severity === "critical"),
+    ).length;
     const pushRoundStat = (fix: { attempted: number; applied: number; failures: number } | null, durationS: number): void => {
       roundStats.push({
         round: roundNum,
@@ -1299,6 +1319,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
         raw_findings: allRaw.length,
         to_fix: toFix.length,
         recurring: recurringCount,
+        scope_findings: scopeFindings,
         patches_attempted: fix?.attempted ?? 0,
         patches_applied: fix?.applied ?? 0,
         patch_failures: fix?.failures ?? 0,
@@ -1427,6 +1448,24 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
       abortedEarly = true;
       abortReason = guard.abort_reason;
       log(`round ${roundNum}: CIRCUIT BREAKER — ${guard.abort_reason}. Stopping fix loop.`);
+      // On an unambiguous-padding abort (hard-growth cap or invent-then-condemn),
+      // don't leave the operator holding the ballooned doc — restore it to the
+      // pre-review state and commit the revert. Convergence-only aborts keep the
+      // doc as-is (they may carry legitimate partial progress).
+      if (guard.rollback_recommended && opts.config.analytics.rollback_on_hard_growth && currentDoc !== originalDoc) {
+        currentDoc = originalDoc;
+        fs.writeFileSync(docAbs, currentDoc);
+        rolledBackToOriginal = true;
+        abortReason = `${abortReason} — document rolled back to its pre-review state (${roundNum} round(s) of padding discarded).`;
+        log(`round ${roundNum}: ROLLBACK — restored ${opts.docPath} to its pre-review state.`);
+        if (opts.commitFixes) {
+          await gitCommitDoc({
+            repoDir: opts.repoDir,
+            docPath: opts.docPath,
+            message: `revert(review-doc): discard padding — ${guard.flags.includes("runaway_growth_hard") ? "hard growth cap" : "invent-then-condemn"} breaker\n\n${guard.abort_reason}`,
+          });
+        }
+      }
       break;
     }
     if (guard.growth_ack_required) {
@@ -1442,9 +1481,10 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
   // Coherence pass — a single wing dispatch that tightens the post-fix-loop
   // document: contradictions, repetitions, fluff, leftovers. Net-reducing by
   // contract; runs even after a circuit-breaker abort (that's when the doc
-  // needs it most). Skipped on dispatch failure or dry-run.
+  // needs it most). Skipped on dispatch failure, dry-run, or a padding rollback
+  // (nothing to tighten — the doc is back to its pre-review state).
   let coherenceReceipt: Receipt["coherence"] = null;
-  if (opts.coherencePass && !convergeMode && !dispatchFailureEarlyExit && !opts.dryRun) {
+  if (opts.coherencePass && !convergeMode && !dispatchFailureEarlyExit && !opts.dryRun && !rolledBackToOriginal) {
     log("── Coherence pass ──");
     const cohT0 = process.hrtime.bigint();
     const docBefore = currentDoc;
@@ -1526,9 +1566,11 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
 
   // Final review-only round (skipped on dispatch failure or dry-run; in
   // convergence mode this is THE review — delta-scoped — and an empty delta
-  // means there is nothing to dispatch).
+  // means there is nothing to dispatch). Also skipped after a padding rollback:
+  // the doc is back to its pre-review state, so the run declares itself a bust
+  // and the operator re-runs deliberately (now under the scope guards).
   let unresolved: DocFinding[] = [];
-  if (!dispatchFailureEarlyExit && !opts.dryRun && !(convergeMode && convergeDelta.trim().length === 0)) {
+  if (!dispatchFailureEarlyExit && !opts.dryRun && !rolledBackToOriginal && !(convergeMode && convergeDelta.trim().length === 0)) {
     log(convergeMode ? "── Convergence review (delta-scoped) ──" : "── Final review (review-only) ──");
     const finalT0 = process.hrtime.bigint();
     const reviewInput = convergeMode

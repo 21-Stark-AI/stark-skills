@@ -40,6 +40,10 @@ Every `create`, `deploy`, `execute`, `apply`, `insert`, or `run` command must be
 - What monitoring or output would let the operator notice unexpected failures during/after execution?
 - Is the risk assessment honest, or does it minimize risks to get approval?
 
+## Scope Proportionality
+
+Judge viability against the plan's declared scale, not a platform's. For a single-user, local, playground-scoped plan, do **not** flag the absence of rate limiting, backpressure, HA, budget circuit-breakers, or 10x-scale capacity planning as a viability risk — a laptop-scoped tool run by one operator does not face load it must survive. A real viability finding is a command that won't run, a wrong endpoint, a non-idempotent step in the critical path, or a failure mode that loses the operator's own data — not the omission of production-scale robustness the plan never claimed.
+
 ## Severity Guide
 - critical: Fundamental flaw — command does not exist, API endpoint is wrong, plan is not executable; OR an unmitigated failure mode would lose data or lock out the operator
 - high: Significant gap — non-idempotent create in critical path, unrealistic timeline, missing blocking dependency, unconsidered cascading failure

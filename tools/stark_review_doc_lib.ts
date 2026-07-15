@@ -61,9 +61,13 @@ export interface DocReviewConfig {
   /** Process-health circuit breakers — see stark_review_doc_analytics_lib.ts. */
   analytics: {
     max_doc_growth_ratio: number;
+    hard_doc_growth_ratio: number;
     max_round_growth_ratio: number;
     non_convergent_rounds: number;
     churn_recurring_share: number;
+    /** On a padding abort (hard-growth cap or invent-then-condemn), restore the
+     * document to its pre-loop state instead of leaving the operator the bloat. */
+    rollback_on_hard_growth: boolean;
   };
 }
 
@@ -77,9 +81,11 @@ export const DEFAULT_DOC_REVIEW_CONFIG: DocReviewConfig = {
   history_keep_runs: 20,
   analytics: {
     max_doc_growth_ratio: 2.0,
+    hard_doc_growth_ratio: 3.0,
     max_round_growth_ratio: 1.5,
     non_convergent_rounds: 2,
     churn_recurring_share: 0.5,
+    rollback_on_hard_growth: true,
   },
 };
 
@@ -432,6 +438,7 @@ export const WING_FIXER_CONTRACT = [
   "- Preserve all surrounding markdown formatting verbatim (whitespace, blank lines, indentation, list markers).",
   "- Make the MINIMUM change needed to address each finding. Do not rewrite whole sections when a sentence-level edit will do.",
   "- Group multiple findings that touch the same paragraph into ONE patch with all the needed edits.",
+  "- **SCOPE GUARD — do not add production machinery to a playground document.** If the document declares single-user / local / personal / playground scope (or states a small scale), and a finding would have you ADD platform hardening — HA / failover / distributed-recovery or crash-consistency semantics, audit trails or append-only history, credential/token rotation, homoglyph / adversarial-input / injection defenses, schema-version counters or migration/backfill frameworks for a local single-writer store, rate limiting / pagination / backpressure / budget circuit-breakers, fleet alerting or multi-tenant isolation — do NOT patch it. Put it in `skipped` with reason \"out of scope for declared playground scope\". You are the amplifier that turns an over-scoped finding into committed doc growth; refuse. The reviewer being technically correct in the abstract does not make the machinery in scope. When in doubt between adding a subsystem and skipping, skip.",
   "- If you cannot address a finding (out of scope, requires author judgment, etc.), put it in `skipped` with a one-sentence reason. Do not silently drop findings.",
   "- Output ONLY the JSON object after your reasoning. No prose after the closing brace.",
 ].join("\n");
