@@ -58,9 +58,13 @@ New module `tools/plan_analytics_lib.ts` (thin — the brain stays in
 
 ```
 planRoundsToRoundStats(rounds: PlanRoundResult[]): RoundStat[]
-buildPlanAnalytics(opts): ReviewAnalytics        // wraps evaluateGuards + judgeGrade
+buildPlanAnalytics(rounds: PlanRoundResult[], thresholds: AnalyticsThresholds): ReviewAnalytics
 countOverEngineeringFindings(findings: string[]): number
 ```
+
+`buildPlanAnalytics` is the only entry point (single signature): it calls
+`planRoundsToRoundStats`, then the reused `evaluateGuards` + `judgeGrade`, and
+returns a `ReviewAnalytics`. No overloads.
 
 ### 2. The adapter mapping
 
@@ -85,6 +89,15 @@ round counts as a fix round in `evaluateGuards`; it filters
 pre-existing document, so the first draft is the reference the growth ratio
 measures against).
 
+**Deterministic metrics.** The baseline is always > 0 — an empty round-1 draft
+aborts as `lead_round1_empty_draft` *before* analytics run, so the ratio never
+divides by zero. A round that errored (dispatch failure, no verdict) is **not** a
+growth or convergence data point: its `RoundStat` carries the prior draft's length
+(so a transient error reads as neither growth nor shrink) and it is excluded from
+the non-convergence comparison rather than counted as "did not decline."
+Non-convergence compares `to_fix` across consecutive *completed* review-fix rounds
+only. These rules make every metric single-valued for any round sequence.
+
 ### 3. Over-engineering detection (invent-then-condemn)
 
 The wing (post #678) is instructed to label scope-inflation findings
@@ -100,9 +113,17 @@ This is the discriminator that keeps a **legitimately** growing plan from trippi
 the padding abort: on the kotodama run every finding was a real execution bug and
 `scope_findings == 0`, so invent-then-condemn correctly would **not** fire. It
 fires only when the doc ballooned **and** the wing itself is condemning the scope
-— the review manufactured scope it now flags. (A future refinement could have the
-wing emit a structured `category` per finding instead of a text tag; the string
-match is the low-friction path and is a strict superset of the labeled findings.)
+— the review manufactured scope it now flags.
+
+**One owner for the category (SSOT).** The **wing** is the sole authority on
+whether a finding is over-engineering — it applies the `over-engineering` label
+(per #678). `countOverEngineeringFindings` is a **pure counter** over that label;
+it never independently re-classifies a finding's scope-inflation status. So the
+classification has one producer (the wing) and one consumer (the host counter),
+not two competing owners. (A future refinement could have the wing emit a
+structured `category` field instead of a text tag; the string match is the
+low-friction path and is a strict superset of the labeled findings — it ships
+first.)
 
 ### 4. Wiring the verdict into the loop
 
@@ -116,47 +137,79 @@ run another revise round, evaluate the guard on the rounds so far:
   last round) → abort, `error = "padding_invent_then_condemn"`.
 - **Growth + non-convergence** (soft-growth breach **and** `blocking_findings` did
   not decline for `non_convergent_rounds` consecutive rounds) → abort,
-  `error = "padding_non_convergent"`.
+  `error = "growth_with_non_convergence"`. The loop is failing to converge under
+  growth — stop, but this is **not** labeled "padding" (proven padding needs the
+  scope signal, which this case lacks).
 - **Non-convergence alone** (findings not declining, no growth breach) → abort,
   `error = "non_convergent"` (the wing is spinning; more rounds won't help).
 - **Soft growth alone, findings declining** → do **not** abort; set
   `growth_ack_required = true`, continue. The run finishes normally but the
-  receipt/skill flag it for operator judgment.
+  receipt/skill flag it for operator judgment (§6).
 
-These reuse `GuardVerdict.{abort, abort_reason, flags, growth_ack_required,
-rollback_recommended}` verbatim — no new predicates.
+All four abort kinds emit the latest draft, marked not-approved (§5) — the
+`rollback_recommended` flag is not consumed by this loop (no file to revert). The
+guard reuses `GuardVerdict.{abort, abort_reason, flags, growth_ack_required}`
+verbatim — no new predicates.
 
-### 5. Which draft the run emits ("rollback" analog)
+### 5. Which draft the run emits on abort
 
-Doc-review reverts the file to its pre-review state on a padding abort. Plan
-generation has no committed baseline, so the analog is **which draft
-`final_plan` carries** when `rollback_recommended` is true (hard-growth or
-invent-then-condemn):
+Plan generation is text-in/text-out with **no committed baseline** — there is no
+file to revert, so this loop does **not** import doc-review's rollback semantic.
+On **every** abort (hard-growth, invent-then-condemn, growth+non-convergence, or
+non-convergence alone), `final_plan` carries the **latest draft**, marked
+not-approved (`final_verdict = "aborted"`). The run never silently emits an older
+draft: discarding the latest round can throw away legitimate fixes it made, and
+"which older draft" is exactly the ambiguity that produced contradictory selection
+rules. Uniform across all abort kinds — there is no per-kind draft-selection
+policy to get wrong.
 
-- Emit the **pre-balloon draft** — the latest round whose growth ratio was still
-  within the soft cap (`≤ max_doc_growth_ratio`), i.e. the last lean draft before
-  inflation. If round 1 itself already breached (rare), emit round 1.
-- `final_verdict = "aborted"`; the receipt's `analytics.abort_reason` explains it;
-  the emitted draft is flagged not-approved so the operator re-runs deliberately
-  (now under the #677 scope guard) rather than shipping the padded 62k version.
+Instead of *choosing* a draft, the analytics **report** the shape so the operator
+decides:
 
-For non-convergence-only aborts (no padding), keep the latest draft (it may carry
-legitimate partial progress) — mirrors doc-review, where convergence-only aborts
-do not roll back.
+- `analytics.abort_reason` — the specific breaker that fired.
+- `analytics.growth_ratio` + a new `analytics.last_lean_round` — the last round
+  whose cumulative growth was still `≤ max_doc_growth_ratio` (the un-inflated
+  reference point). Null when round 1 already breached.
+
+The operator reads the abort + the last-lean-round pointer and re-runs
+deliberately (now under the #677 scope guard), raises `--max-rounds`, or splits the
+spec — rather than shipping the padded draft unexamined. Automatic older-draft
+emission is **deferred**: add it only behind an explicit quality-preservation
+policy if operators show they want it.
 
 ### 6. Persistence + operator surface
 
-- **Receipt:** `PlanDispatchResult` gains an `analytics: ReviewAnalytics | null`
-  block (same type the doc-review receipt uses) and a `persistence_errors:
-  string[]` field. Null on dispatch failure before round 1.
-- **Sidecar:** the `/stark-spec-to-plan` skill writes `<plan>.plan-analytics.md`
-  next to the plan (via the existing `renderAnalyticsMarkdown`) and the raw
-  `analytics` into its history dir — mirroring the doc-review sidecars. The
-  dispatcher stays file-free (emits JSON); the skill owns files.
-- **Ack:** when `growth_ack_required` is set and the run otherwise succeeded, the
-  skill surfaces the grade + the growth ratio via `AskUserQuestion` before Phase 5
-  posts (identical pattern to `/stark-review-spec` #675). Headless/direct dispatch
-  logs the warning and proceeds.
+**Single owner per artifact (SSOT).** The **dispatcher** owns analytics
+*computation* and returns it in the receipt; it never prompts and never writes
+files. The **skill** owns everything operator-facing — the sidecar, the ack
+prompt, and recording the ack decision. The dispatcher emits a *fact*
+(`growth_ack_required`); the skill owns the *decision*. This split is the fix for
+the "two owners / contradictory ownership" findings.
+
+- **Receipt (dispatcher):** `PlanDispatchResult` gains `analytics: ReviewAnalytics
+  | null` (null only on dispatch failure before round 1). The dispatcher result is
+  returned **once and never mutated**, so it carries no operator decision and no
+  post-return persistence errors — those belong to the skill (below), which is the
+  process still running when they occur.
+- **Sidecar (skill):** the skill renders `<plan>.plan-analytics.md` via the reused
+  `renderAnalyticsMarkdown`. **Receipt + sidecar are the entire persistence
+  contract.** A raw history-dir analytics copy is **deferred** — there is no
+  cross-run analysis consumer today, so building the store first would be exactly
+  the speculative machinery this feature exists to prevent.
+- **Ack (skill-owned, ordered):** when `analytics.growth_ack_required` is set and
+  the run otherwise succeeded, the skill, **in this order**: (1) writes the sidecar
+  + its own run receipt *first*, so the record exists before any prompt; (2)
+  surfaces the grade + growth ratio via `AskUserQuestion` — *Continue (growth
+  legitimate)* / *Stop (inspect)*; (3) records the answer in a **skill-owned**
+  field `growth_ack: {required, decision, decided_at}` in the skill receipt —
+  never back into the already-returned dispatcher result. *Continue* → post
+  findings, noting "growth acked by operator." *Stop*, **or headless** (no TTY to
+  prompt) → stop before posting, exit non-zero. Identical to the
+  `/stark-review-spec` growth-ack gate (#675) this mirrors.
+- **Kill switch (`STARK_PLAN_ANALYTICS_KILL`):** disables the breaker — no aborts,
+  `growth_ack_required` never set — but analytics are **still computed and
+  persisted**, so a killed run yields a coherent advisory/`healthy` receipt whose
+  verdict and analytics never disagree.
 
 ## Components & interfaces
 
@@ -170,13 +223,15 @@ do not roll back.
 
 ## Config
 
-New `spec_to_plan.analytics` section in `stark_config_lib.ts`, **defaulting to the
-same values** as `DEFAULT_ANALYTICS_THRESHOLDS` (`max_doc_growth_ratio: 2`,
-`hard_doc_growth_ratio: 3`, `non_convergent_rounds: 2`; the round-growth-spike /
-churn / patch-thrash thresholds are inherited but inert for a text loop). Kill
-switch `STARK_PLAN_ANALYTICS_KILL` disables the breaker (analytics still recorded,
-never aborts) — mirrors the doc-review kill switches. Reusing the same defaults
-keeps the two loops calibrated identically unless deliberately overridden.
+New `spec_to_plan.analytics` section in `stark_config_lib.ts` exposing **only the
+three thresholds that can fire in a text loop**: `max_doc_growth_ratio` (soft,
+default 2), `hard_doc_growth_ratio` (default 3), `non_convergent_rounds` (default
+2). The `AnalyticsThresholds` fields the adapter zeroes — round-growth-spike,
+churn, patch-thrash — are **not** part of plan config; `buildPlanAnalytics` fills
+them from `DEFAULT_ANALYTICS_THRESHOLDS` internally so they stay inert and add no
+operator-facing surface. The three exposed defaults are **read from** the same
+`DEFAULT_ANALYTICS_THRESHOLDS` constants, not re-literaled, so the two loops can't
+silently drift. Kill switch `STARK_PLAN_ANALYTICS_KILL` per §6.
 
 ## Worked example — the kotodama run this spec is motivated by
 
@@ -192,13 +247,16 @@ Under the ported breaker (`max_doc_growth_ratio: 2`, `hard: 3`,
 - findings `10 → 5 → 6`: declined R1→R2, **rose** R2→R3 → not declining across the
   last 2 rounds → `non_convergent`.
 - soft-growth **and** non-convergent → **composite abort**, `error =
-  "padding_non_convergent"`, grade `runaway`, emit the pre-balloon draft (round 1,
-  the only round ≤ 2×).
+  "growth_with_non_convergence"`, grade `runaway`. This is the loop failing to
+  converge under growth — **not** proven padding (that needs the scope signal,
+  absent here: `scope_findings == 0`, the growth was legitimate detail).
+  `final_plan` = the latest (round-3) draft, marked not-approved;
+  `analytics.last_lean_round = 1` (the only round ≤ 2×).
 
-So instead of a bare `max_rounds_unresolved` + a 62k plan, the operator gets:
-*"aborted round 3 — grew 2.62× while findings stopped declining (10→5→6); this
-spec is genuinely intricate, raise `--max-rounds` or split it,"* plus the analytics
-sidecar. The signal that was missing.
+So instead of a bare `max_rounds_unresolved` + a 62k plan with no context, the
+operator gets: *"aborted round 3 — grew 2.62× while findings stopped declining
+(10→5→6); not converging. Last lean draft was round 1. Raise `--max-rounds` or
+split the spec,"* plus the analytics sidecar. The signal that was missing.
 
 ## Testing
 
@@ -207,21 +265,44 @@ sidecar. The signal that was missing.
   tagged vs untagged findings; `buildPlanAnalytics` grade for the four cases
   (healthy / soft-growth-degraded / non-convergent-runaway / invent-then-condemn);
   the **kotodama replay** vector above pinned as a regression (2.62× + 10→5→6 +
-  0 scope → composite abort, emit round 1).
+  0 scope → `growth_with_non_convergence` abort, `last_lean_round = 1`, latest
+  draft emitted marked not-approved).
+- **Metric determinism:** zero/one-round inputs; a mid-run **errored round**
+  (carries prior length, excluded from the non-convergence comparison); baseline
+  is always > 0 (empty round-1 aborts upstream). Every metric single-valued.
 - **Loop (`plan_dispatch` test):** hard-growth round-2 abort; invent-then-condemn
   abort with a tagged finding; growth-alone sets `growth_ack_required` without
-  aborting; `STARK_PLAN_ANALYTICS_KILL` records analytics but never aborts;
-  non-convergence-only keeps the latest draft, padding-abort emits the pre-balloon
-  draft.
+  aborting; non-convergence-only and every padding abort emit the **latest** draft
+  marked not-approved (no older-draft selection); failure on round 2 leaves a
+  coherent partial analytics record, not a crash; `STARK_PLAN_ANALYTICS_KILL`
+  records analytics, never aborts, and the receipt's verdict + analytics agree.
+- **Skill-boundary (ack path):** headless run with `growth_ack_required` → stops +
+  exits non-zero without prompting; interactive *Continue* → posts, ack recorded
+  in the **skill** receipt (never the dispatcher result); *Stop* → no posting.
 - **No new breaker-logic tests** — `evaluateGuards`/`judgeGrade` are already
   covered in `stark_review_doc_analytics_lib.test.ts`; reusing them means their
   coverage covers this too (the SSOT payoff).
 - **Live:** re-run `/stark-spec-to-plan` on the kotodama spec; confirm the
-  composite abort fires with the pre-balloon draft + sidecar, and that a
-  small/clean spec still grades `healthy` and approves.
+  composite abort fires with the latest draft marked not-approved + `last_lean_round`
+  reported + sidecar, and that a small/clean spec still grades `healthy` and approves.
 
 ## Open questions
 
-None blocking. One deferred refinement: structured `category` per wing finding
-(replacing the §3 text match) — worth it only if the text tag proves noisy in
-practice; the string match ships first.
+None blocking. Deferred, each gated on real evidence rather than built now:
+
+1. **Structured `category` per wing finding** (replacing the §3 text match) — only
+   if the text tag proves noisy in practice; the string match ships first.
+2. **Automatic older-draft emission on abort** — only behind an explicit
+   quality-preservation policy, if operators show they want it over the
+   latest-draft-marked-unapproved default (§5).
+3. **Raw history-dir analytics store** — only when a concrete cross-run analysis
+   workflow needs it (§6); receipt + sidecar are the contract until then.
+
+## Design decisions (from the #679 spec review)
+
+- **Growth ack kept interactive** (not simplified to warn-only): the
+  `AskUserQuestion` gate stays, but §6 pins a single owner (skill) + ordered
+  persistence so it carries no ownership ambiguity.
+- **No rollback semantic** (§5): every abort emits the latest draft marked
+  not-approved and reports `last_lean_round` — the pre-balloon-draft selection was
+  cut as a borrowed, contradiction-prone semantic.
