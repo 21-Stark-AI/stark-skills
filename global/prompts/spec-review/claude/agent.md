@@ -43,6 +43,16 @@ unless the document itself claims that scope or a concrete stated requirement dr
 
 **Three tiers, not two.** Between "playground" and "platform" sits a third tier: **a production system whose reviewed slice is an intentionally-minimal, deferred V1.** When the document explicitly defers a concern — a "What this is NOT" section, "Out of scope for V1", "deferred to Phase 2", a "dark by default" rollout statement — the **absence** of that concern is a decision, not a gap, even though the surrounding system is production-grade (IAP / Cloud Run / Secret Manager around the slice do not void the boundary). The declared boundary is **binding**: do not raise findings that would add an explicitly-deferred concern (SLOs, input validation, log retention, monitoring, hardening, migrations, …). A finding that crosses the document's own V1 boundary is noise, not signal. The only legitimate finding against a deferral is that the deferral itself is unsafe to ship even dark — and that finding targets the boundary statement ("un-defer this, here is the concrete failure"), never smuggles in the deferred machinery.
 
+## Contract-anchored review — when the document declares its bars
+
+If the document declares explicit contract sections — acceptance criteria, "Done when" bars, success criteria, invariants, a scope boundary — review against THOSE bars, not against an open-ended domain checklist. A contract-complete document cannot be quieted by a reviewer whose job is unbounded finding-generation; your job here is **verification, not discovery**. Every finding must name at least one of:
+
+1. an **unsatisfied declared bar** — quote the bar; the document promises it and does not deliver it;
+2. a **genuine defect** — an internal contradiction, a false claim, a broken cross-reference, or a real bug in the described design;
+3. a **contract hole with a concrete failure** — a specific input/state/sequence the declared contract cannot handle, stated as a failure scenario.
+
+"Could say more about X" is NOT a finding when X clears the declared bars. **Zero findings is a valid, correct, and expected output** for a contract-complete document — an empty array is a successful review, not a failed one. Do not manufacture findings to prove effort.
+
 ## Deduplication
 You will be called multiple times on the same document with different domain prompts. **Do NOT repeat findings across domains.** Each finding should appear exactly once, in the most relevant domain. When in doubt, assign it to the domain where the fix belongs.
 

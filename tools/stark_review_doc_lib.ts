@@ -28,6 +28,10 @@ export interface DocFinding {
   suggestion: string;
   classification?: Classification;
   classification_reason?: string;
+  /** Domains (beyond this finding's own) that independently raised the same
+   * issue this round — populated by dedupeDocFindings when cross-domain
+   * refractions of one root cause are merged into this canonical finding. */
+  cross_validated_by?: string[];
 }
 
 export interface DomainEntry {
@@ -54,6 +58,11 @@ export interface DocReviewConfig {
    * but is not patched — bulk medium "add detail" batches are what compound
    * doc growth. 0 = uncapped. */
   max_fixes_per_round: number;
+  /** A fix round whose applied result grows the doc past this ratio gets one
+   * in-round compress pass (the coherence net-reducing contract, applied
+   * before commit) — fixes create next round's review surface, so the shrink
+   * force runs per round, not once at the end. 0 disables. */
+  compress_retry_growth_ratio: number;
   /** Skill-local cap on concurrent codex dispatches (codex serializes hard on
    * ChatGPT-tier accounts; bump cautiously). */
   max_codex_concurrent: number;
@@ -86,6 +95,7 @@ export const DEFAULT_DOC_REVIEW_CONFIG: DocReviewConfig = {
   // opts in via --rounds.
   max_rounds: 2,
   max_fixes_per_round: 8,
+  compress_retry_growth_ratio: 1.15,
   max_codex_concurrent: 3,
   coherence_pass: true,
   history_keep_runs: 20,
@@ -406,6 +416,72 @@ export function docFindingId(opts: {
   return createHash("sha256").update(normalized).digest("hex").slice(0, 12);
 }
 
+// ─── Cross-domain dedup ─────────────────────────────────────────────────
+
+function normText(t: string): string {
+  return t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Token-overlap similarity on title+description — the iac_review_lib
+ * `titlesOverlap` pattern, fed with more text since doc findings have no
+ * file/line anchor to lean on. */
+function findingsOverlap(a: DocFinding, b: DocFinding): boolean {
+  const tok = (f: DocFinding): Set<string> =>
+    new Set(normText(`${f.title} ${f.description}`).split(" ").filter((w) => w.length > 3));
+  const wa = tok(a);
+  const wb = tok(b);
+  if (wa.size === 0 || wb.size === 0) return false;
+  let inter = 0;
+  for (const w of wa) if (wb.has(w)) inter++;
+  return inter / Math.min(wa.size, wb.size) >= 0.5;
+}
+
+/**
+ * Merge cross-domain refractions of one root cause within a round.
+ *
+ * One real defect routinely comes back as 4-5 findings — the same hole
+ * reported by data-modeling, api-design, completeness, consistency, and
+ * test-plan with different phrasing. Uncollapsed, the convergence breaker
+ * and analytics count the refractions and the wing patches each one
+ * separately. Group on same anchor section (or an empty section on either
+ * side) + (same normalized title OR strong token overlap on
+ * title+description); the canonical survivor is the highest-severity one and
+ * carries the other DOMAINS in `cross_validated_by`. Mirrors
+ * iac_review_lib::dedupeFindings / multi_review's cross-agent collapse.
+ */
+export function dedupeDocFindings(findings: DocFinding[]): DocFinding[] {
+  const groups: DocFinding[][] = [];
+  for (const f of findings) {
+    let placed = false;
+    for (const g of groups) {
+      const h = g[0]!;
+      // Sections must MATCH (both-empty counts as a match). No empty-section
+      // wildcard: a section-less finding merging into any section on generic
+      // token overlap silently drops distinct findings — losing a real
+      // finding is strictly worse than posting a duplicate.
+      const sameSection = normText(h.section) === normText(f.section);
+      const sameTitle = normText(h.title) === normText(f.title);
+      if (sameSection && (sameTitle || findingsOverlap(h, f))) {
+        g.push(f);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) groups.push([f]);
+  }
+
+  const merged: DocFinding[] = [];
+  for (const g of groups) {
+    g.sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+    const canonical: DocFinding = { ...g[0]! };
+    const otherDomains = [...new Set(g.slice(1).map((x) => x.domain))]
+      .filter((d) => d !== canonical.domain);
+    if (otherDomains.length > 0) canonical.cross_validated_by = otherDomains;
+    merged.push(canonical);
+  }
+  return merged;
+}
+
 // ─── Classification ─────────────────────────────────────────────────────
 
 export interface ClassifyContext {
@@ -427,8 +503,13 @@ export function classifyFindings(
   raw: DocFinding[],
   ctx: ClassifyContext,
 ): DocFinding[] {
+  // Recurring keys span the canonical domain AND every cross_validated_by
+  // domain — dedup picks the canonical by severity, so the same refracted
+  // concern can surface under a different canonical domain next round; keying
+  // on one domain only would blind the recurring/churn detection.
+  const domainsOf = (f: DocFinding): string[] => [f.domain, ...(f.cross_validated_by ?? [])];
   const priorKeys = new Set(
-    ctx.priorFixed.map((f) => `${f.section}|${f.domain}|${f.agent}`),
+    ctx.priorFixed.flatMap((f) => domainsOf(f).map((d) => `${f.section}|${d}|${f.agent}`)),
   );
   const seenAgentTitle = new Set<string>();
   const out: DocFinding[] = [];
@@ -438,7 +519,7 @@ export function classifyFindings(
     if (!severityMeetsThreshold(f.severity, ctx.fixThreshold)) {
       classification = "ignored";
       reason = `severity ${f.severity} < threshold ${ctx.fixThreshold}`;
-    } else if (priorKeys.has(`${f.section}|${f.domain}|${f.agent}`)) {
+    } else if (domainsOf(f).some((d) => priorKeys.has(`${f.section}|${d}|${f.agent}`))) {
       classification = "recurring";
       reason = "same (section, domain, agent) flagged in a prior round";
     } else {
@@ -519,6 +600,7 @@ export const WING_FIXER_CONTRACT = [
   "- `old` MUST be a non-empty substring of the CURRENT document AND occur exactly once. To insert new content, include an anchor in `old` (e.g. the heading or sentence the new content should follow) and put the anchor + new content in `new`.",
   "- Preserve all surrounding markdown formatting verbatim (whitespace, blank lines, indentation, list markers).",
   "- Make the MINIMUM change needed to address each finding. Do not rewrite whole sections when a sentence-level edit will do.",
+  "- **DELETION-FIRST — fixes must be allowed to delete.** Prefer resolving a finding by tightening, correcting, or REMOVING text over appending new prose. Every character you add is next round's review surface: additive fixes are how documents balloon. A patch whose `new` is NET LONGER than its `old` is justified only when the finding names genuinely missing substance (a hole, not a wording/clarity/consistency complaint) — and then add the minimal statement, not a subsection. A contradiction is fixed by deleting the wrong half, not by adding a paragraph reconciling both. If most of your patches add text, you are doing it wrong.",
   "- Group multiple findings that touch the same paragraph into ONE patch with all the needed edits.",
   "- **SCOPE GUARD — do not add production machinery to a playground document.** If the document declares single-user / local / personal / playground scope (or states a small scale), and a finding would have you ADD platform hardening — HA / failover / distributed-recovery or crash-consistency semantics, audit trails or append-only history, credential/token rotation, homoglyph / adversarial-input / injection defenses, schema-version counters or migration/backfill frameworks for a local single-writer store, rate limiting / pagination / backpressure / budget circuit-breakers, fleet alerting or multi-tenant isolation — do NOT patch it. Put it in `skipped` with reason \"out of scope for declared playground scope\". You are the amplifier that turns an over-scoped finding into committed doc growth; refuse. The reviewer being technically correct in the abstract does not make the machinery in scope. When in doubt between adding a subsystem and skipping, skip.",
   "- **DEFERRED-SCOPE GUARD — the document's own V1 boundary is binding, even on a production system.** Playground scope is not the only protection. When the document EXPLICITLY defers a concern — a \"What this is NOT\" section, \"Out of scope for V1\", \"deferred to Phase 2\", a \"dark by default\" rollout statement — the absence of that concern is the author's decision, not a gap, no matter how production-grade the surrounding system is (IAP / Cloud Run / Secret Manager around the slice do not void the boundary). If a finding would have you ADD an explicitly-deferred concern (SLOs, validation, retention policies, monitoring, hardening, migrations, …), do NOT patch it. Put it in `skipped` with reason \"author deferred to V1 boundary / out of scope\". If the deferral itself is genuinely dangerous, the only in-bounds patch is one that flags or adjusts the boundary statement — never one that smuggles in the deferred machinery.",
@@ -789,6 +871,71 @@ export function applyPatches(doc: string, patches: readonly FixerPatch[]): Patch
 }
 
 // ─── Growth baseline pinning ────────────────────────────────────────────
+
+// ─── Disposition threading across rounds ────────────────────────────────
+
+export type FindingDisposition =
+  | "fixed"          // a wing patch for this finding was applied
+  | "skipped"        // the wing explicitly declined (reason attached)
+  | "deferred"       // pushed out by max_fixes_per_round this round
+  | "patch_failed"   // the wing tried but no patch applied cleanly
+  | "discarded";     // applied, then thrown away by a round revert
+
+export interface PriorDisposition {
+  finding: DocFinding;
+  disposition: FindingDisposition;
+  round: number;
+  reason?: string;
+}
+
+/**
+ * Render prior rounds' finding dispositions as reviewer context — the
+ * red-team `spec_dispositions` pattern ported to the doc-review loop.
+ *
+ * Rounds are otherwise stateless: a concern the wing already resolved (or
+ * explicitly skipped as an accepted trade-off / out-of-scope deferral)
+ * re-surfaces every round forever, from multiple domains. This block tells
+ * the lead what was already raised and how it was resolved, and narrows
+ * re-raising to broken/contradicted resolutions only.
+ */
+export function renderPriorDispositions(
+  dispositions: readonly PriorDisposition[],
+  maxChars = 6000,
+): string {
+  if (dispositions.length === 0) return "";
+  const label: Record<FindingDisposition, string> = {
+    fixed: "fixed via patch",
+    skipped: "skipped by fixer",
+    deferred: "deferred to a later fix round — still open",
+    patch_failed: "patch failed — still open",
+    discarded: "fix discarded by a round revert — still open",
+  };
+  // Reconcile: one entry per finding, the LATEST disposition wins — a finding
+  // deferred in round 1 and fixed in round 2 must not render two
+  // contradictory lines.
+  const byId = new Map<string, PriorDisposition>();
+  for (const d of dispositions) byId.set(d.finding.id, d);
+  const reconciled = [...byId.values()];
+  const header = [
+    "## Findings already raised in earlier rounds — and how each was resolved",
+    "",
+    "The list below is this review's own memory. Do NOT re-raise a finding whose resolution stands — not verbatim, not re-phrased, not from a different domain's angle. A `skipped by fixer` entry is a standing decision (accepted trade-off / declared out-of-scope), not an open item. Re-raise ONLY when you can point at current document text that breaks or contradicts the recorded resolution, and say so explicitly in the description.",
+    "",
+  ].join("\n");
+  const lines: string[] = [];
+  let used = header.length;
+  for (const d of reconciled) {
+    const f = d.finding;
+    const line = `- [${f.severity}/${f.domain}] ${f.section || "(no section)"} — ${f.title}: **${label[d.disposition]}** (round ${d.round}${d.reason ? `; ${d.reason}` : ""})`;
+    if (used + line.length > maxChars) {
+      lines.push(`- …(${reconciled.length - lines.length} more omitted)`);
+      break;
+    }
+    lines.push(line);
+    used += line.length;
+  }
+  return header + lines.join("\n");
+}
 
 /**
  * True when a git commit subject is one of this pipeline's own UNATTENDED

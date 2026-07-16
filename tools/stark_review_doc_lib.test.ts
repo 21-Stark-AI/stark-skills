@@ -800,3 +800,127 @@ describe("isReviewMutationCommitSubject", () => {
     }
   });
 });
+
+// ─── dedupeDocFindings (cross-domain refraction collapse) ────────────────
+
+import { dedupeDocFindings } from "./stark_review_doc_lib.ts";
+
+describe("dedupeDocFindings", () => {
+  test("collapses one root cause refracted across 5 domains into one canonical finding", () => {
+    const refraction = (domain: string, severity: "high" | "medium", title: string) =>
+      mkFinding({
+        id: domain, domain, severity, section: "State machine",
+        title,
+        description: "the done state can be reached with a false completion signal so downstream consumers see done prematurely",
+      });
+    const out = dedupeDocFindings([
+      refraction("data-modeling", "medium", "false done state reachable"),
+      refraction("api-design", "medium", "done signal can be false"),
+      refraction("completeness", "high", "false done completion signal hole"),
+      refraction("consistency", "medium", "done state contradiction on false signal"),
+      refraction("test-plan", "medium", "no test for false done signal"),
+      mkFinding({ id: "other", domain: "security", section: "Auth", title: "token in query string", description: "credentials leak via URL logging" }),
+    ]);
+    assert.equal(out.length, 2);
+    const canonical = out.find((f) => f.section === "State machine")!;
+    // Highest severity wins as canonical.
+    assert.equal(canonical.severity, "high");
+    assert.equal(canonical.domain, "completeness");
+    assert.equal(canonical.cross_validated_by!.length, 4);
+    assert.ok(canonical.cross_validated_by!.includes("data-modeling"));
+    // The unrelated finding survives untouched, no cross_validated_by.
+    assert.equal(out.find((f) => f.section === "Auth")!.cross_validated_by, undefined);
+  });
+
+  test("distinct findings in the same section are NOT merged", () => {
+    const out = dedupeDocFindings([
+      mkFinding({ id: "a", domain: "security", section: "Auth", title: "missing rate limit", description: "login endpoint accepts unlimited attempts enabling brute force" }),
+      mkFinding({ id: "b", domain: "api-design", section: "Auth", title: "inconsistent error envelope", description: "the 401 response shape differs from every other endpoint response contract" }),
+    ]);
+    assert.equal(out.length, 2);
+  });
+
+  test("no empty-section wildcard: a section-less finding never merges into an anchored one", () => {
+    // Losing a real finding is strictly worse than posting a duplicate — a
+    // section-less finding matching any section on generic token overlap
+    // silently dropped distinct findings.
+    const out = dedupeDocFindings([
+      mkFinding({ id: "a", domain: "completeness", section: "Rollout", severity: "high", title: "missing rollback trigger criteria", description: "rollback trigger criteria are not defined for the rollout" }),
+      mkFinding({ id: "b", domain: "consistency", section: "", severity: "medium", title: "rollback trigger criteria undefined", description: "rollback trigger criteria missing from rollout definition" }),
+    ]);
+    assert.equal(out.length, 2);
+  });
+
+  test("both-empty sections still merge on overlap", () => {
+    const out = dedupeDocFindings([
+      mkFinding({ id: "a", domain: "completeness", section: "", severity: "high", title: "missing rollback trigger criteria", description: "rollback trigger criteria are not defined for the rollout" }),
+      mkFinding({ id: "b", domain: "consistency", section: "", severity: "medium", title: "rollback trigger criteria undefined", description: "rollback trigger criteria missing from rollout definition" }),
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0]!.severity, "high");
+  });
+
+  test("recurring detection survives canonical-domain flips via cross_validated_by", () => {
+    // Round 1 canonical: completeness (cross-validated by api-design). Round 2
+    // the same concern comes back canonical under api-design — must still be
+    // classified recurring.
+    const prior = mkFinding({ id: "r1", domain: "completeness", section: "State machine", title: "false done", cross_validated_by: ["api-design"], classification: "fix" });
+    const roundTwo = mkFinding({ id: "r2", domain: "api-design", section: "State machine", title: "done signal false" });
+    const out = classifyFindings([roundTwo], { priorFixed: [prior], fixThreshold: "medium" });
+    assert.equal(out[0]!.classification, "recurring");
+  });
+});
+
+// ─── renderPriorDispositions (disposition threading) ─────────────────────
+
+import { renderPriorDispositions } from "./stark_review_doc_lib.ts";
+
+describe("renderPriorDispositions", () => {
+  test("empty list renders nothing", () => {
+    assert.equal(renderPriorDispositions([]), "");
+  });
+
+  test("renders each disposition with the re-raise contract", () => {
+    const out = renderPriorDispositions([
+      { finding: mkFinding({ id: "d1", title: "measurable success criterion", domain: "completeness", severity: "medium" }), disposition: "skipped", round: 1, reason: "accepted trade-off: declared playground scope" },
+      { finding: mkFinding({ id: "d2", title: "missing error path", domain: "api-design", severity: "high" }), disposition: "fixed", round: 1 },
+      { finding: mkFinding({ id: "d3", title: "minor wording", domain: "consistency", severity: "medium" }), disposition: "deferred", round: 1 },
+    ]);
+    assert.match(out, /Do NOT re-raise a finding whose resolution stands/);
+    assert.match(out, /skipped by fixer.*accepted trade-off: declared playground scope/);
+    assert.match(out, /fixed via patch.*round 1/);
+    assert.match(out, /deferred to a later fix round — still open/);
+    assert.match(out, /Re-raise ONLY when/);
+  });
+
+  test("reconciles to one entry per finding — the latest disposition wins", () => {
+    const f = mkFinding({ id: "same", title: "deferred then fixed" });
+    const out = renderPriorDispositions([
+      { finding: f, disposition: "deferred", round: 1 },
+      { finding: f, disposition: "fixed", round: 2 },
+    ]);
+    assert.match(out, /fixed via patch.*round 2/);
+    assert.ok(!out.includes("still open"), "stale deferred line must not render");
+    assert.equal((out.match(/deferred then fixed/g) ?? []).length, 1);
+  });
+
+  test("caps total size and notes omitted entries", () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      finding: mkFinding({ title: `finding number ${i} with a reasonably long title for sizing`, id: `f${i}` }),
+      disposition: "fixed" as const,
+      round: 1,
+    }));
+    const out = renderPriorDispositions(many, 2000);
+    assert.ok(out.length < 3500);
+    assert.match(out, /more omitted/);
+  });
+});
+
+// ─── Deletion-first wing contract (growth discipline) ────────────────────
+
+describe("WING_FIXER_CONTRACT deletion-first", () => {
+  test("contract instructs deletion-first fixing", () => {
+    assert.match(WING_FIXER_CONTRACT, /DELETION-FIRST — fixes must be allowed to delete/);
+    assert.match(WING_FIXER_CONTRACT, /deleting the wrong half/);
+  });
+});

@@ -87,8 +87,19 @@ Lead/wing multi-round spec review:
   `max_fixes_per_round` (default 8) patches, top-N by severity — the medium
   "add detail" overflow stays recorded, not patched — and reviewers receive the
   **prior rounds' applied patches** (accumulated) with an explicit anti-churn instruction
-  (wrong fix text ⇒ "revert it", never "extend it"). No more 200-line specs
-  ballooning through rounds of invented production hardening.
+  (wrong fix text ⇒ "revert it", never "extend it"). Cross-domain
+  **refractions of one root cause dedup into a single finding**
+  (`cross_validated_by`) before counting and before the wing; **prior findings
+  + dispositions** (fixed / skipped-as-trade-off) thread into later rounds so
+  resolved concerns are not re-derived, while fix-cap overflow is re-queued
+  host-side into the next round's batch; the wing fixes **deletion-first**,
+  and a fix round growing the doc past `compress_retry_growth_ratio` (default
+  1.15x) gets an in-round compress pass before commit — recorded in the
+  receipt, with a survivor check that re-opens any fix the compress deleted. When the spec declares its bars (acceptance criteria /
+  "Done when" / scope boundary), the review is **contract-anchored**: findings
+  must name an unsatisfied bar or a genuine defect, and **zero findings is a
+  valid output**. No more 200-line specs ballooning through rounds of invented
+  production hardening.
 
 Answers the question: **"Is this the right system?"**
 
