@@ -48,6 +48,7 @@ import {
   classifyFindings,
   computeCoverage,
   DEFAULT_DOC_REVIEW_CONFIG,
+  dedupeDocFindings,
   deriveRunOutcome,
   type DocFinding,
   type DocReviewConfig,
@@ -64,8 +65,10 @@ import {
   persistRoundsHistory,
   type PersistedRound,
   pmap,
+  type PriorDisposition,
   type PromptSources,
   pruneRunDirs,
+  renderPriorDispositions,
   renderPriorRoundChanges,
   resolveConvergencePromptSources,
   resolveDocPromptSources,
@@ -676,6 +679,36 @@ async function runCodexWing(opts: {
   return { raw_output: text, duration_s: duration, error: null, parsed: parsed.parsed, parse_error: null };
 }
 
+/** One-shot wing dispatch with the codex-cwd ceremony handled — shared by the
+ * per-round compress pass and the end-of-run coherence pass. */
+async function runWingOnce(opts: {
+  prompt: string;
+  wingAgent: WingAgent;
+  wingModel: string;
+  wingTimeoutSec: number;
+}): Promise<WingDispatchResult> {
+  const codexCwd = opts.wingAgent === "codex"
+    ? fs.mkdtempSync(path.join(os.tmpdir(), "stark-doc-wing-once-"))
+    : null;
+  try {
+    return opts.wingAgent === "codex"
+      ? await runCodexWing({
+        prompt: opts.prompt,
+        timeoutSec: opts.wingTimeoutSec,
+        model: opts.wingModel,
+        reasoningEffort: CODEX_REASONING_EFFORT_XHIGH,
+        cwd: codexCwd!,
+      })
+      : await runClaudeWing({
+        prompt: opts.prompt,
+        timeoutSec: opts.wingTimeoutSec,
+        model: opts.wingModel,
+      });
+  } finally {
+    if (codexCwd) { try { fs.rmSync(codexCwd, { recursive: true, force: true }); } catch { /* ignore */ } }
+  }
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function elapsedSec(t0: bigint): number {
@@ -736,6 +769,9 @@ function loadDocReviewConfig(promptsDir: PromptsDir): DocReviewConfig {
   }
   if (typeof section.max_fixes_per_round === "number" && Number.isFinite(section.max_fixes_per_round) && section.max_fixes_per_round >= 0) {
     cfg.max_fixes_per_round = Math.floor(section.max_fixes_per_round);
+  }
+  if (typeof section.compress_retry_growth_ratio === "number" && Number.isFinite(section.compress_retry_growth_ratio) && section.compress_retry_growth_ratio >= 0) {
+    cfg.compress_retry_growth_ratio = section.compress_retry_growth_ratio;
   }
   if (typeof section.max_codex_concurrent === "number" && section.max_codex_concurrent > 0) {
     cfg.max_codex_concurrent = Math.floor(section.max_codex_concurrent);
@@ -1297,6 +1333,10 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
   // Anti-churn feedback: the previous round's applied wing patches, rendered
   // into the next review prompt so reviewers stop re-reviewing fix text.
   let lastAppliedPatches: FixerPatch[] = [];
+  // Disposition memory (the red-team spec_dispositions pattern): every finding
+  // raised so far + how it was resolved, threaded into later lead prompts so
+  // resolved/accepted concerns are not re-derived round after round.
+  const priorDispositions: PriorDisposition[] = [];
   let fixesCommitted = 0;
   let dispatchFailureEarlyExit = false;
 
@@ -1358,9 +1398,10 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     const roundT0 = process.hrtime.bigint();
     log(`── Round ${roundNum} (review-fix) ──`);
 
-    const priorRoundNote = lastAppliedPatches.length > 0
-      ? renderPriorRoundChanges(lastAppliedPatches)
-      : "";
+    const priorRoundNote = [
+      renderPriorDispositions(priorDispositions),
+      renderPriorRoundChanges(lastAppliedPatches),
+    ].filter((s) => s.length > 0).join("\n\n");
     const leadResults = await runLeadReview({
       doc: currentDoc,
       domains: domainKeys,
@@ -1394,7 +1435,15 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     }
 
     const allRaw: DocFinding[] = leadResults.flatMap((r) => r.findings);
-    const classified = classifyFindings(allRaw, {
+    // Cross-domain dedup BEFORE counting and BEFORE the wing: one root cause
+    // routinely refracts into 4-5 domain findings; uncollapsed, the
+    // convergence math counts the refractions and the wing patches each one
+    // separately. The canonical survivor carries cross_validated_by.
+    const dedupedRaw = dedupeDocFindings(allRaw);
+    if (dedupedRaw.length < allRaw.length) {
+      log(`round ${roundNum}: cross-domain dedup merged ${allRaw.length} → ${dedupedRaw.length} findings`);
+    }
+    const classified = classifyFindings(dedupedRaw, {
       priorFixed,
       fixThreshold: opts.config.fix_threshold,
     });
@@ -1508,7 +1557,34 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
       abortReason = `round ${roundNum} fixes grew the doc (${docBeforeRound.length} → ${wingOutcome.finalDoc.length} chars) while the scope domain raised ${scopeFindings} high/critical over-engineering finding(s) — the round's result was discarded (scope findings are fixed by cutting, not adding).`;
       log(`round ${roundNum}: SCOPE-GROWTH REVERT — ${abortReason}`);
     } else if (wingOutcome.applied.length > 0) {
-      currentDoc = wingOutcome.finalDoc;
+      // Per-round growth discipline (3b): a fix round that grows the doc past
+      // compress_retry_growth_ratio gets ONE in-round shrink pass under the
+      // coherence net-reducing contract — the anti-growth force runs before
+      // the growth is committed, not once at the end after it compounds.
+      let roundDoc = wingOutcome.finalDoc;
+      const compressRatio = opts.config.compress_retry_growth_ratio;
+      if (compressRatio > 0 && roundDoc.length > docBeforeRound.length * compressRatio) {
+        log(`round ${roundNum}: fixes grew doc ${(roundDoc.length / docBeforeRound.length).toFixed(2)}x (> ${compressRatio}x) — running in-round compress pass`);
+        const compress = await runWingOnce({
+          prompt: buildCoherencePrompt({ doc: roundDoc }),
+          wingAgent: opts.wingAgent,
+          wingModel: opts.wingModel,
+          wingTimeoutSec: opts.wingTimeoutSec,
+        });
+        if (compress.parsed) {
+          const applyResult = applyPatches(roundDoc, compress.parsed.patches);
+          // Same guard as the coherence pass: only a non-growing result lands.
+          if (applyResult.applied.length > 0 && applyResult.newDoc.length <= roundDoc.length * 1.02) {
+            log(`round ${roundNum}: compress removed ${roundDoc.length - applyResult.newDoc.length} chars (${applyResult.applied.length} patches)`);
+            roundDoc = applyResult.newDoc;
+          } else if (applyResult.applied.length > 0) {
+            log(`round ${roundNum}: compress rejected — result grew the doc`);
+          }
+        } else {
+          log(`round ${roundNum}: compress pass failed (${compress.error ?? compress.parse_error}) — keeping the round's result as-is`);
+        }
+      }
+      currentDoc = roundDoc;
       fs.writeFileSync(docAbs, currentDoc);
       if (opts.commitFixes) {
         commitSha = await gitCommitDoc({
@@ -1557,6 +1633,19 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     // nothing: pushing its findings would make the final review label the
     // same (untouched) findings `recurring` and fake a churn signal.
     if (!roundReverted) for (const f of toFix) priorFixed.push(f);
+
+    // Disposition memory for later rounds' lead prompts.
+    {
+      const appliedIds = new Set(roundReverted ? [] : wingOutcome.applied.map((p) => p.finding_id));
+      const skippedById = new Map(wingOutcome.skipped.map((s) => [s.finding_id, s.reason]));
+      for (const f of toFix) {
+        if (roundReverted) priorDispositions.push({ finding: f, disposition: "discarded", round: roundNum });
+        else if (appliedIds.has(f.id)) priorDispositions.push({ finding: f, disposition: "fixed", round: roundNum });
+        else if (skippedById.has(f.id)) priorDispositions.push({ finding: f, disposition: "skipped", round: roundNum, reason: skippedById.get(f.id) ?? "" });
+        else priorDispositions.push({ finding: f, disposition: "patch_failed", round: roundNum });
+      }
+      for (const f of deferred) priorDispositions.push({ finding: f, disposition: "deferred", round: roundNum });
+    }
 
     const roundReceipt = buildRoundReceipt({
       roundNum,
@@ -1632,28 +1721,12 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     log("── Coherence pass ──");
     const cohT0 = process.hrtime.bigint();
     const docBefore = currentDoc;
-    const prompt = buildCoherencePrompt({ doc: currentDoc });
-    const codexCwd = opts.wingAgent === "codex"
-      ? fs.mkdtempSync(path.join(os.tmpdir(), "stark-doc-coherence-"))
-      : null;
-    let wing: WingDispatchResult;
-    try {
-      wing = opts.wingAgent === "codex"
-        ? await runCodexWing({
-          prompt,
-          timeoutSec: opts.wingTimeoutSec,
-          model: opts.wingModel,
-          reasoningEffort: CODEX_REASONING_EFFORT_XHIGH,
-          cwd: codexCwd!,
-        })
-        : await runClaudeWing({
-          prompt,
-          timeoutSec: opts.wingTimeoutSec,
-          model: opts.wingModel,
-        });
-    } finally {
-      if (codexCwd) { try { fs.rmSync(codexCwd, { recursive: true, force: true }); } catch { /* ignore */ } }
-    }
+    const wing = await runWingOnce({
+      prompt: buildCoherencePrompt({ doc: currentDoc }),
+      wingAgent: opts.wingAgent,
+      wingModel: opts.wingModel,
+      wingTimeoutSec: opts.wingTimeoutSec,
+    });
     let applied = 0;
     let attempted = 0;
     let commitSha: string | null = null;
@@ -1720,11 +1793,13 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     const reviewInput = convergeMode
       ? buildConvergenceInput({ base: opts.convergeBase!, delta: convergeDelta, doc: currentDoc })
       : currentDoc;
-    // The final review gets the anti-churn note too: "revert it" stays a
-    // legitimate unresolved finding against fix text; "extend it" does not.
-    const finalPriorNote = !convergeMode && lastAppliedPatches.length > 0
-      ? renderPriorRoundChanges(lastAppliedPatches)
-      : "";
+    // The final review gets the anti-churn + disposition notes too: "revert
+    // it" stays a legitimate unresolved finding against fix text; "extend it"
+    // does not, and resolved/accepted concerns are not re-derived.
+    const finalPriorNote = convergeMode ? "" : [
+      renderPriorDispositions(priorDispositions),
+      renderPriorRoundChanges(lastAppliedPatches),
+    ].filter((s) => s.length > 0).join("\n\n");
     const finalLead = await runLeadReview({
       doc: reviewInput,
       domains: domainKeys,
