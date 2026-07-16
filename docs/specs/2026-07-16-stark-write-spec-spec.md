@@ -96,10 +96,18 @@ domains **inverted** — author against the exact rubric review will judge by:
 
 Contract rules:
 
-- **`n_a` is a first-class status** — a section may be marked not-applicable
-  *with a stated reason*. This is what keeps the contract from becoming its
-  own inflation vector: a CLI tool writes "Accessibility: N/A — terminal
-  output only" instead of manufacturing an accessibility program.
+- **`n_a` is a first-class status for `n_a`-eligible sections** — a section
+  may be marked not-applicable *with a stated reason*, but **four sections are
+  mandatory and reject `n_a`** (normalization degrades an `n_a` on them to
+  `underspecified`): Intent & Problem (1), Scope & Non-Goals (2), Behavior &
+  Flows (4), and Test Plan / DoD (7) — every artifact this tool authors has an
+  intent, a scope, a behavior, and a way to prove it, so an all-`n_a` verdict
+  can never vacuously satisfy the contract. The remaining five (Interfaces,
+  SSOT, Security, Accessibility, Open Questions) accept a reasoned `n_a`. This
+  is what keeps the contract from becoming its own inflation vector: a CLI
+  tool writes "Accessibility: N/A — terminal output only" instead of
+  manufacturing an accessibility program, but it can never wave off its own
+  intent or scope.
 - **The Scope declaration is the anti-inflation anchor.** Because the spec
   declares single-user/playground scope up front, every downstream
   playground-scope guard (review preambles, wing fixer contract, red-team
@@ -154,7 +162,7 @@ shape and does not apply):
   canonical ids, every slot initialized to `missing`**; each returned item
   overwrites its slot. **Duplicate ids fail closed** — the more-severe status
   wins (`missing` > `underspecified`/`over_scoped` > `n_a` > `satisfied`), so
-  a conflicting duplicate can never upgrade a section to done. An `n_a` slot
+  a conflicting duplicate can never upgrade a section to done. When a section's duplicates carry **both** equal-rank-but-opposite statuses (`underspecified` *and* `over_scoped` — add-detail vs cut-content), the tie breaks **toward `missing`** (the most-severe rank): the wing contradicted itself about that section, so it is left unresolved — forcing another revise round rather than an arbitrary add-or-cut — and both notes are concatenated so the lead sees the conflict (the conflicting-duplicate row of `test_done_fails_closed` proves it). An `n_a` slot
   is honored **only with a non-empty `note`** (the stated reason); a
   reason-less `n_a` degrades to `underspecified`. `done = true` **only when
   all nine slots are present and every one is `satisfied` or a valid `n_a`** —
@@ -202,18 +210,48 @@ content.
 
 ### Termination & gap resolution
 
-`final_verdict` (dispatcher-level) ∈ `contract_satisfied |
-max_rounds_unsatisfied | lead_empty_draft | unchanged_revision |
-wing_unparseable` (naming parity with `plan_dispatch.ts`'s `FinalVerdict`).
-`unchanged_revision` = a revise round returned a byte-identical document —
-the lead is stuck, stop paying. On a `max_rounds_unsatisfied` run the skill's
-finalized receipt **overrides this with a skill-level outcome** —
-`accepted_with_gaps` or `aborted` (see the terminal-state machine below).
+The dispatcher owns an **immutable `dispatch_verdict`** (never rewritten
+downstream) ∈ `contract_satisfied | max_rounds_unsatisfied | lead_empty_draft
+| unchanged_revision | wing_unparseable` (naming parity with
+`plan_dispatch.ts`'s `FinalVerdict`). `unchanged_revision` = a revise round
+returned a byte-identical document — the lead is stuck, stop paying. The
+**skill** owns the enclosing `workflow_outcome`: for a clean run it equals the
+`dispatch_verdict`; on a `max_rounds_unsatisfied` dispatch the skill sets it to
+`accepted_with_gaps` or `aborted` (see the terminal-state machine below). The
+top-level `final_verdict` in the receipt **is the `workflow_outcome`** — the
+dispatcher's `dispatch_verdict` is preserved alongside it, never overwritten,
+and a single receipt-finalization function derives `ok`, exit status, and
+`error.code` from the outcome table below. Two components decide two distinct
+fields, not one.
 
-Every non-crash exit (dry-run excepted) **still writes the spec file and the
-receipt**. On `max_rounds_unsatisfied` the skill (not the dispatcher) offers,
-via `AskUserQuestion`, a bounded terminal-state machine — each branch defines
-its own finalized receipt, `ok`, and exit status:
+**Canonical outcome table** (authoritative for `ok` / exit / `error.code` /
+landing / persistence; every skill- and dispatcher-level terminus appears
+exactly once):
+
+| final_verdict / terminus | ok | exit | error.code | landing | on-disk |
+|---|---|---|---|---|---|
+| `contract_satisfied` | true | 0 | — | branch/commit/PR | spec + finalized receipt |
+| `accepted_with_gaps` | true | 0 | — | branch/commit/PR | spec + finalized receipt |
+| `aborted` | false | ≠0 | `gap_aborted` | none | spec + receipt (no branch) |
+| `max_rounds_unsatisfied` (terminal only in `--json`/non-interactive) | false | ≠0 | `max_rounds_unsatisfied` | none | spec + receipt |
+| `lead_empty_draft` | false | ≠0 | `lead_empty_draft` | none | receipt (+ empty/partial draft) |
+| `unchanged_revision` | false | ≠0 | `unchanged_revision` | none | spec + receipt |
+| `wing_unparseable` | false | ≠0 | `wing_unparseable` | none | spec + receipt |
+| landing failure (verdict was `contract_satisfied`/`accepted_with_gaps`, push/PR failed) | false | ≠0 | `git` \| `push` \| `pr` | partial | spec + finalized receipt |
+| `dry_run` (sentinel, dispatcher or skill) | true | 0 | — | none | scratchpad brief only (no `run_id`) |
+| `needs_input` (`--json` pre-dispatch preflight) | false | ≠0 | `needs_input` | none | none (no `run_id`/history) |
+
+`dry_run` and `needs_input`/pre-dispatch validation (`brief_too_large`,
+missing input) are the **explicit exceptions** to "every non-crash exit writes
+the spec + receipt": they exit **before dispatch**, so no spec and no `run_id`
+exist. The spec + receipt guarantee therefore applies to every non-crash exit
+**that entered dispatch**.
+
+Every non-crash exit **that entered dispatch** (dry-run and pre-dispatch
+validation failures excluded per the outcome table above) **still writes the
+spec file and the receipt**. On `max_rounds_unsatisfied` the skill (not the
+dispatcher) offers, via `AskUserQuestion`, a bounded terminal-state machine —
+each branch defines its own finalized receipt, `ok`, and exit status:
 
 1. **Answer the gaps** — operator fills the missing information; skill
    enriches the brief and re-dispatches **once** (hard bound: one retry). The
@@ -241,8 +279,14 @@ and matches the committed spec + PR status table.
 ### Output & landing
 
 **Landing owner = the skill layer, not the dispatcher.** The dispatcher is
-pure author: it runs the lead/wing loop, writes the spec + run record, and
-emits a receipt with `pr: null`. All git + GitHub work (branch, commit, push,
+pure author: it runs the lead/wing loop and writes the authored document into
+its **run-history dir** (`final-spec.md`) plus the run record, emitting a
+receipt with `pr: null` — it does **not** write the target `spec_path`. The
+skill resolves the landing state first (checks out an existing
+`write-spec/<slug>` branch if one exists), **then** copies `final-spec.md`
+into `spec_path`, commits, pushes, and opens/edits the PR — so a rerun never
+leaves uncommitted output blocking the checkout, and never carries one
+branch's draft onto another. All git + GitHub work (branch, commit, push,
 PR) is the skill's, via the `github_app.ts` CLI; the skill then **finalizes
 the receipt** — rewriting the persisted `receipt.json` with the `pr` result
 and the landing-aware `ok` — so the on-disk record matches the committed spec
@@ -250,9 +294,13 @@ and PR. `--ready`/`--no-pr` are skill-only flags (the dispatcher never opens
 a PR). The dispatcher's `prCreate`/`getToken` dependency below is consumed by
 this skill layer, not the headless loop.
 
-- Spec at `docs/specs/YYYY-MM-DD-<topic>-spec.md` (repo doc conventions;
-  slug via `sanitizeSlug` from `stark_handover_lib.ts` — the out path is
-  **host-computed**, never model-chosen).
+- Spec at `docs/specs/YYYY-MM-DD-<topic>-spec.md` **by default** (repo doc
+  conventions; slug via `sanitizeSlug` from `stark_handover_lib.ts`). `--out
+  PATH` overrides this default with an operator-supplied path, still
+  **host-validated** (must resolve inside the repo; slug/branch are derived
+  from its basename). "Host-computed, never model-chosen" means the *model*
+  never picks the path, not that the operator can't — the choice is the
+  operator's flag or the default, never the LLM's.
 - One final commit on branch `write-spec/<slug>` (round drafts are noise for
   a *new* document — unlike review-spec, whose per-round commits trace an
   existing doc's evolution; the per-round story lives in the receipt and PR
@@ -260,11 +308,18 @@ this skill layer, not the headless loop.
 - **Draft PR** via the lead's GitHub App (`prCreate`, `draft ?? true` —
   repo-wide draft-by-default policy), body carrying the final contract-status
   table + per-round summary. `--ready` opts out, `--no-pr` skips.
-- **Re-run on an existing slug:** if `write-spec/<slug>` (and its PR)
-  already exist, check the branch out, commit the regenerated spec **on
-  top**, and push normally — never force-push (workspace rule: review
-  threads must survive), never mint a parallel branch. The PR trail keeps
-  every generation.
+- **Re-run on an existing slug:** the canonical spec path (including its
+  date) is recorded in the run history the first time a slug is authored; a
+  rerun **reuses that exact path** rather than minting a new dated filename.
+  If `write-spec/<slug>` (and its PR) already exist, check the branch out, copy
+  the regenerated spec onto the recorded path, commit **on top**, and push
+  normally — never force-push (workspace rule: review threads must survive),
+  never mint a parallel branch. The PR trail keeps every generation.
+  **Landing state table:** branch + open PR → reuse both; branch present,
+  no/closed PR → reuse branch, open a fresh PR; neither → create branch +
+  draft PR; `spec_path` exists but **no matching branch** (a hand-authored
+  file or an aborted prior run) → fail fast and require an explicit
+  rerun/overwrite rather than silently clobbering it.
 - Handoff line: `next: /stark-review-spec <spec-path>`. Review-spec's
   existing "reuse a PR if one exists" behavior picks up the write-spec PR —
   author and review share one branch/PR trail end to end.
@@ -286,11 +341,21 @@ content-hash + version of every prompt asset used — `contract.md`,
 `stark_review_doc_lib.ts`'s exported `writeJsonAtomic` /
 `updateLatestPointer` / `pruneRunDirs`. Receipt
 includes per-round durations, `cost_usd` via `cost_lib.computeDispatchCost`,
-and `persistence_errors` (surfaced by the skill as warnings, never silently).
-With `resolved.json` capturing config + prompt hashes + tool sha alongside the
-brief, a run is **auditable and diagnosable from its record alone** — the
-exact inputs and asset versions are known. This is deliberately *not* a
-byte-exact replay guarantee (model sampling is nondeterministic).
+and `persistence_errors`. The **round / receipt / `final-spec.md` writes are
+the crash-proof core** (atomic tmp+rename, incremental after every round);
+only *ancillary* writes — the `latest` pointer and retention pruning — are
+best-effort and, on failure, land in `persistence_errors` (surfaced by the
+skill as warnings, never silently) rather than aborting a run that already
+produced its spec. The run dir also retains **`final-spec.md`** — an immutable
+snapshot of the document as authored this run — plus its content hash and
+(once landing succeeds) the landed `commit_sha` in the receipt, so a later
+same-slug rerun that overwrites the shared `spec_path` never erases what an
+earlier run produced. With `resolved.json` capturing config + prompt hashes +
+tool sha alongside the brief, and `final-spec.md` + hash + `commit_sha`
+capturing the output, a run is **auditable and diagnosable from its record
+alone** — the exact inputs, asset versions, and produced document are known.
+This is deliberately *not* a byte-exact replay guarantee (model sampling is
+nondeterministic).
 
 ## Interfaces
 
@@ -332,10 +397,37 @@ run-verdict enum).
 
 **`--json` is non-interactive:** the skill's `AskUserQuestion` gap-fill and
 the `max_rounds_unsatisfied` resolution are suppressed; instead of pausing,
-the skill emits a structured `{"ok":false,"needs_input":{...}}` object (typed
-questions + missing brief fields) on stdout and exits non-zero, so a headless
-caller can answer and re-invoke. stdout carries only the final JSON object;
-all diagnostics go to stderr.
+the skill emits a structured object on stdout and exits non-zero, so a
+headless caller can answer and re-invoke. stdout carries only the final JSON
+object; all diagnostics go to stderr.
+
+The `--json` result is a **discriminated union on `result_type`** ∈
+`success | needs_input | error`; the `success` shape is the receipt above,
+and both non-`success` shapes carry a canonical error envelope
+`{code, message, hint}`. The `needs_input` shape:
+
+```json
+{ "result_type": "needs_input", "ok": false,
+  "stage": "preflight" | "post_dispatch",
+  "run_id": null,            // null at preflight; the dispatcher run id post-dispatch
+  "parent_run_id": null,
+  "questions": [ { "id": "topic-slug", "type": "text" | "choice",
+                   "prompt": "…", "choices": [], "missing_brief_field": "target" } ],
+  "unresolved_items": [ { "section": "…", "status": "…", "note": "…" } ],
+  "error": { "code": "needs_input", "message": "…",
+             "hint": "re-invoke with --intent/--source answering the questions" } }
+```
+
+`stage:"preflight"` fires **before** dispatch (missing input / `brief_too_large`):
+no `run_id`, no history dir, exempt from the persistence guarantee.
+`stage:"post_dispatch"` fires on a `--json` `max_rounds_unsatisfied`: it carries
+the dispatcher `run_id` + `unresolved_items`, and a re-invocation answering the
+questions threads `parent_run_id` (the one-retry bound from the terminal-state
+machine still holds). Question `id`s are stable slugs; the caller continues by
+**re-invoking** with `--intent`/`--source` — re-invocation *is* the
+continuation, there is no separate resume token. The `error` envelope is
+identical for every non-`needs_input` failure, its `code` drawn from the
+outcome table's `error.code` column.
 
 Receipt (single stdout JSON object, parity with sibling dispatchers):
 
@@ -343,10 +435,21 @@ Receipt (single stdout JSON object, parity with sibling dispatchers):
 {
   "ok": true,
   "final_verdict": "contract_satisfied",
+  "dispatch_verdict": "contract_satisfied",
   "spec_path": "docs/specs/2026-07-20-example-spec.md",
   "slug": "example", "run_id": "…",
   "rounds": [ { "round": 1, "draft_chars": 9412,
-                "verify": { "items": [], "done": false, "summary": "…" },
+                "verify": { "items": [
+                  {"section":"intent","status":"satisfied","note":""},
+                  {"section":"scope","status":"satisfied","note":""},
+                  {"section":"interfaces","status":"satisfied","note":""},
+                  {"section":"behavior","status":"satisfied","note":""},
+                  {"section":"ssot","status":"satisfied","note":""},
+                  {"section":"security","status":"satisfied","note":""},
+                  {"section":"test-plan","status":"underspecified","note":"no named test for the revise path"},
+                  {"section":"accessibility","status":"n_a","note":"terminal output only"},
+                  {"section":"open-questions","status":"satisfied","note":""}
+                ], "done": false, "summary": "…" },
                 "revised_sections": ["test-plan"], "duration_s": 210 } ],
   "contract_status": [ { "section": "…", "status": "…", "note": "…" } ],
   "dropped_sections": [],
@@ -355,13 +458,23 @@ Receipt (single stdout JSON object, parity with sibling dispatchers):
 }
 ```
 
-`ok` = `final_verdict === "contract_satisfied"` **and** the requested landing
-operation succeeded (a PR was opened, or `--no-pr`/`--dry-run` waived it): a
-contract-satisfied run whose push or PR failed is finalized `ok:false` with
-`error.code` naming the failed landing stage (git/push/pr). Any
-non-`contract_satisfied` verdict also exits non-zero with `error.code` set.
-The spec + receipt are still written on every non-crash exit (dry-run
-excepted — see Interfaces).
+`ok`, exit status, and `error.code` for **every** terminal outcome are
+defined by the single canonical outcome table in *Termination & gap
+resolution* — that table is authoritative. In summary: `contract_satisfied`
+and `accepted_with_gaps` are the successful outcomes (`ok:true`, exit 0)
+provided the requested landing succeeded; `dry_run` is `ok:true` by definition
+(it lands nothing); every other verdict is `ok:false`, non-zero exit, with
+`error.code` set — and a `contract_satisfied`/`accepted_with_gaps` run whose
+push or PR failed is also `ok:false` with `error.code` naming the failed
+landing stage (git/push/pr). The spec + receipt are written on every non-crash
+exit **that entered dispatch** (dry-run and pre-dispatch validation failures
+excepted). Fields beyond the core set are **outcome-conditional** (the receipt
+is effectively a discriminated union on `final_verdict`): `dispatch_verdict`
+is always present; `parent_run_id` + `gap_resolution` + `accepted_items`
+appear only on `accepted_with_gaps`; `unresolved_over_scoped` only when the
+lead couldn't cut an `over_scoped` item; `error` (`{code, message, hint}`) on
+every `ok:false` receipt; `pr` is non-null only after a successful landing —
+an absent field is inapplicable to that outcome.
 
 Config (`write_spec` section, `DEFAULT_WRITE_SPEC` + `getWriteSpecConfig()`
 following the existing section-accessor pattern):
@@ -429,9 +542,16 @@ Scope-proportional — single-user local tooling on the operator's machine:
   red-team injection machinery, deliberately out of scope for an
   operator-authored brief (see the injection-gate note below).
 - **Subprocess isolation is inherited, not new:** agents dispatch through
-  `buildAgentEnv` (allowlisted env). Lead and wing are text-in/text-out like
-  `plan_dispatch.ts` — no tool use, no worktree, no repo mutation by agents;
-  only the host writes files.
+  `buildAgentEnv` (allowlisted env) **and the same no-tool invocation
+  `plan_dispatch.ts` uses** — Claude runs with a `--disallowedTools` set that
+  disables Bash/Edit/Write/Read/WebFetch/WebSearch/Task/NotebookEdit
+  (mirroring the fold decider's `DECIDER_DISALLOWED_TOOLS`), codex runs
+  `-s read-only`, gemini runs in plan mode, and the prompt+brief are passed on
+  the command line rather than as a repo path the agent must open. Lead and
+  wing are therefore text-in/text-out — no tool use, no worktree, no repo
+  mutation by agents; only the host writes files.
+  `test_agent_no_repo_mutation` (Test Plan) drives a mutation attempt through
+  each adapter and asserts the workspace is byte-unchanged.
 - **The intent brief is operator-authored by definition** (their prompt,
   their notes, their conversation). It is *not* an adversarial artifact, so
   there is deliberately **no injection gate** — that machinery
@@ -440,7 +560,11 @@ Scope-proportional — single-user local tooling on the operator's machine:
   doesn't manufacture one (the known FP class from the red-team history).
 - **Paths:** out path host-computed from sanitized slug; history under
   `stateRoot()`; brief under the session scratchpad. The model never picks a
-  filesystem path.
+  filesystem path. The run-history dir is created `0700` and
+  `brief.md`/`rounds.json`/`receipt.json`/`resolved.json` (plus their atomic
+  tmp files) `0600` — the repo's existing 0600 token-cache convention
+  (`github_app_lib`) — so the brief's potentially-proprietary contents stay
+  owner-only (`test_history_permissions`).
 - **Failure modes:** wing JSON unparseable (retry once → terminate,
   preserve draft) · lead empty draft (terminate) · unchanged revision
   (terminate) · max rounds (skill-mediated gap resolution) · git/PR failure
@@ -469,9 +593,10 @@ Named proving tests (`tools/write_spec_lib.test.ts`):
 - `test_intent_brief_truncation` — oversize source material truncates with
   marker, ask/constraints never truncated.
 - `test_done_fails_closed` — table-driven over the nine ids: empty `items`,
-  partial `items` (omitted ids), duplicate ids (conflicting statuses), and
-  reason-less `n_a` each leave ≥1 non-satisfied slot → `done:false`, never
-  `contract_satisfied`.
+  partial `items` (omitted ids), duplicate ids (conflicting statuses),
+  reason-less `n_a`, an **all-`n_a` verdict**, and **`n_a` on each mandatory
+  section** (intent/scope/behavior/test-plan) each leave ≥1 non-satisfied
+  slot → `done:false`, never `contract_satisfied`.
 - `test_revision_loop_converges` — scripted lead + wing doubles force
   draft → `underspecified` verdict → targeted revise → `satisfied`: asserts
   call order, full-document preservation, that only non-satisfied items reach
@@ -480,6 +605,25 @@ Named proving tests (`tools/write_spec_lib.test.ts`):
   the parser's exported id set and the referenced review-spec domain names,
   and every agent's `generate`/`verify`/`revise` prompt resolves and states
   the verdict schema + status enum.
+- `test_cli_input_disambiguation` — table-driven over positional-as-source,
+  positional-as-intent, explicit `--source`/`--intent` overrides, both
+  together, neither (error), and an intended-but-missing path.
+- `test_json_contract` — `--json` suppresses `AskUserQuestion`; the
+  `needs_input` (preflight + post-dispatch) and `error` shapes match the
+  discriminated schema; stdout carries only the final JSON object, diagnostics
+  go to stderr, exit is non-zero on non-success.
+- `test_agent_adapters` — a mocked subprocess runner exercises a lead and a
+  wing case for **each** agent (claude/codex/gemini): resolved model,
+  reasoning effort, env setup, parser selection, normalized output.
+- `test_agent_no_repo_mutation` — a filesystem-mutation attempt driven through
+  each agent adapter leaves the workspace byte-unchanged.
+- `test_history_provenance_and_recovery` — the receipt summary regenerates
+  from canonical `rounds.json` on a torn write (mismatch reconciled
+  read-time); `resolved.json` carries config + prompt hashes + tool sha +
+  final-spec hash; `latest` moves; retention prunes at the `history_keep_runs`
+  boundary; an ancillary-write failure surfaces in `persistence_errors`.
+- `test_history_permissions` — run dir `0700`; `brief.md` / `rounds.json` /
+  `receipt.json` / `resolved.json` (and atomic tmp files) `0600`.
 
 Plus: `skill_smoke_test.test.ts` picks the skill up automatically
 (frontmatter, `standards/help.md` reference, tool refs resolve,
@@ -487,8 +631,11 @@ Plus: `skill_smoke_test.test.ts` picks the skill up automatically
 (`test_skill_landing`) mocks `AskUserQuestion` + the `github_app` CLI and
 covers the three gap-resolution choices + the one-retry bound, `--dry-run`
 side-effect exclusion, `--ready`/`--no-pr`, fresh-vs-existing branch/PR reuse
-(non-force push, PR lookup-before-create), and PR body/status-table
-construction. Live e2e (playground rules — real surface, no ceremony): author
+(non-force push, PR lookup-before-create), PR body/status-table
+construction, and a **fault-injection pass** that fails each landing stage
+(checkout / commit / push / PR) in turn and asserts the finalized `ok:false`
+receipt, stage-specific `error.code`, preserved spec, and no falsely-reported
+PR. Live e2e (playground rules — real surface, no ceremony): author
 one real spec from a canned intent in this repo, then run `/stark-review-spec`
 on it.
 
@@ -496,13 +643,18 @@ on it.
 
 1. Live-run receipt reaches `contract_satisfied` within 3 rounds.
 2. `/stark-review-spec` on an authored spec produces fewer round-1 findings
-   than hand-written specs against a **frozen baseline**: take 3 recent
-   hand-written specs from `history/spec-reviews/`, record their **unique
-   round-1 findings at `medium`+ severity** (dedup by section+title) as the
-   baseline set, and require an authored spec of comparable scope to land at
-   **≤50% of that per-spec median**. The baseline numbers are stored in the
-   ADR so the comparison is reproducible; a directional spot-check of the
-   finding *text* stays as supplementary qualitative evidence, not the gate.
+   than hand-written specs against a **frozen, pinned baseline**: pick **3
+   canned intents** matched to the scope of 3 recent hand-written specs in
+   `history/spec-reviews/`, and record those specs' **unique round-1 findings
+   at `medium`+ severity** (dedup by section+title) as the baseline set.
+   Author a spec from each canned intent, then review each **with
+   review-spec's config, model ids, and prompt-asset hashes pinned** (recorded
+   in the ADR), running the authored review **N=3 times and taking the median**
+   finding count to damp model nondeterminism. Gate: each authored spec's
+   median ≤ **50% of its paired baseline spec's** count. The canned intents,
+   pinned config/model/asset hashes, baseline numbers, and paired mapping all
+   live in the ADR so the comparison is reproducible; a directional spot-check
+   of the finding *text* stays supplementary, not the gate.
 3. No growth breaker (`growth_ack_required`, hard cap, invent-then-condemn)
    trips when review-spec runs on an authored spec.
 4. Docs updated in the same change: CLAUDE.md (pipeline list, TS tools,
