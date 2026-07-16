@@ -199,9 +199,17 @@ foreground tool cap, and a killed foreground run loses the round in flight and
 double-spends on the re-run. Redirect the receipt to a file, wait for the
 background task to exit, then read the receipt and exit code from disk.
 
+Shell state does not persist between Bash tool calls, so the receipt path
+must be created and **printed** in a foreground call first, then substituted
+**literally** into the background command and every later read:
+
 ```bash
-RECEIPT_FILE=$(mktemp -t stark-review-receipt-XXXXXX)
-# Run via the Bash tool with run_in_background: true:
+RECEIPT_FILE=$(mktemp -t stark-review-receipt-XXXXXX); echo "RECEIPT_FILE=$RECEIPT_FILE"
+```
+
+```bash
+# Run via the Bash tool with run_in_background: true, substituting the
+# literal path printed above for $RECEIPT_FILE:
 node --experimental-strip-types "$TOOLS/stark_review_doc.ts" \
     --doc "$DOC" --prompts-dir plan-review \
     --repo-dir "$REPO_DIR" --prompts-base "$PROMPTS_BASE" \
@@ -216,7 +224,7 @@ node --experimental-strip-types "$TOOLS/stark_review_doc.ts" \
     ${NO_COHERENCE:+--no-coherence} > "$RECEIPT_FILE"; echo "TS_EXIT=$?"
 ```
 
-When the background task completes: `RECEIPT_JSON=$(cat "$RECEIPT_FILE")`;
+When the background task completes (using the same literal receipt path): `RECEIPT_JSON=$(cat "$RECEIPT_FILE")`;
 `TS_EXIT` comes from the task's final `TS_EXIT=N` line. Even if the session is
 interrupted mid-run, the dispatcher's per-round persistence means
 `receipt.json` / `rounds.json` / `analytics.json` under the run's history dir

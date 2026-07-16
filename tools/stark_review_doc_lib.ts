@@ -295,9 +295,9 @@ export function renderPriorRoundChanges(
 ): string {
   if (applied.length === 0) return "";
   const header = [
-    "## Text added by the previous fix round (do not re-review it)",
+    "## Text added by previous fix rounds (do not re-review it)",
     "",
-    "The excerpts below were added or rewritten by the previous round's fixer to resolve findings already raised. **Do not raise findings against this text** — not \"expand it\", not \"add detail\", not \"also cover X\": that creates a churn loop where every fix becomes next round's finding. If text added in the previous round is WRONG or overreaches the document's scope, the correct finding is **\"revert it\"**, not \"extend it\".",
+    "The excerpts below were added or rewritten by earlier rounds' fixer to resolve findings already raised. **Do not raise findings against this text** — not \"expand it\", not \"add detail\", not \"also cover X\": that creates a churn loop where every fix becomes next round's finding. If text added by a previous round is WRONG or overreaches the document's scope, the correct finding is **\"revert it\"**, not \"extend it\".",
     "",
   ].join("\n");
   const parts: string[] = [];
@@ -306,7 +306,12 @@ export function renderPriorRoundChanges(
   for (const p of applied) {
     const body = p.new.length > 0 ? p.new : "(text removed)";
     const excerpt = body.length > perPatchCap ? body.slice(0, perPatchCap) + "\n…(truncated)" : body;
-    const block = "```\n" + excerpt + "\n```";
+    // Fence-safe: the excerpt may itself contain ``` (fixes routinely add
+    // fenced examples). Use a fence longer than any backtick run inside it —
+    // computed AFTER truncation so a cut can't leave an unbalanced fence.
+    const runs = excerpt.match(/`+/g);
+    const fence = "`".repeat(Math.max(3, (runs ? Math.max(...runs.map((r) => r.length)) : 0) + 1));
+    const block = fence + "\n" + excerpt + "\n" + fence;
     if (used + block.length > maxChars) {
       parts.push(`…(${applied.length - parts.length} more patch(es) omitted)`);
       break;
@@ -786,18 +791,22 @@ export function applyPatches(doc: string, patches: readonly FixerPatch[]): Patch
 // ─── Growth baseline pinning ────────────────────────────────────────────
 
 /**
- * True when a git commit subject is one of this pipeline's own mutations of
- * the document — a wing fix round, the coherence pass, a padding revert, or a
- * Phase-5b manual finding fix. Used to pin the growth baseline: a re-run or
- * resumed review walks past these commits to the last AUTHORED version of the
- * doc, so growth is measured against the first-staged content instead of a
- * moving baseline that already contains previous rounds' growth.
+ * True when a git commit subject is one of this pipeline's own UNATTENDED
+ * mutations of the document — a wing fix round, the coherence pass, or a
+ * padding revert. Used to pin the growth baseline: a re-run or resumed
+ * review walks past these commits to the last authored/accepted version of
+ * the doc, so growth is measured against that content instead of a moving
+ * baseline that already contains previous rounds' growth.
+ *
+ * Phase-5b manual fix commits (`docs(review-spec): fix …`) are deliberately
+ * NOT matched: they are operator-in-the-loop edits made after the growth-ack
+ * gate, so they count as acceptance of the doc's current size — the baseline
+ * resets there, and a later re-run does not re-litigate acked growth.
  */
 export function isReviewMutationCommitSubject(subject: string): boolean {
   return (
     /^docs: (spec|plan)-review (round \d+ fixes|coherence pass)/.test(subject) ||
-    /^revert\(review-doc\):/.test(subject) ||
-    /^docs\(review-(spec|plan)\): fix /.test(subject)
+    /^revert\(review-doc\):/.test(subject)
   );
 }
 

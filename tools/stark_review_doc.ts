@@ -1021,6 +1021,10 @@ interface Receipt {
       /** the round's net result grew the doc under an open scope-domain
        * condemnation — the result was discarded, nothing written/committed. */
       round_reverted: boolean;
+      /** finding ids whose patches were applied by the wing but then
+       * DISCARDED by a round revert — these fixes do NOT exist in the doc
+       * and must not be treated as autofixed. */
+      discarded_finding_ids: string[];
       patch_failures: Array<{ finding_id: string; old: string; reason: string }>;
       wing_error: string | null;
       commit_sha: string | null;
@@ -1234,7 +1238,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
   // that already contains previous rounds' committed growth. Rollback still
   // restores run-start content (originalDoc); only the ratio guards and
   // analytics use the baseline.
-  const baselineDoc = convergeMode
+  let baselineDoc = convergeMode
     ? originalDoc
     : await resolveGrowthBaseline({
       repoDir: opts.repoDir,
@@ -1243,7 +1247,19 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
       runStartDoc: originalDoc,
     });
   if (baselineDoc !== originalDoc) {
-    log(`growth baseline pinned to first-staged doc version (${baselineDoc.length} chars; run-start is ${originalDoc.length})`);
+    // Pre-existing breach: the doc ALREADY exceeds the soft cap vs the pinned
+    // baseline before this run touched anything. That growth predates the run
+    // (e.g. a completed earlier run whose growth the operator implicitly
+    // accepted); aborting round 1 over it would make the doc permanently
+    // un-reviewable. Fall back to run-start so the guards measure what THIS
+    // run adds — the pinned ratio is still logged for the operator.
+    const pinnedRatio = originalDoc.length / Math.max(1, baselineDoc.length);
+    if (pinnedRatio > opts.config.analytics.max_doc_growth_ratio) {
+      log(`growth baseline: run-start is already ${pinnedRatio.toFixed(2)}x the pinned first-staged version (${baselineDoc.length} chars) — pre-existing growth predates this run; guards measure this run only (baseline = run-start)`);
+      baselineDoc = originalDoc;
+    } else {
+      log(`growth baseline pinned to first-staged doc version (${baselineDoc.length} chars; run-start is ${originalDoc.length})`);
+    }
   }
   const maxRounds = opts.maxRoundsOverride !== null
     ? Math.min(MAX_ROUNDS_CEILING, Math.max(1, opts.maxRoundsOverride))
@@ -1411,6 +1427,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
         to_fix: eligible.length,
         recurring: recurringCount,
         scope_findings: scopeFindings,
+        fix_cap: opts.config.max_fixes_per_round,
         patches_attempted: fix?.attempted ?? 0,
         patches_applied: fix?.applied ?? 0,
         patch_failures: fix?.failures ?? 0,
@@ -1482,6 +1499,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
         docCharsBefore: docBeforeRound.length,
         docCharsAfter: wingOutcome.finalDoc.length,
         scopeFindings,
+        maxRoundGrowthRatio: opts.config.analytics.max_round_growth_ratio,
       });
     let commitSha: string | null = null;
     if (roundReverted) {
@@ -1507,17 +1525,24 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
         });
         if (commitSha) fixesCommitted++;
       }
-      lastAppliedPatches = wingOutcome.applied;
+      // Accumulate across rounds (not overwrite): with 3+ rounds, round 1's
+      // fix text would otherwise become churn bait again by round 3. The
+      // renderer's size cap keeps the prompt bounded.
+      lastAppliedPatches.push(...wingOutcome.applied);
     }
 
+    // On a revert the wing's patches do NOT exist in the doc — report them
+    // as discarded, never as applied, or downstream thread-resolution marks
+    // findings "autofixed" for fixes that were thrown away.
     fixSummary = {
       attempted: wingOutcome.attempted.length,
-      applied: wingOutcome.applied.length,
+      applied: roundReverted ? 0 : wingOutcome.applied.length,
       skipped_by_wing: wingOutcome.skipped.length,
-      applied_finding_ids: wingOutcome.applied.map((p) => p.finding_id),
+      applied_finding_ids: roundReverted ? [] : wingOutcome.applied.map((p) => p.finding_id),
       skipped_finding_ids: wingOutcome.skipped.map((s) => s.finding_id),
       deferred_by_cap: deferred.length,
       round_reverted: roundReverted,
+      discarded_finding_ids: roundReverted ? wingOutcome.applied.map((p) => p.finding_id) : [],
       patch_failures: wingOutcome.patch_failures.map((pf) => ({
         finding_id: pf.patch.finding_id,
         old: snippet(pf.patch.old, 100),
@@ -1528,8 +1553,10 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     };
 
     // Track which (section, domain, agent) we attempted to fix — so the next
-    // round can flag the same combo as `recurring`.
-    for (const f of toFix) priorFixed.push(f);
+    // round can flag the same combo as `recurring`. A reverted round fixed
+    // nothing: pushing its findings would make the final review label the
+    // same (untouched) findings `recurring` and fake a churn signal.
+    if (!roundReverted) for (const f of toFix) priorFixed.push(f);
 
     const roundReceipt = buildRoundReceipt({
       roundNum,
@@ -1544,7 +1571,7 @@ export async function dispatchDocReview(opts: DispatchOptions): Promise<{
     pushRoundStat(
       {
         attempted: wingOutcome.attempted.length,
-        applied: wingOutcome.applied.length,
+        applied: roundReverted ? 0 : wingOutcome.applied.length,
         failures: wingOutcome.patch_failures.length,
       },
       elapsedSec(roundT0),

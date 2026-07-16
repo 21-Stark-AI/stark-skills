@@ -37,6 +37,10 @@ export interface RoundStat {
    * scope — the invent-then-condemn signal when the doc has also grown.
    * Optional: 0 when the dispatcher predates scope tracking. */
   scope_findings?: number;
+  /** The max_fixes_per_round cap in force this round (0/absent = uncapped).
+   * The non-convergence breaker uses it: when the prior round's backlog
+   * exceeded the cap, a flat to_fix is expected throughput, not wheel-spin. */
+  fix_cap?: number;
 }
 
 export interface AnalyticsThresholds {
@@ -208,7 +212,12 @@ export function evaluateGuards(
   if (hardBreach) flags.add("runaway_growth_hard");
 
   // Non-convergence — to_fix did not decline for N consecutive rounds: the
-  // wing is spinning its wheels. Aborts on its own.
+  // wing is spinning its wheels. Aborts on its own. Cap awareness: when the
+  // PRIOR round's backlog exceeded its fix cap, the wing physically could
+  // not clear it, so a FLAT count is expected throughput, not wheel-spin —
+  // don't let the pipeline's own cap manufacture the trajectory it then
+  // condemns. A GROWING backlog is stuck regardless: the lead is raising
+  // findings faster than the capped wing can retire them.
   const n = thresholds.non_convergent_rounds;
   let nonConvergent = false;
   if (fixRounds.length >= n + 1) {
@@ -216,7 +225,9 @@ export function evaluateGuards(
     for (let i = fixRounds.length - n; i < fixRounds.length; i++) {
       const cur = fixRounds[i]!;
       const prev = fixRounds[i - 1]!;
-      if (cur.to_fix > 0 && cur.to_fix >= prev.to_fix) stuck++;
+      const prevCapLimited = (prev.fix_cap ?? 0) > 0 && prev.to_fix > (prev.fix_cap ?? 0);
+      const isStuck = prevCapLimited ? cur.to_fix > prev.to_fix : cur.to_fix >= prev.to_fix;
+      if (cur.to_fix > 0 && isStuck) stuck++;
     }
     nonConvergent = stuck >= n;
   }
@@ -267,17 +278,30 @@ export function evaluateGuards(
 
 /**
  * Fix-round rejection (the per-round invent-then-condemn): a wing fix pass
- * whose net result GROWS the document while the scope domain has an open
- * high/critical over-engineering finding this round is manufacturing the very
- * bloat the committee is condemning — the dispatcher discards that round's
- * result instead of committing it and carrying the growth forward.
+ * that grows the document PAST the per-round spike limit while the scope
+ * domain has an open high/critical over-engineering finding this round is
+ * manufacturing the very bloat the committee is condemning — the dispatcher
+ * discards that round's result instead of committing it and carrying the
+ * growth forward.
+ *
+ * The growth threshold matters: trivial net growth (a two-sentence
+ * correctness fix) under an incidental scope finding is normal wing output —
+ * the wing may have correctly SKIPPED the scope finding and fixed a real
+ * defect that inherently adds text. Only spike-scale growth plus condemnation
+ * is unambiguous enough to throw a round away.
  */
 export function shouldRevertScopeGrowthRound(opts: {
   docCharsBefore: number;
   docCharsAfter: number;
   scopeFindings: number;
+  /** Per-round growth ratio above which growth counts as a spike — pass
+   * thresholds.max_round_growth_ratio. */
+  maxRoundGrowthRatio: number;
 }): boolean {
-  return opts.docCharsAfter > opts.docCharsBefore && opts.scopeFindings > 0;
+  return (
+    ratio(opts.docCharsAfter, opts.docCharsBefore) > opts.maxRoundGrowthRatio &&
+    opts.scopeFindings > 0
+  );
 }
 
 // ─── Final judgment ──────────────────────────────────────────────────────

@@ -243,11 +243,40 @@ test("hard growth cap takes precedence over the spike halt (rollback, not ack)",
 
 import { shouldRevertScopeGrowthRound } from "./stark_review_doc_analytics_lib.ts";
 
-test("shouldRevertScopeGrowthRound: growth under scope condemnation reverts; either alone does not", () => {
-  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1400, scopeFindings: 2 }), true);
-  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1400, scopeFindings: 0 }), false);
-  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 900, scopeFindings: 3 }), false);
-  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1000, scopeFindings: 3 }), false);
+test("shouldRevertScopeGrowthRound: SPIKE-scale growth under scope condemnation reverts; either alone does not", () => {
+  const r = 1.5;
+  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1600, scopeFindings: 2, maxRoundGrowthRatio: r }), true);
+  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1600, scopeFindings: 0, maxRoundGrowthRatio: r }), false);
+  // Trivial net growth (a real correctness fix adding two sentences) under an
+  // incidental scope finding must NOT throw the round away.
+  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1120, scopeFindings: 1, maxRoundGrowthRatio: r }), false);
+  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 900, scopeFindings: 3, maxRoundGrowthRatio: r }), false);
+  assert.equal(shouldRevertScopeGrowthRound({ docCharsBefore: 1000, docCharsAfter: 1000, scopeFindings: 3, maxRoundGrowthRatio: r }), false);
+});
+
+test("non-convergence is not tripped by cap-limited rounds — the cap can't manufacture the flat trajectory it condemns", () => {
+  // 30 eligible with an 8-patch cap: flat counts are expected throughput.
+  const capped = [
+    stat({ round: 1, to_fix: 30, fix_cap: 8, patches_applied: 8 }),
+    stat({ round: 2, to_fix: 28, fix_cap: 8, patches_applied: 8 }),
+    stat({ round: 3, to_fix: 28, fix_cap: 8, patches_applied: 8 }),
+  ];
+  assert.equal(evaluateGuards(1000, capped, DEFAULT_ANALYTICS_THRESHOLDS).abort, false);
+  // The same trajectory UNCAPPED is genuine wheel-spin: still aborts.
+  const uncapped = [
+    stat({ round: 1, to_fix: 30, fix_cap: 0 }),
+    stat({ round: 2, to_fix: 30, fix_cap: 0 }),
+    stat({ round: 3, to_fix: 31, fix_cap: 0 }),
+  ];
+  assert.equal(evaluateGuards(1000, uncapped, DEFAULT_ANALYTICS_THRESHOLDS).abort, true);
+  // A GROWING backlog under the cap is still stuck — the lead raises faster
+  // than the capped wing can retire.
+  const growing = [
+    stat({ round: 1, to_fix: 30, fix_cap: 8, patches_applied: 8 }),
+    stat({ round: 2, to_fix: 32, fix_cap: 8, patches_applied: 8 }),
+    stat({ round: 3, to_fix: 34, fix_cap: 8, patches_applied: 8 }),
+  ];
+  assert.equal(evaluateGuards(1000, growing, DEFAULT_ANALYTICS_THRESHOLDS).abort, true);
 });
 
 test("scope_growth_round_reverted extraFlag grades degraded and renders a note", () => {

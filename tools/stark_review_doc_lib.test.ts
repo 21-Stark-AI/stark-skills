@@ -731,6 +731,18 @@ describe("renderPriorRoundChanges", () => {
     assert.match(out, /\(text removed\)/);
   });
 
+  test("fence-safe: excerpts containing ``` get a wider outer fence, even after truncation", () => {
+    const inner = "Example:\n```bash\necho hi\n```\ndone";
+    const out = renderPriorRoundChanges([{ finding_id: "a", old: "x", new: inner }]);
+    assert.match(out, /````\n/);           // outer fence widened past the inner ```
+    assert.ok(out.includes(inner));
+    // Truncation cutting inside a fence still yields a balanced outer fence.
+    const long = "```json\n" + "x".repeat(900) + "\n```";
+    const cut = renderPriorRoundChanges([{ finding_id: "b", old: "x", new: long }]);
+    const fenceRuns = cut.match(/`{4,}/g) ?? [];
+    assert.equal(fenceRuns.length % 2, 0, "outer fences must pair up");
+  });
+
   test("caps total size and notes omitted patches", () => {
     const patches = Array.from({ length: 20 }, (_, i) => ({
       finding_id: `f${i}`, old: "x", new: "y".repeat(700),
@@ -761,25 +773,28 @@ describe("renderPriorRoundChanges", () => {
 import { isReviewMutationCommitSubject } from "./stark_review_doc_lib.ts";
 
 describe("isReviewMutationCommitSubject", () => {
-  test("matches the pipeline's own mutations", () => {
+  test("matches the pipeline's own unattended mutations", () => {
     for (const s of [
       "docs: spec-review round 2 fixes (8 applied)",
       "docs: plan-review round 1 fixes (3 applied)",
       "docs: spec-review coherence pass (4 patches, 120 chars removed)",
       "revert(review-doc): discard padding — hard growth cap breaker",
-      "docs(review-spec): fix missing test plan (test-plan/high)",
-      "docs(review-plan): fix sequencing gap (sequencing/medium)",
     ]) {
       assert.equal(isReviewMutationCommitSubject(s), true, s);
     }
   });
 
-  test("does NOT match authored commits — including the stage commit (the baseline itself)", () => {
+  test("does NOT match authored/operator commits — the baseline resets at them", () => {
     for (const s of [
       "docs(review): stage kotodama-spec.md for spec review",
       "docs: add kotodama V1 spec",
       "feat(kotodama): listener slice",
       "docs: spec-reviewed and approved", // near-miss prefix
+      // Phase-5b fixes are operator-in-the-loop edits made AFTER the
+      // growth-ack gate — they count as acceptance of the doc's size, so a
+      // re-run must not re-litigate acked growth against an older baseline.
+      "docs(review-spec): fix missing test plan (test-plan/high)",
+      "docs(review-plan): fix sequencing gap (sequencing/medium)",
     ]) {
       assert.equal(isReviewMutationCommitSubject(s), false, s);
     }

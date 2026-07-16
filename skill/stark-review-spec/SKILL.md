@@ -70,9 +70,10 @@ Lead/wing multi-round spec review:
   scope it now condemns). The last two are unambiguous padding, so the doc is
   **rolled back to its pre-review state** (`analytics.rollback_on_hard_growth`,
   default true) instead of leaving you the bloat. A per-round variant guards each
-  fix pass: a round whose net result **grows** the doc while the scope domain
-  raised high/critical over-engineering findings is **discarded before commit**
-  (receipt `fix.round_reverted`). Growth ratios are measured against the
+  fix pass: a round that grows the doc **past the spike ratio** while the scope
+  domain raised high/critical over-engineering findings is **discarded before
+  commit** (receipt `fix.round_reverted` + `fix.discarded_finding_ids` — the
+  discarded patches are never reported as applied). Growth ratios are measured against the
   **first-staged doc version** (pinned baseline — a re-run doesn't reset the
   ruler to already-grown content). Prevention lives upstream too: the review
   preambles + domains carry a **playground-scope guard** — a single-user/local/
@@ -85,7 +86,7 @@ Lead/wing multi-round spec review:
   explicitly-deferred concern. Each fix round is capped at
   `max_fixes_per_round` (default 8) patches, top-N by severity — the medium
   "add detail" overflow stays recorded, not patched — and reviewers receive the
-  **previous round's applied patches** with an explicit anti-churn instruction
+  **prior rounds' applied patches** (accumulated) with an explicit anti-churn instruction
   (wrong fix text ⇒ "revert it", never "extend it"). No more 200-line specs
   ballooning through rounds of invented production hardening.
 
@@ -235,9 +236,17 @@ background task to exit (BashOutput/task notification — do not poll in a busy
 loop), then read the receipt and exit code from disk. stderr streams human
 progress into the task output as it runs.
 
+Shell state does not persist between Bash tool calls, so the receipt path
+must be created and **printed** in a foreground call first, then substituted
+**literally** into the background command and every later read:
+
 ```bash
-RECEIPT_FILE=$(mktemp -t stark-review-receipt-XXXXXX)
-# Run via the Bash tool with run_in_background: true:
+RECEIPT_FILE=$(mktemp -t stark-review-receipt-XXXXXX); echo "RECEIPT_FILE=$RECEIPT_FILE"
+```
+
+```bash
+# Run via the Bash tool with run_in_background: true, substituting the
+# literal path printed above for $RECEIPT_FILE:
 node --experimental-strip-types "$TOOLS/stark_review_doc.ts" \
     --doc "$DOC" --prompts-dir spec-review \
     --repo-dir "$REPO_DIR" --prompts-base "$PROMPTS_BASE" \
@@ -252,7 +261,7 @@ node --experimental-strip-types "$TOOLS/stark_review_doc.ts" \
     ${NO_COHERENCE:+--no-coherence} > "$RECEIPT_FILE"; echo "TS_EXIT=$?"
 ```
 
-When the background task completes, recover the results:
+When the background task completes (using the same literal receipt path), recover the results:
 
 ```bash
 RECEIPT_JSON=$(cat "$RECEIPT_FILE")
