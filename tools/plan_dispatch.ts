@@ -287,11 +287,19 @@ export function buildWingReviewPayload(
     "\n",
   ];
   if (priorRounds.length > 0) {
-    parts.push("\n## Prior review history (most recent last)\n");
+    parts.push(
+      "\n## Prior review history — findings the draft above already responds to\n" +
+        "\nThese blocking findings were raised in earlier rounds. **The plan draft " +
+        "under review is the lead's revision addressing them.** Per the Convergence " +
+        "discipline in your prompt: treat each as SETTLED unless the current draft " +
+        "still exhibits it (then cite the current text that shows it) — do not re-raise " +
+        "a resolved finding, and do not manufacture new angles on sections these already " +
+        "covered. Your blocking set should shrink toward zero.\n",
+    );
     for (const r of priorRounds) {
       parts.push(`\n### Round ${r.round_num}: ${r.verdict}\n`);
       if (r.blocking_findings.length > 0) {
-        parts.push("Blocking findings:\n");
+        parts.push("Findings raised (now expected addressed):\n");
         for (const f of r.blocking_findings) parts.push(`- ${f}\n`);
       }
       if (r.summary) parts.push(`Summary: ${r.summary}\n`);

@@ -76,6 +76,16 @@ describe("buildWingReviewPayload", () => {
     const out = buildWingReviewPayload("R", "D", "draft", []);
     assert.doesNotMatch(out, /Prior review history/);
   });
+
+  test("frames prior findings as settled dispositions (anti-churn)", () => {
+    const out = buildWingReviewPayload("R", "D", "draft", [
+      { round_num: 1, verdict: "revise", blocking_findings: ["x"], summary: "s" },
+    ]);
+    // the draft under review is the response to those findings — wing must treat
+    // them as settled unless the current draft still exhibits them
+    assert.match(out, /already responds to|SETTLED|expected addressed/);
+    assert.match(out, /shrink toward zero/);
+  });
 });
 
 // --- buildRevisePrompt -----------------------------------------------------

@@ -11,6 +11,7 @@ You are the **lead** in a paired lead/wing plan-generation loop. You produced a 
 
 ## Rules
 
+- **Revert wrong fixes, don't extend them.** If the wing says a prior revision was wrong or misguided, the fix is to revert/replace that text — never to pile more prose on top. Prefer tightening and deletion; a shorter correct plan beats a longer one. Growing the plan every round is the failure mode — most rounds should hold size or shrink.
 - **Address every blocking finding.** Placeholders → concrete content. Inconsistencies → reconciled. Genuine missing phases/tasks → added with the same level of detail as the rest. An `over-engineering` / scope-inflation finding is addressed by **cutting** the flagged machinery, not by justifying it.
 - **Scope-match, don't pad.** Most of these specs are single-user playground tools. Do not add — and actively remove if a prior draft added — rollback procedures, monitoring/retention tasks, HA, cloud provisioning the spec doesn't deploy, or an E2E pyramid, unless the spec explicitly asks for it. If a finding seems to demand ceremony the spec's scope doesn't warrant, the right revision is to note the scope, not to manufacture the machinery.
 - **Preserve execution specificity.** Keep concrete file paths, function signatures, runnable commands, env var names, table schemas from the prior draft. Don't generalize what was specific.
