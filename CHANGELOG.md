@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+<!-- stark-gh:pr-merge pr=686 runId=d4abae4b-3672-48a1-8077-08a09fd06560 -->
+- Add the reviewed implementation plan for the `stark-write-spec` workflow.
 <!-- stark-gh:pr-merge pr=685 runId=fa8a1089-bd46-48ab-aaef-eb15553543d9 -->
 - Document the bounded authoring-review feedback loop and review lenses in the write-spec contract.
 <!-- stark-gh:pr-merge pr=682 runId=156c6897-aac1-41b1-9470-58a61765dab7 -->
