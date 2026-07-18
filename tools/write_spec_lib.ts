@@ -11,7 +11,15 @@
  * `verdict` key, so the two must never grab each other's objects. Both share
  * the `collectJsonCandidates` scan (copilot_dispatch.ts) to avoid drift.
  */
-import { collectJsonCandidates, isPlainObject } from "./copilot_dispatch.ts";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import {
+  buildClaudeCmd,
+  collectJsonCandidates,
+  isPlainObject,
+  resolveModel,
+} from "./copilot_dispatch.ts";
+import { assetPromptsDir } from "./asset_root_lib.ts";
 
 /**
  * The sole runtime authority for spec section ids. A host typed literal — the
@@ -182,4 +190,186 @@ export function normalizeContractVerdict(
     verdict: { items, done: computeDone(items), summary },
     droppedSections,
   };
+}
+
+// ── Dispatch primitives (#699) ───────────────────────────────────────────
+//
+// The deterministic, individually-testable building blocks the lead/wing
+// loop composes: the slug contract, the command boundary (least-privilege
+// no-tools for claude, read-only for codex), the claude JSON envelope parse,
+// and in-band contract delivery. Kept apart from the state machine so each
+// surface is provable on its own.
+
+/**
+ * Derive the spec slug from the `--out` path ALONE. The basename must match
+ * `docs/specs/YYYY-MM-DD-<slug>-spec.md`; the `<slug>` capture is returned.
+ *
+ * There is deliberately NO `--slug` flag — the slug is a pure function of the
+ * out path, so a caller can never desync the filename from the slug. A
+ * non-conforming path throws rather than guessing.
+ */
+export function deriveSlugFromOut(outPath: string): string {
+  const base = path.basename(outPath);
+  const m = /^\d{4}-\d{2}-\d{2}-(?<slug>.+)-spec\.md$/.exec(base);
+  if (!m || !m.groups?.slug) {
+    throw new Error(
+      `out path must match docs/specs/YYYY-MM-DD-<slug>-spec.md; got ${base}`,
+    );
+  }
+  return m.groups.slug;
+}
+
+/**
+ * Tools every write-spec agent is forbidden from using. Copied VERBATIM from
+ * `red_team_fold_lib.ts::DECIDER_DISALLOWED_TOOLS` (the fold decider's
+ * disallowedTools) — the write-spec lead/wing only emit spec text + JSON
+ * verdicts over an in-band contract, so they need zero tools. Disabling the
+ * mutating/exfil primitives means even a jailbroken model has no Bash/Write/
+ * WebFetch primitive to run a command, touch the filesystem, or make a
+ * network call from inside the subprocess.
+ */
+export const NO_TOOLS = [
+  "Bash",
+  "Edit",
+  "Write",
+  "Read",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "NotebookEdit",
+] as const;
+
+/** Which write-spec agent a command is being built for. */
+export type WriteSpecAgent = "claude" | "codex";
+
+/** A resolved subprocess argv. */
+export interface AgentCommand {
+  cmd: string;
+  args: string[];
+}
+
+/**
+ * Claude argv: the shared headless-Claude command (`buildClaudeCmd`,
+ * `--output-format json`) with NO tools grantable (empty `allowedTools`, so
+ * `--allowedTools` is never emitted) plus `--disallowedTools <NO_TOOLS...>`
+ * appended at the END (mirrors `red_team_fold_lib.ts::buildDeciderCommand`).
+ */
+function claudeAgentCmd(): AgentCommand {
+  const built = buildClaudeCmd({ outputFormat: "json", allowedTools: "" });
+  return { cmd: built.cmd, args: [...built.args, "--disallowedTools", ...NO_TOOLS] };
+}
+
+/**
+ * Codex argv: `codex exec` at the given reasoning effort, `-s read-only`
+ * (never mutates the target), prompt on stdin (`-`). Mirrors
+ * `copilot_dispatch.ts::buildCodexCmd`.
+ */
+function codexAgentCmd(effort: "high" | "xhigh"): AgentCommand {
+  return {
+    cmd: "codex",
+    args: [
+      "exec",
+      "-m", resolveModel("codex"),
+      "-c", `model_reasoning_effort="${effort}"`,
+      "--ephemeral", "--json",
+      "-s", "read-only",
+      "-",
+    ],
+  };
+}
+
+/**
+ * Build the LEAD (spec author) command for `agent`. Claude runs no-tools;
+ * codex runs read-only at `high` effort.
+ */
+export function buildLeadCmd(agent: WriteSpecAgent): AgentCommand {
+  return agent === "codex" ? codexAgentCmd("high") : claudeAgentCmd();
+}
+
+/**
+ * Build the WING (contract verifier) command for `agent`. Claude runs
+ * no-tools; codex runs read-only at `xhigh` effort (the adversarial pass gets
+ * the higher reasoning budget).
+ */
+export function buildWingCmd(agent: WriteSpecAgent): AgentCommand {
+  return agent === "codex" ? codexAgentCmd("xhigh") : claudeAgentCmd();
+}
+
+/** The text + token usage unwrapped from a claude `--output-format json` run. */
+export interface ClaudeEnvelope {
+  text: string;
+  usage: Record<string, unknown> | null;
+}
+
+/**
+ * Parse claude's `--output-format json` stdout envelope
+ * (`{"result": "...", "usage": {...}}`) into `{text, usage}`. On any parse
+ * failure the raw stdout is returned verbatim as `text` with `usage: null`,
+ * so a non-JSON reply (or a plain-text CLI) still surfaces its content.
+ */
+export function parseClaudeJson(raw: string): ClaudeEnvelope {
+  try {
+    const obj = JSON.parse(raw);
+    if (isPlainObject(obj)) {
+      const result = obj["result"];
+      const usage = obj["usage"];
+      return {
+        text: typeof result === "string" ? result : "",
+        usage: isPlainObject(usage) ? usage : null,
+      };
+    }
+  } catch {
+    /* not JSON — fall through to raw passthrough */
+  }
+  return { text: raw, usage: null };
+}
+
+/** Header the contract is prepended under, so every agent sees it in-band. */
+export const CONTRACT_HEADER =
+  "## Spec Contract (authoritative — the 9 sections and their done-when bars)";
+
+/**
+ * Read + validate the spec contract asset ONCE, from
+ * `<assetPromptsDir>/write-spec/contract.md`. This is the SOLE file reader in
+ * this module — `composePrompt` is pure and takes the returned text as an
+ * argument. Throws if the file is missing or empty (an agent with no file
+ * tools must receive the contract in-band; a silent empty contract would let
+ * the loop run with no done-when bars).
+ */
+export function loadContractText(): string {
+  const p = path.join(assetPromptsDir(), "write-spec", "contract.md");
+  let text: string;
+  try {
+    text = readFileSync(p, "utf8");
+  } catch (e) {
+    throw new Error(`spec contract not found at ${p}: ${(e as Error).message}`);
+  }
+  if (text.trim().length === 0) {
+    throw new Error(`spec contract at ${p} is empty`);
+  }
+  return text;
+}
+
+/**
+ * Compose the full prompt sent to a write-spec agent. PURE — no file IO; the
+ * caller passes `contractText` (from `loadContractText`, read once at dispatch
+ * start). The authoritative contract is prepended under `CONTRACT_HEADER`, so
+ * every generate/verify/revise request carries the 9 sections + done-when bars
+ * in-band (the agents have no file tools to fetch them), followed by the
+ * per-agent template and the concrete brief.
+ */
+export function composePrompt(
+  agentPromptText: string,
+  contractText: string,
+  briefText: string,
+): string {
+  return [
+    CONTRACT_HEADER,
+    "",
+    contractText.trimEnd(),
+    "",
+    agentPromptText.trimEnd(),
+    "",
+    briefText.trimEnd(),
+  ].join("\n");
 }
