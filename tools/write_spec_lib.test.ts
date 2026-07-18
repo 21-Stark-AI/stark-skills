@@ -700,6 +700,7 @@ test("test_write_exit_artifacts_atomic", () => {
       slug: "loop-test",
       spec_path: out,
       run_dir: dir,
+      run_id: "run-1",
       rounds: 1,
       lead_agent: "claude",
       wing_agent: "codex",
@@ -709,6 +710,7 @@ test("test_write_exit_artifacts_atomic", () => {
       cost_usd: 0,
       cost_breakdown: [],
       cost_notes: [],
+      persistence_errors: [],
     };
     writeExitArtifacts(dir, "SPEC BODY", receipt);
     assert.equal(fs.readFileSync(out, "utf8"), "SPEC BODY");
@@ -1010,6 +1012,170 @@ test("test_missing_usage_degrades_to_note", async () => {
       assert.equal(r.inputTokens, 0);
       assert.equal(r.outputTokens, 0);
     }
+  } finally {
+    cleanup();
+  }
+});
+
+// ── Incremental history persistence + retention (#704) ───────────────────
+
+// test_receipt_incremental_persistence — after a simulated round-3 crash (the
+// lead throws mid-loop), rounds.json holds the 2 completed rounds and
+// receipt.json reflects rounds-so-far (rounds:2). rounds.json is written after
+// EVERY round, so a crash leaves a durable partial record, never corruption.
+test("test_receipt_incremental_persistence", async () => {
+  const { dir, out, cleanup } = tmpRun();
+  try {
+    const nonDone = wingJson(withIntent("underspecified"));
+    let leadCalls = 0;
+    let wingCalls = 0;
+    const deps: Partial<WriteSpecDeps> = {
+      loadContract: () => "CONTRACT",
+      loadAgentPrompt: (a, r) => `[${a}:${r}]`,
+      dispatchLead: async () => {
+        leadCalls++;
+        if (leadCalls >= 3) throw new Error("simulated crash on round 3");
+        return `draft ${leadCalls}`;
+      },
+      dispatchWing: async () => {
+        wingCalls++;
+        return nonDone; // never done → keeps revising
+      },
+    };
+    await assert.rejects(
+      () => runWriteSpec({ out, brief: "b", runDir: dir, maxRounds: 5 }, deps),
+      /simulated crash on round 3/,
+    );
+
+    // rounds.json holds exactly the 2 completed rounds.
+    const rounds = JSON.parse(fs.readFileSync(path.join(dir, "rounds.json"), "utf8"));
+    assert.equal(rounds.rounds.length, 2, "two completed rounds recorded");
+    assert.deepEqual(rounds.rounds.map((r: { round: number }) => r.round), [1, 2]);
+    assert.equal(rounds.rounds[0].lead_role, "generate");
+    assert.equal(rounds.rounds[1].lead_role, "revise");
+    for (const r of rounds.rounds) {
+      assert.ok(typeof r.duration_ms === "number" && r.duration_ms >= 0);
+    }
+
+    // Interim receipt.json reflects rounds-so-far (2), verdict not yet terminal.
+    const interim = JSON.parse(fs.readFileSync(path.join(dir, "receipt.json"), "utf8"));
+    assert.equal(interim.rounds, 2, "interim receipt reflects 2 rounds");
+    assert.equal(interim.ok, false);
+
+    // brief.md was copied in at dispatch.
+    assert.ok(fs.existsSync(path.join(dir, "brief.md")), "brief.md present");
+  } finally {
+    cleanup();
+  }
+});
+
+// test_history_retention — with the lib owning the slug-dir layout, creating
+// history_keep_runs + 2 run dirs prunes down to history_keep_runs newest, and
+// latest points at the just-completed run.
+test("test_history_retention", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "write-spec-hist-"));
+  try {
+    const keep = 2;
+    const slug = "retain-test";
+    const slugDir = path.join(base, slug);
+    fs.mkdirSync(slugDir, { recursive: true });
+    // Pre-create keep+1 OLD run dirs (names sort before the 2026 run id).
+    const old = ["19990101-000000-aaa", "20000101-000000-bbb", "20010101-000000-ccc"];
+    for (const name of old) fs.mkdirSync(path.join(slugDir, name));
+
+    const runId = "20260718-000000-zzz"; // newest — sorts last
+    const out = path.join(base, "2026-07-18-retain-test-spec.md");
+    const m = mockDeps({ leadDrafts: ["d"], wingReplies: [wingJson(ALL_SATISFIED)] });
+    const receipt = await runWriteSpec(
+      { out, brief: "b", historyRoot: base, runId, historyKeepRuns: keep },
+      m.deps,
+    );
+    assert.equal(receipt.final_verdict, "contract_satisfied");
+    assert.equal(receipt.run_id, runId);
+    assert.equal(receipt.run_dir, path.join(slugDir, runId));
+
+    // Exactly `keep` run dirs remain (latest pointer excluded).
+    const remaining = fs
+      .readdirSync(slugDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.isSymbolicLink() && e.name !== "latest")
+      .map((e) => e.name)
+      .sort();
+    assert.equal(remaining.length, keep, `pruned to ${keep} run dirs`);
+    // Newest survivors: our run + the newest pre-existing (ccc).
+    assert.deepEqual(remaining, ["20010101-000000-ccc", runId]);
+
+    // latest points at the just-completed run.
+    const latest = path.join(slugDir, "latest");
+    if (fs.existsSync(latest) && fs.lstatSync(latest).isSymbolicLink()) {
+      assert.equal(fs.readlinkSync(latest), runId);
+    } else {
+      assert.equal(fs.readFileSync(path.join(slugDir, "latest.txt"), "utf8").trim(), runId);
+    }
+
+    // The run dir carries rounds.json + brief.md + the terminal receipt.
+    const runDir = path.join(slugDir, runId);
+    assert.ok(fs.existsSync(path.join(runDir, "rounds.json")));
+    assert.ok(fs.existsSync(path.join(runDir, "brief.md")));
+    assert.ok(fs.existsSync(path.join(runDir, "receipt.json")));
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// test_history_write_error_non_fatal — a stubbed history write-failure surfaces
+// in persistence_errors and the run STILL returns its verdict, with the FATAL
+// spec + terminal receipt written (contrast test_spec_write_failure_is_fatal).
+test("test_history_write_error_non_fatal", async () => {
+  const { dir, out, cleanup } = tmpRun();
+  try {
+    const m = mockDeps({ leadDrafts: ["the draft"], wingReplies: [wingJson(ALL_SATISFIED)] });
+    // Stub the NON-FATAL history JSON writer to throw. writeArtifacts (FATAL)
+    // is a distinct dep and uses the real writer, so it still succeeds.
+    const deps: Partial<WriteSpecDeps> = {
+      ...m.deps,
+      writeHistoryJson: () => {
+        throw new Error("history disk full");
+      },
+    };
+    const receipt = await runWriteSpec({ out, brief: "b", runDir: dir }, deps);
+
+    // The run returned its verdict despite the history failures.
+    assert.equal(receipt.final_verdict, "contract_satisfied");
+    assert.equal(receipt.ok, true);
+    // Persistence errors surfaced (rounds.json + interim receipt.json).
+    assert.ok(receipt.persistence_errors.length >= 1, "history failure surfaced");
+    assert.ok(
+      receipt.persistence_errors.every((e) => e.includes("history disk full")),
+      "each error names the stubbed cause",
+    );
+    // FATAL writes still landed: spec + terminal receipt on disk.
+    assert.equal(fs.readFileSync(out, "utf8"), "the draft");
+    const persisted = JSON.parse(fs.readFileSync(path.join(dir, "receipt.json"), "utf8"));
+    assert.equal(persisted.final_verdict, "contract_satisfied");
+    assert.ok(persisted.persistence_errors.length >= 1);
+  } finally {
+    cleanup();
+  }
+});
+
+// test_dry_run_no_history — a dry run performs ZERO writes: no history dir, no
+// spec, no receipt — but still returns its verdict.
+test("test_dry_run_no_history", async () => {
+  const { dir, out, cleanup } = tmpRun();
+  try {
+    const runDir = path.join(dir, "nested-run"); // not created by tmpRun
+    const m = mockDeps({ leadDrafts: ["a draft"], wingReplies: [wingJson(ALL_SATISFIED)] });
+    const receipt = await runWriteSpec(
+      { out, brief: "b", runDir, dryRun: true },
+      m.deps,
+    );
+    // Verdict still returned.
+    assert.equal(receipt.final_verdict, "contract_satisfied");
+    assert.equal(receipt.ok, true);
+    // NO history dir, NO spec, NO receipt on disk.
+    assert.equal(fs.existsSync(runDir), false, "no history dir created");
+    assert.equal(fs.existsSync(out), false, "no spec written");
+    assert.equal(receipt.persistence_errors.length, 0, "no history attempted");
   } finally {
     cleanup();
   }
