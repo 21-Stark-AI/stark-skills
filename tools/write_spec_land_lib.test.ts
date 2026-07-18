@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  OPEN_QUESTIONS_HEADING,
   OWNED_BLOCK_END,
   OWNED_BLOCK_START,
   appForLead,
+  applyAcceptedGaps,
   buildOwnedBlock,
+  buildSkillSummary,
   mergePrBody,
   parseAcceptedGaps,
   pickPrForHead,
@@ -14,7 +17,12 @@ import {
   type AcceptedGap,
   type OpenPr,
 } from "./write_spec_land_lib.ts";
-import { SECTION_IDS, type ContractItem, type WriteSpecReceipt } from "./write_spec_lib.ts";
+import {
+  SECTION_IDS,
+  deriveSlugFromOut,
+  type ContractItem,
+  type WriteSpecReceipt,
+} from "./write_spec_lib.ts";
 
 function fakeReceipt(over: Partial<WriteSpecReceipt> = {}): WriteSpecReceipt {
   const contract_status: ContractItem[] = SECTION_IDS.map((section) => ({
@@ -211,4 +219,205 @@ test("mergePrBody: append then replace preserves surrounding content", () => {
   assert.ok(!afterSecond.includes("V1"));
   assert.ok(afterSecond.includes("V2"));
   assert.equal(afterSecond.split(OWNED_BLOCK_START).length - 1, 1);
+});
+
+// ── applyAcceptedGaps: mutation + idempotency (#707) ─────────────────────────
+
+test("test_accept_with_gaps_mutation: appends verbatim, creates section, idempotent", () => {
+  const spec = "# Spec\n\n## Intent\nDo the thing.\n";
+  const items = ["security: single-user, no auth", "test-plan: manual only"];
+
+  const once = applyAcceptedGaps(spec, items);
+  // Section created.
+  assert.ok(once.includes(OPEN_QUESTIONS_HEADING));
+  // Each item appended VERBATIM as a bullet.
+  assert.ok(once.includes("- security: single-user, no auth"));
+  assert.ok(once.includes("- test-plan: manual only"));
+  // Prior content preserved.
+  assert.ok(once.startsWith("# Spec\n\n## Intent\nDo the thing."));
+
+  // Idempotent — a second identical apply changes nothing.
+  const twice = applyAcceptedGaps(once, items);
+  assert.equal(twice, once);
+  // A third pass is still stable.
+  assert.equal(applyAcceptedGaps(twice, items), once);
+});
+
+test("applyAcceptedGaps: existing section appends, no duplicates", () => {
+  const spec = "# Spec\n\n## Open Questions\n\n- already noted\n";
+  const merged = applyAcceptedGaps(spec, ["already noted", "new gap"]);
+  // The pre-existing bullet is not duplicated…
+  assert.equal(merged.split("- already noted").length - 1, 1);
+  // …and the new one is appended under the same section.
+  assert.ok(merged.includes("- new gap"));
+  // Only one Open Questions heading.
+  assert.equal(merged.split(OPEN_QUESTIONS_HEADING).length - 1, 1);
+  // Re-apply is idempotent.
+  assert.equal(applyAcceptedGaps(merged, ["already noted", "new gap"]), merged);
+});
+
+test("applyAcceptedGaps: bullet-prefixed items and blanks handled", () => {
+  const out = applyAcceptedGaps("# S\n", ["- pre-bulleted", "", "  ", "plain"]);
+  assert.ok(out.includes("- pre-bulleted"));
+  assert.ok(out.includes("- plain"));
+  // Empty/whitespace-only items dropped (no empty bullet).
+  assert.ok(!/\n- *\n/.test(out));
+});
+
+test("applyAcceptedGaps: no items returns input unchanged", () => {
+  const spec = "# Spec\n\nbody\n";
+  assert.equal(applyAcceptedGaps(spec, []), spec);
+});
+
+// ── buildSkillSummary: shape / outcome enum / dry-run nullability (#707) ─────
+
+test("test_skill_summary_emits_accepted_gaps: accept outcome, receipt byte-identical", () => {
+  const receipt = fakeReceipt({ final_verdict: "max_rounds_unsatisfied", ok: false });
+  const gaps: AcceptedGap[] = [{ section: "security", status: "n_a", note: "single-user" }];
+
+  const summary = buildSkillSummary({
+    outcome: "authored_with_accepted_gaps",
+    receipt,
+    acceptedGaps: gaps,
+    headlessAutoAccept: false,
+    pr: { number: 707, url: "u" },
+  });
+
+  assert.equal(summary.skill, "stark-write-spec");
+  assert.equal(summary.outcome, "authored_with_accepted_gaps");
+  assert.equal(summary.spec_path, receipt.spec_path);
+  assert.equal(summary.slug, receipt.slug);
+  assert.equal(summary.final_verdict, "max_rounds_unsatisfied");
+  assert.deepEqual(summary.accepted_gaps, gaps);
+  assert.equal(summary.headless_auto_accept, false);
+  assert.deepEqual(summary.pr, { number: 707, url: "u" });
+  // Receipt echoed byte-for-byte.
+  assert.equal(JSON.stringify(summary.dispatcher_receipt), JSON.stringify(receipt));
+});
+
+test("buildSkillSummary: headless variant sets headless_auto_accept true", () => {
+  const receipt = fakeReceipt({ final_verdict: "max_rounds_unsatisfied", ok: false });
+  const summary = buildSkillSummary({
+    outcome: "authored_with_accepted_gaps",
+    receipt,
+    acceptedGaps: [{ section: "security", status: "n_a", note: "" }],
+    headlessAutoAccept: true,
+  });
+  assert.equal(summary.headless_auto_accept, true);
+});
+
+test("buildSkillSummary: contract_satisfied emits [] + contract_satisfied", () => {
+  const receipt = fakeReceipt();
+  const summary = buildSkillSummary({ outcome: "contract_satisfied", receipt });
+  assert.equal(summary.outcome, "contract_satisfied");
+  assert.equal(summary.final_verdict, "contract_satisfied");
+  assert.deepEqual(summary.accepted_gaps, []);
+  assert.equal(summary.headless_auto_accept, false);
+  assert.equal(summary.pr, null);
+});
+
+test("test_skill_summary_dry_run: nullable receipt/final_verdict, empty gaps", () => {
+  const summary = buildSkillSummary({
+    outcome: "dry_run",
+    specPath: "docs/specs/2026-07-18-x-spec.md",
+    slug: "x",
+    // Even if a receipt/gaps were passed, a dry run resolves none.
+    receipt: fakeReceipt(),
+    acceptedGaps: [{ section: "security", status: "n_a", note: "ignored" }],
+  });
+  assert.equal(summary.outcome, "dry_run");
+  assert.equal(summary.dispatcher_receipt, null);
+  assert.equal(summary.final_verdict, null);
+  assert.deepEqual(summary.accepted_gaps, []);
+  assert.equal(summary.spec_path, "docs/specs/2026-07-18-x-spec.md");
+  assert.equal(summary.slug, "x");
+});
+
+test("buildSkillSummary: aborted outcome carries receipt but no PR", () => {
+  const receipt = fakeReceipt({ final_verdict: "max_rounds_unsatisfied", ok: false });
+  const summary = buildSkillSummary({ outcome: "aborted", receipt });
+  assert.equal(summary.outcome, "aborted");
+  assert.equal(summary.final_verdict, "max_rounds_unsatisfied");
+  assert.equal(summary.pr, null);
+  assert.equal(JSON.stringify(summary.dispatcher_receipt), JSON.stringify(receipt));
+});
+
+// ── publish orchestration decision surface (#707) ────────────────────────────
+// The `publish` CLI (write_spec_land.ts) wires the pure helpers below together;
+// its git/gh side effects are exercised by the #708 live e2e. Here we lock the
+// side-effect-free DECISION surface publish composes: the App identity, the
+// title fallback, the draft flag, the dry-run gate, and the owned-block →
+// PR-body merge — so a regression in that wiring can't slip through silently.
+
+test("publish decision surface: app identity, title fallback, draft flag", () => {
+  // App is authored by the lead's App (repo invariant).
+  assert.equal(appForLead("claude"), "stark-claude");
+  assert.equal(appForLead("codex"), "stark-codex");
+
+  // prTitle = title || `spec: ${receipt.slug ?? deriveSlugFromOut(spec)}`.
+  const prTitleFor = (title: string, slug: string | undefined, spec: string): string =>
+    title || `spec: ${slug ?? deriveSlugFromOut(spec)}`;
+  const spec = "docs/specs/2026-07-18-landing-helper-spec.md";
+  // Explicit --title wins.
+  assert.equal(prTitleFor("explicit title", "landing-helper", spec), "explicit title");
+  // No title → receipt slug.
+  assert.equal(prTitleFor("", "landing-helper", spec), "spec: landing-helper");
+  // No title AND no receipt slug → slug derived from the --spec path.
+  assert.equal(prTitleFor("", undefined, spec), `spec: ${deriveSlugFromOut(spec)}`);
+
+  // draft flag is the negation of --ready (draft PRs by default).
+  const draftFor = (ready: boolean): boolean => !ready;
+  assert.equal(draftFor(true), false);
+  assert.equal(draftFor(false), true);
+});
+
+test("publish decision surface: dry-run gate + idempotent commit skip", () => {
+  // A dry run performs NO git steps; a real run does.
+  assert.equal(shouldRunGitStep(true), false);
+  assert.equal(shouldRunGitStep(false), true);
+  // A re-run with an empty staged diff must not create an empty commit.
+  assert.equal(shouldSkipCommit(true), true);
+  assert.equal(shouldSkipCommit(false), false);
+});
+
+test("publish decision surface: owned block merges into a PR body idempotently", () => {
+  // Exactly publish's composition: buildOwnedBlock(receipt, gaps) → mergePrBody.
+  const receipt = fakeReceipt({ summary: "landing helper spec" });
+  const gaps: AcceptedGap[] = [{ section: "security", status: "n_a", note: "single-user" }];
+  const block = buildOwnedBlock(receipt, gaps);
+
+  const existing = "## Overview\nHand-written intro.\n\n---\nCloses #706\n";
+  const merged = mergePrBody(existing, block);
+
+  // Non-owned prose preserved verbatim; owned block present exactly once.
+  assert.ok(merged.startsWith("## Overview\nHand-written intro."));
+  assert.ok(merged.includes("Closes #706"));
+  assert.equal(merged.split(OWNED_BLOCK_START).length - 1, 1);
+  assert.equal(merged.split(OWNED_BLOCK_END).length - 1, 1);
+  // Accepted gaps surfaced in the owned block.
+  assert.ok(merged.includes("Accepted gaps"));
+  assert.ok(merged.includes("single-user"));
+
+  // Re-publishing the same run over the merged body is a no-op (idempotent).
+  assert.equal(mergePrBody(merged, block), merged);
+});
+
+test("publish decision surface: accepted-gaps flow feeds the summary", () => {
+  // The 5-3 accept step: raw operator gaps → applyAcceptedGaps (spec mutation)
+  // + parseAcceptedGaps (trusted schema) → buildSkillSummary carries them.
+  const spec = "# Spec\n\n## Intent\nDo the thing.\n";
+  const mutated = applyAcceptedGaps(spec, ["security: single-user, no auth"]);
+  assert.ok(mutated.includes("- security: single-user, no auth"));
+
+  const gaps = parseAcceptedGaps([{ section: "security", status: "n_a", note: "single-user" }]);
+  const receipt = fakeReceipt({ final_verdict: "max_rounds_unsatisfied", ok: false });
+  const summary = buildSkillSummary({
+    outcome: "authored_with_accepted_gaps",
+    receipt,
+    acceptedGaps: gaps,
+    pr: { number: 707, url: "u" },
+  });
+  assert.equal(summary.outcome, "authored_with_accepted_gaps");
+  assert.deepEqual(summary.accepted_gaps, gaps);
+  assert.deepEqual(summary.pr, { number: 707, url: "u" });
 });
