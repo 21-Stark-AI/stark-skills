@@ -17,6 +17,7 @@ import {
   findStaleCheckpointFiles,
   findStaleLockFiles,
   findStaleSessionFiles,
+  findStaleStatuslineStateFiles,
   healAssetSymlinks,
   isLockDataStale,
   rotateLogFile,
@@ -138,6 +139,35 @@ test("findStaleCheckpointFiles walks subdirs and flags old checkpoint markdowns"
     const ageProvider: AgeProvider = (p) => ages[p] ?? new Date(0);
     const stale = findStaleCheckpointFiles(tmp, 7, ageProvider, NOW);
     assert.deepEqual(stale.sort(), [cp1]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ── findStaleStatuslineStateFiles ───────────────────────────────
+
+test("findStaleStatuslineStateFiles flags old procstart/lastreply files, spares fresh + single-file caches", (t) => {
+  const tmp = makeTmp(t);
+  if (!tmp) return;
+  try {
+    const oldProc = path.join(tmp, ".statusline-procstart-1234");
+    const freshProc = path.join(tmp, ".statusline-procstart-5678");
+    const oldReply = path.join(tmp, ".statusline-lastreply-sessA");
+    const gitCache = path.join(tmp, ".statusline-git-dirty-cache");
+    const acctCache = path.join(tmp, ".statusline-account-cache");
+    for (const f of [oldProc, freshProc, oldReply, gitCache, acctCache]) {
+      fs.writeFileSync(f, "x");
+    }
+    const ages: Record<string, Date> = {
+      [oldProc]: days(30),
+      [freshProc]: days(3),
+      [oldReply]: days(20),
+      [gitCache]: days(99), // excluded by prefix, not age
+      [acctCache]: days(99),
+    };
+    const ageProvider: AgeProvider = (p) => ages[p] ?? new Date(0);
+    const stale = findStaleStatuslineStateFiles(tmp, 14, ageProvider, NOW);
+    assert.deepEqual(stale.sort(), [oldReply, oldProc].sort());
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
