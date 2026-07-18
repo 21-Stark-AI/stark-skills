@@ -32,12 +32,18 @@ export const SECTION_IDS = [
 
 export type SectionId = (typeof SECTION_IDS)[number];
 
-/** Per-section coverage status. `done` requires every section satisfied. */
+/**
+ * Per-section coverage status. `done` requires every section satisfied or a
+ * reasoned `n_a`. `over_scoped` (the #677 bidirectional-gate lesson — the wing
+ * asking to cut excessive scope) is a valid revise signal that blocks `done`
+ * just like `underspecified`/`missing`.
+ */
 export const STATUS_VALUES = [
   "satisfied",
   "underspecified",
   "n_a",
   "missing",
+  "over_scoped",
 ] as const;
 
 export type Status = (typeof STATUS_VALUES)[number];

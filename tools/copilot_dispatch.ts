@@ -704,18 +704,24 @@ export function parseGeminiJson(raw: string): string {
  * Collect candidate JSON object strings from free-form LLM text.
  * First harvests fenced ```json blocks, then walks the whole text tracking
  * balanced braces with string/escape awareness so a `{` inside a JSON string
- * never desyncs the depth counter. Returns candidates in document order
- * (fenced first, then top-level objects), de-duplicated. Callers pick which
- * candidate to trust (e.g. the LAST one that parses to the expected shape).
+ * never desyncs the depth counter. Returns candidates in DOCUMENT order
+ * (sorted by the position of each object's opening brace), de-duplicated. This
+ * ordering matters: callers pick the candidate to trust by scanning from the
+ * end, so a final fenced verdict must outrank an earlier inline object — which
+ * only holds if fenced and brace-scanned candidates are interleaved by
+ * position rather than concatenated fenced-first.
  *
  * Shared by both verdict extractors (copilot's `extractVerdictJson` and
  * write-spec's `extractContractVerdictJson`) so the scan logic never drifts.
  */
 export function collectJsonCandidates(text: string): string[] {
-  const candidates: string[] = [];
+  const found: Array<{ pos: number; cand: string }> = [];
   const fenceRe = /```(?:json)?\s*\n(\{[\s\S]*?\})\s*\n```/g;
   for (const m of text.matchAll(fenceRe)) {
-    if (m[1]) candidates.push(m[1]);
+    if (m[1]) {
+      const pos = m.index + m[0].indexOf(m[1]);
+      found.push({ pos, cand: m[1] });
+    }
   }
   let depth = 0;
   let start = -1;
@@ -737,12 +743,18 @@ export function collectJsonCandidates(text: string): string[] {
       if (depth > 0) {
         depth--;
         if (depth === 0 && start >= 0) {
-          const cand = text.slice(start, i + 1);
-          if (!candidates.includes(cand)) candidates.push(cand);
+          found.push({ pos: start, cand: text.slice(start, i + 1) });
           start = -1;
         }
       }
     }
+  }
+  // Document order by opening-brace position (stable for ties, e.g. a fenced
+  // object and its brace-scan twin share a position), de-duplicated.
+  found.sort((a, b) => a.pos - b.pos);
+  const candidates: string[] = [];
+  for (const { cand } of found) {
+    if (!candidates.includes(cand)) candidates.push(cand);
   }
   return candidates;
 }
