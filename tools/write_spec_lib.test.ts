@@ -176,6 +176,30 @@ test("test_partial_verdict_fails_closed", () => {
   assert.equal(naNoReason.verdict.done, false);
 });
 
+// A non-object raw (JSON array / string / null) is not a valid verdict shape.
+// The isPlainObject guard must fail closed: no items trusted, all 9 sections
+// synthesized as missing, done=false, empty summary — never throw, never
+// fabricate a truthy done.
+test("test_non_object_raw_fails_closed", () => {
+  for (const raw of [
+    [{ section: "intent", status: "satisfied", note: "ok" }],
+    "done",
+    42,
+    null,
+    true,
+  ] as unknown[]) {
+    const { verdict, droppedSections } = normalizeContractVerdict(raw);
+    assert.equal(verdict.items.length, SECTION_IDS.length);
+    assert.ok(
+      verdict.items.every((i) => i.status === "missing"),
+      "all sections synthesized missing",
+    );
+    assert.equal(verdict.done, false);
+    assert.equal(verdict.summary, "");
+    assert.deepEqual(droppedSections, []);
+  }
+});
+
 // Duplicate sections: first occurrence of a known section wins; a later
 // contradictory duplicate cannot flip the recorded status nor fabricate a
 // false done. Each SECTION_ID is counted once by computeDone.
@@ -314,6 +338,23 @@ test("test_agent_commands_expose_no_tools", () => {
   // wing codex gets the higher xhigh reasoning effort; lead codex is high.
   assert.ok(buildWingCmd("codex").args.some((a) => a.includes('model_reasoning_effort="xhigh"')));
   assert.ok(buildLeadCmd("codex").args.some((a) => a.includes('model_reasoning_effort="high"')));
+});
+
+// A configured wing_reasoning_effort override reaches the codex wing argv
+// (threaded through buildWingCmd, not literal-coded to xhigh).
+test("test_wing_reasoning_effort_config_honored", () => {
+  const overridden = buildWingCmd("codex", "high");
+  assert.ok(
+    overridden.args.some((a) => a.includes('model_reasoning_effort="high"')),
+    "config override 'high' reaches the wing argv",
+  );
+  assert.ok(
+    !overridden.args.some((a) => a.includes('model_reasoning_effort="xhigh"')),
+    "override replaces the default xhigh",
+  );
+  // Still consumes the read-only codex command surface.
+  const si = overridden.args.indexOf("-s");
+  assert.ok(si >= 0 && overridden.args[si + 1] === "read-only");
 });
 
 // test_parse_claude_json_envelope

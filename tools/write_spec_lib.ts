@@ -22,13 +22,18 @@ import path from "node:path";
 import {
   buildAgentEnv,
   buildClaudeCmd,
+  buildCodexCmd,
   collectJsonCandidates,
   isPlainObject,
   parseCodexJsonl,
   releaseAgentTempDir,
-  resolveModel,
   run,
 } from "./copilot_dispatch.ts";
+import {
+  CODEX_REASONING_EFFORT_HIGH,
+  CODEX_REASONING_EFFORT_MEDIUM,
+  CODEX_REASONING_EFFORT_XHIGH,
+} from "./codex_utils_lib.ts";
 import { assetPromptsDir, stateRoot } from "./asset_root_lib.ts";
 import { getWriteSpecConfig } from "./stark_config_lib.ts";
 import { writeJsonAtomic } from "./stark_review_doc_lib.ts";
@@ -239,6 +244,10 @@ export function deriveSlugFromOut(outPath: string): string {
  * mutating/exfil primitives means even a jailbroken model has no Bash/Write/
  * WebFetch primitive to run a command, touch the filesystem, or make a
  * network call from inside the subprocess.
+ *
+ * Keep in sync with `red_team_fold_lib.ts::DECIDER_DISALLOWED_TOOLS` (copied
+ * verbatim to avoid coupling this module to the fold subsystem's audit/git/DB
+ * transitive deps).
  */
 export const NO_TOOLS = [
   "Bash",
@@ -271,23 +280,37 @@ function claudeAgentCmd(): AgentCommand {
   return { cmd: built.cmd, args: [...built.args, "--disallowedTools", ...NO_TOOLS] };
 }
 
+/** Reasoning-effort levels a write-spec codex agent may run at. */
+export type CodexEffort = "medium" | "high" | "xhigh";
+
 /**
- * Codex argv: `codex exec` at the given reasoning effort, `-s read-only`
- * (never mutates the target), prompt on stdin (`-`). Mirrors
- * `copilot_dispatch.ts::buildCodexCmd`.
+ * Map a config effort string to the canonical `-c model_reasoning_effort="…"`
+ * flag string owned by `codex_utils_lib.ts` (never re-derived inline). Unknown
+ * values fall back to `xhigh` (the adversarial-pass default).
  */
-function codexAgentCmd(effort: "high" | "xhigh"): AgentCommand {
-  return {
-    cmd: "codex",
-    args: [
-      "exec",
-      "-m", resolveModel("codex"),
-      "-c", `model_reasoning_effort="${effort}"`,
-      "--ephemeral", "--json",
-      "-s", "read-only",
-      "-",
-    ],
-  };
+function codexReasoningEffort(effort: string): string {
+  switch (effort) {
+    case "medium":
+      return CODEX_REASONING_EFFORT_MEDIUM;
+    case "high":
+      return CODEX_REASONING_EFFORT_HIGH;
+    case "xhigh":
+    default:
+      return CODEX_REASONING_EFFORT_XHIGH;
+  }
+}
+
+/**
+ * Codex argv: consumes `copilot_dispatch.ts::buildCodexCmd` (the SOLE owner of
+ * the `codex exec` command surface) for the read-only cmd/base args, overriding
+ * the reasoning effort with the resolved `-c` flag from `codex_utils_lib.ts`.
+ */
+function codexAgentCmd(effort: string): AgentCommand {
+  const built = buildCodexCmd({
+    readOnly: true,
+    reasoningEffort: codexReasoningEffort(effort),
+  });
+  return { cmd: built.cmd, args: built.args };
 }
 
 /**
@@ -300,11 +323,15 @@ export function buildLeadCmd(agent: WriteSpecAgent): AgentCommand {
 
 /**
  * Build the WING (contract verifier) command for `agent`. Claude runs
- * no-tools; codex runs read-only at `xhigh` effort (the adversarial pass gets
- * the higher reasoning budget).
+ * no-tools; codex runs read-only at the configured `effort` (default `xhigh` —
+ * the adversarial pass gets the higher reasoning budget). `effort` is threaded
+ * from `write_spec.wing_reasoning_effort` so the config knob is honored.
  */
-export function buildWingCmd(agent: WriteSpecAgent): AgentCommand {
-  return agent === "codex" ? codexAgentCmd("xhigh") : claudeAgentCmd();
+export function buildWingCmd(
+  agent: WriteSpecAgent,
+  effort: string = "xhigh",
+): AgentCommand {
+  return agent === "codex" ? codexAgentCmd(effort) : claudeAgentCmd();
 }
 
 /** The text + token usage unwrapped from a claude `--output-format json` run. */
@@ -588,7 +615,12 @@ export function defaultWriteSpecDeps(
     dispatchLead: ({ prompt }) =>
       dispatch(leadAgent, buildLeadCmd(leadAgent), prompt, leadTimeout),
     dispatchWing: ({ prompt }) =>
-      dispatch(wingAgent, buildWingCmd(wingAgent), prompt, wingTimeout),
+      dispatch(
+        wingAgent,
+        buildWingCmd(wingAgent, String(cfg.wing_reasoning_effort || "xhigh")),
+        prompt,
+        wingTimeout,
+      ),
     writeArtifacts: writeExitArtifacts,
   };
 }
