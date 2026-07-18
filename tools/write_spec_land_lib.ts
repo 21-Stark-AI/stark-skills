@@ -84,6 +84,13 @@ export function parseAcceptedGaps(raw: unknown): AcceptedGap[] {
  * The GitHub App that authors the PR for a given lead agent. Only `claude` and
  * `codex` are valid write-spec leads (v1), so the mapping is total over the
  * `WriteSpecAgent` union: codex → stark-codex, everything else → stark-claude.
+ *
+ * NOTE (#705 review, dedup finding): consuming a shared mapping was considered
+ * and REJECTED — the nearest registry, `AGENTS` in dispatcher_base_lib.ts, is an
+ * enabled-filtered snapshot (a config-disabled agent drops out, so a lookup
+ * could miss), and the only total map (`ALL_AGENTS`) is unexported. No clean
+ * shared exported agent→App mapping exists, so `appForLead` stays the home; the
+ * codebase already tolerates per-tool copies of this policy.
  */
 export function appForLead(lead: WriteSpecAgent | string): AppName {
   return lead === "codex" ? "stark-codex" : "stark-claude";

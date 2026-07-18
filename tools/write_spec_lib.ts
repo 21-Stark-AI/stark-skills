@@ -38,6 +38,7 @@ import { assetPromptsDir, stateRoot } from "./asset_root_lib.ts";
 import { DEFAULT_WRITE_SPEC, getModelId, getWriteSpecConfig } from "./stark_config_lib.ts";
 import { computeDispatchCost } from "./cost_lib.ts";
 import {
+  newRunId,
   pruneRunDirs,
   updateLatestPointer,
   writeJsonAtomic,
@@ -899,6 +900,13 @@ function writeTextAtomic(filePath: string, text: string): void {
  * to `runDir`, both atomically. Called on EVERY non-crash return. If either
  * write throws, the caller must NOT swallow it — a verdict reported without the
  * spec on disk is a lie.
+ *
+ * DATA-LOSS GUARD: an empty `specText` is only ever produced by the
+ * `lead_empty_draft`-with-no-prior-draft path (every other breaker carries a
+ * non-empty draft). Overwriting `receipt.spec_path` with "" would zero any
+ * pre-existing spec at `--out` (a re-run / adopt flow) on a single transient
+ * empty dispatch. So skip the spec-file write when `specText` is empty —
+ * preserving whatever is already on disk — but ALWAYS write receipt.json.
  */
 export function writeExitArtifacts(
   runDir: string,
@@ -906,7 +914,9 @@ export function writeExitArtifacts(
   receipt: WriteSpecReceipt,
 ): void {
   mkdirSync(runDir, { recursive: true });
-  writeTextAtomic(receipt.spec_path, specText);
+  if (specText.length > 0) {
+    writeTextAtomic(receipt.spec_path, specText);
+  }
   writeJsonAtomic(path.join(runDir, "receipt.json"), receipt);
 }
 
@@ -1005,18 +1015,6 @@ export function defaultWriteSpecDeps(
 }
 
 /**
- * A per-run history id that sorts lexicographically == chronologically (so
- * `pruneRunDirs`' newest-wins ordering holds). `YYYYMMDD-HHMMSS-<rand>`.
- */
-export function makeRunId(): string {
-  const iso = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
-  // iso now looks like YYYYMMDDTHHMMSS → split the date/time on the `T`.
-  const [date, time] = iso.split("T");
-  const rand = Math.random().toString(36).slice(2, 8);
-  return `${date}-${time}-${rand}`;
-}
-
-/**
  * Run the bounded lead/wing write-spec loop. Loads the contract ONCE, then for
  * each round the lead drafts/revises and the wing verifies into a
  * host-recomputed ContractVerdict. Early-exits on `done`; otherwise revises
@@ -1060,7 +1058,7 @@ export async function runWriteSpec(
   const historyBase =
     opts.historyRoot ?? path.join(stateRoot(), "history", "write-spec");
   const slugDir = path.join(historyBase, slug);
-  const runId = opts.runId ?? makeRunId();
+  const runId = opts.runId ?? newRunId();
   const ownsLayout = !opts.runDir;
   const runDir = opts.runDir ?? path.join(slugDir, runId);
   const contractText = d.loadContract();
@@ -1108,6 +1106,10 @@ export async function runWriteSpec(
   let priorDraft: string | null = null;
   let specText = "";
   let lastGoodVerdict: ContractVerdict | null = null;
+  // Union of the non-canonical section ids the wing emitted across all rounds
+  // (normalizeContractVerdict.droppedSections). Tasks 5-2/5-3 read this off the
+  // receipt to surface drops in the PR table — hardcoding [] silently dropped it.
+  const droppedSectionsSeen = new Set<string>();
   let roundsRun = 0;
   let finalVerdict: FinalVerdict = "max_rounds_unsatisfied";
 
@@ -1127,7 +1129,7 @@ export async function runWriteSpec(
       lead_agent: leadAgent,
       wing_agent: wingAgent,
       contract_status: contractStatus,
-      dropped_sections: [],
+      dropped_sections: [...droppedSectionsSeen],
       summary,
       cost_usd: costUsd,
       cost_breakdown: costBreakdown,
@@ -1279,6 +1281,7 @@ export async function runWriteSpec(
     }
 
     lastGoodVerdict = normalized.verdict;
+    for (const s of normalized.droppedSections) droppedSectionsSeen.add(s);
     if (normalized.verdict.done) {
       finalVerdict = "contract_satisfied";
       recordRound(round, leadRole, roundStart, normalized);

@@ -559,6 +559,9 @@ test("test_termination_matrix", async () => {
     maxRounds?: number;
     expectRounds: number;
     expectSpec: string;
+    // When set, the guard skips the --out write entirely (empty draft, no prior
+    // draft) — the file must NOT be created.
+    expectNoSpecFile?: boolean;
   }[] = [
     {
       name: "max_rounds_unsatisfied",
@@ -575,6 +578,7 @@ test("test_termination_matrix", async () => {
       cfg: { leadDrafts: [""], wingReplies: [] },
       expectRounds: 1,
       expectSpec: "",
+      expectNoSpecFile: true,
     },
     {
       name: "unchanged_revision",
@@ -607,7 +611,11 @@ test("test_termination_matrix", async () => {
       assert.equal(receipt.error?.code, c.name, `${c.name}: error.code`);
       assert.equal(receipt.rounds, c.expectRounds, `${c.name}: rounds`);
       // Spec + receipt on disk in the slug-derived run dir.
-      assert.equal(fs.readFileSync(out, "utf8"), c.expectSpec, `${c.name}: spec text`);
+      if (c.expectNoSpecFile) {
+        assert.equal(fs.existsSync(out), false, `${c.name}: --out not written`);
+      } else {
+        assert.equal(fs.readFileSync(out, "utf8"), c.expectSpec, `${c.name}: spec text`);
+      }
       const persisted = JSON.parse(
         fs.readFileSync(path.join(dir, "receipt.json"), "utf8"),
       ) as WriteSpecReceipt;
@@ -616,6 +624,52 @@ test("test_termination_matrix", async () => {
     } finally {
       cleanup();
     }
+  }
+});
+
+// test_empty_draft_preserves_existing_out — a round-1 empty draft (no prior
+// draft) must NOT clobber a pre-existing file at --out; receipt.json is still
+// written. This is the data-loss guard in writeExitArtifacts.
+test("test_empty_draft_preserves_existing_out", async () => {
+  const { dir, out, cleanup } = tmpRun();
+  try {
+    fs.writeFileSync(out, "PRE-EXISTING SPEC CONTENT", "utf8");
+    const m = mockDeps({ leadDrafts: [""], wingReplies: [] });
+    const receipt = await runWriteSpec({ out, brief: "b", runDir: dir }, m.deps);
+    assert.equal(receipt.final_verdict, "lead_empty_draft");
+    assert.equal(receipt.ok, false);
+    // The existing file survives untouched (no empty overwrite).
+    assert.equal(fs.readFileSync(out, "utf8"), "PRE-EXISTING SPEC CONTENT");
+    // receipt.json is still written (FATAL write, always).
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(dir, "receipt.json"), "utf8"),
+    ) as WriteSpecReceipt;
+    assert.equal(persisted.final_verdict, "lead_empty_draft");
+  } finally {
+    cleanup();
+  }
+});
+
+// test_receipt_dropped_sections_populated — an unknown 10th section id the wing
+// emits lands in receipt.dropped_sections (was hardcoded [] and discarded).
+test("test_receipt_dropped_sections_populated", async () => {
+  const { dir, out, cleanup } = tmpRun();
+  try {
+    const items: ContractItem[] = [
+      ...ALL_SATISFIED,
+      { section: "totally-new-tenth" as ContractItem["section"], status: "satisfied", note: "sneaky" },
+    ];
+    const m = mockDeps({ leadDrafts: ["a draft"], wingReplies: [wingJson(items)] });
+    const receipt = await runWriteSpec({ out, brief: "b", runDir: dir }, m.deps);
+    assert.equal(receipt.final_verdict, "contract_satisfied");
+    assert.deepEqual(receipt.dropped_sections, ["totally-new-tenth"]);
+    // Persisted receipt agrees.
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(dir, "receipt.json"), "utf8"),
+    ) as WriteSpecReceipt;
+    assert.deepEqual(persisted.dropped_sections, ["totally-new-tenth"]);
+  } finally {
+    cleanup();
   }
 });
 
