@@ -413,6 +413,103 @@ export function composePrompt(
   ].join("\n");
 }
 
+// ── Intent-brief assembly + source-material truncation (#702) ────────────
+//
+// The composed prompt must stay under the model input budget
+// (`write_spec.max_input_chars`) without ever dropping the operator's actual
+// ask. Only bulk SOURCE MATERIAL is trimmed — the Ask / Constraints / Target
+// sections are preserved VERBATIM, and a visible marker is appended iff any
+// source content was actually cut. `assembleBriefForDispatch` is PURE.
+
+/**
+ * The exact marker appended when (and only when) source material was truncated.
+ * A downstream agent seeing this knows bulk context was cut — while the Ask /
+ * Constraints / Target it must honor are still present verbatim.
+ */
+export const TRUNCATION_MARKER =
+  "\n\n<!-- TRUNCATED: source material exceeded max_input_chars -->";
+
+/**
+ * Heading words that mark a section as protected (never truncated). Matched
+ * case-insensitively against the leading word of an ATX heading's text.
+ */
+const PROTECTED_HEADINGS = /^(ask|constraints|target)\b/i;
+
+interface BriefSection {
+  text: string;
+  isProtected: boolean;
+}
+
+/**
+ * Split a brief into sections at ATX-heading (`#`..`######`) boundaries,
+ * keeping each heading with the body that follows it (and any preamble before
+ * the first heading as an unprotected leading section). A section is protected
+ * when its heading's leading word is Ask / Constraints / Target.
+ */
+function splitBriefSections(briefText: string): BriefSection[] {
+  const parts = briefText.split(/(?=^#{1,6}[ \t]+)/m);
+  const sections: BriefSection[] = [];
+  for (const part of parts) {
+    if (part.length === 0) continue;
+    const m = /^(#{1,6})[ \t]+(.*)$/m.exec(part.split("\n", 1)[0] ?? "");
+    const headingText = m ? m[2]!.trim() : "";
+    sections.push({ text: part, isProtected: PROTECTED_HEADINGS.test(headingText) });
+  }
+  return sections;
+}
+
+/**
+ * Assemble the intent brief for dispatch, enforcing the `cap`
+ * (`write_spec.max_input_chars`) input budget.
+ *
+ * - Under cap → returned VERBATIM (passthrough, no marker).
+ * - Over cap → only SOURCE MATERIAL (non Ask/Constraints/Target sections) is
+ *   truncated, in document order, until the result fits within `cap`; the
+ *   Ask / Constraints / Target sections are kept verbatim in place, and
+ *   {@link TRUNCATION_MARKER} is appended.
+ *
+ * Invariants: the marker is present iff truncation actually occurred, and the
+ * result never exceeds `cap` — except the pathological case where the protected
+ * sections alone exceed `cap` (they are never truncated, so they still win).
+ */
+export function assembleBriefForDispatch(briefText: string, cap: number): string {
+  if (briefText.length <= cap) return briefText;
+
+  const sections = splitBriefSections(briefText);
+  const protectedTotal = sections
+    .filter((s) => s.isProtected)
+    .reduce((n, s) => n + s.text.length, 0);
+
+  // Budget for source material after reserving protected text + the marker.
+  const sourceBudget = Math.max(0, cap - protectedTotal - TRUNCATION_MARKER.length);
+
+  let remaining = sourceBudget;
+  let truncated = false;
+  const out: string[] = [];
+  for (const s of sections) {
+    if (s.isProtected) {
+      out.push(s.text);
+      continue;
+    }
+    if (remaining <= 0) {
+      truncated = true;
+      continue;
+    }
+    if (s.text.length <= remaining) {
+      out.push(s.text);
+      remaining -= s.text.length;
+    } else {
+      out.push(s.text.slice(0, remaining));
+      remaining = 0;
+      truncated = true;
+    }
+  }
+
+  let result = out.join("");
+  if (truncated) result += TRUNCATION_MARKER;
+  return result;
+}
+
 // ── The lead/wing loop + durable exit writer (#700) ──────────────────────
 //
 // The bounded round 1..N state machine: the lead drafts (round 1) or revises
@@ -643,6 +740,10 @@ export async function runWriteSpec(
   const wingAgent: WriteSpecAgent = opts.wingAgent ?? "codex";
   const cfg = getWriteSpecConfig();
   const maxRounds = Math.max(1, opts.maxRounds ?? (Number(cfg.max_rounds) || 3));
+  const inputCap = Number(cfg.max_input_chars) || 200_000;
+  // Enforce the input budget on the operator's intent brief up front: only
+  // source material is trimmed; Ask/Constraints/Target survive verbatim.
+  const assembledBrief = assembleBriefForDispatch(opts.brief, inputCap);
 
   const d: WriteSpecDeps = {
     ...defaultWriteSpecDeps(leadAgent, wingAgent),
@@ -668,7 +769,7 @@ export async function runWriteSpec(
     let leadRole: WriteSpecRole;
     if (round === 1 || priorDraft === null) {
       leadRole = "generate";
-      leadBrief = opts.brief;
+      leadBrief = assembledBrief;
     } else {
       leadRole = "revise";
       const unsatisfied = (lastGoodVerdict?.items ?? []).filter(
