@@ -210,6 +210,29 @@ test("test_reasoned_na_through_normalization", () => {
   assert.equal(verdict.done, true);
 });
 
+// test_prompts_reference_canonical_ids — every write-spec generate/verify/revise
+// prompt (claude AND codex) must mention each SECTION_IDS id at least once, so a
+// drifted canonical id fails the prompt set, not just the parser.
+test("test_prompts_reference_canonical_ids", () => {
+  // Resolve from the source repo (tools/ -> ../global/prompts), not the
+  // published asset dir — these prompts may be branch-new and not yet vendored.
+  const promptsDir = path.join(import.meta.dirname, "..", "global", "prompts", "write-spec");
+  const agents = ["claude", "codex"];
+  const roles = ["generate", "verify", "revise"];
+  for (const agent of agents) {
+    for (const role of roles) {
+      const file = path.join(promptsDir, agent, `${role}.md`);
+      const text = readFileSync(file, "utf8");
+      for (const id of SECTION_IDS) {
+        assert.ok(
+          text.includes(id),
+          `${agent}/${role}.md is missing canonical id "${id}"`,
+        );
+      }
+    }
+  }
+});
+
 // test_contract_ids_match_asset
 test("test_contract_ids_match_asset", () => {
   const md = readFileSync(CONTRACT_MD, "utf8");
