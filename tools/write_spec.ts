@@ -44,7 +44,7 @@ import {
   type WriteSpecReceipt,
   type WriteSpecRole,
 } from "./write_spec_lib.ts";
-import { getWriteSpecConfig } from "./stark_config_lib.ts";
+import { DEFAULT_WRITE_SPEC, getWriteSpecConfig } from "./stark_config_lib.ts";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -95,8 +95,8 @@ function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     intentBrief: "",
     out: "",
-    lead: validateAgent("--lead", String(cfg.lead_agent || "claude")),
-    wing: validateAgent("--wing", String(cfg.wing_agent || "codex")),
+    lead: validateAgent("--lead", String(cfg.lead_agent || DEFAULT_WRITE_SPEC.lead_agent)),
+    wing: validateAgent("--wing", String(cfg.wing_agent || DEFAULT_WRITE_SPEC.wing_agent)),
     leadModel: null,
     wingModel: null,
     maxRounds: null,
