@@ -1073,6 +1073,40 @@ test("test_receipt_cost_counts_all_invocations", async () => {
   }
 });
 
+// test_wing_retry_reminder_reaches_wing — the one-shot malformed-verdict retry
+// appends WING_FORMAT_REMINDER to attempt 2's brief. test_receipt_cost_counts_
+// all_invocations exercises the retry PATH but its mock ignores the prompt, so
+// it can't catch the reminder being silently dropped. This asserts the
+// corrective text is actually present in the attempt-2 wing prompt (and absent
+// from attempt 1) — dropping the ternary would fail here while leaving the
+// cost test green.
+test("test_wing_retry_reminder_reaches_wing", async () => {
+  const { dir, out, cleanup } = tmpRun();
+  try {
+    const m = mockDeps({
+      leadDrafts: ["the spec draft"],
+      // Attempt 1 unparseable → retry; attempt 2 parses done → exit round 1.
+      wingReplies: ["totally unparseable, no json", wingJson(ALL_SATISFIED)],
+    });
+    const receipt = await runWriteSpec({ out, brief: "make it", runDir: dir }, m.deps);
+    assert.equal(receipt.final_verdict, "contract_satisfied");
+    assert.equal(receipt.rounds, 1);
+
+    // Two wing invocations: the malformed attempt, then the retry.
+    assert.equal(m.wingPrompts.length, 2);
+    const REMINDER_MARK = "did not contain a parseable ContractVerdict";
+    // Attempt 1 carries NO reminder; attempt 2 (the retry) carries it verbatim.
+    assert.ok(!m.wingPrompts[0].includes(REMINDER_MARK), "attempt 1 has no reminder");
+    assert.ok(m.wingPrompts[1].includes(REMINDER_MARK), "retry brief carries the reminder");
+    assert.ok(
+      m.wingPrompts[1].includes("Reply with EXACTLY ONE fenced"),
+      "retry brief carries the corrective format instruction",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 // test_missing_usage_degrades_to_note — a dispatch that surfaces no usage
 // (bare-string return, as with the text-fallback path) floors to {0,0} and
 // pushes a cost_notes entry per invocation; the run never crashes.
