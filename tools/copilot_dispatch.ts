@@ -700,7 +700,18 @@ export function parseGeminiJson(raw: string): string {
  * `{` inside a JSON string never desyncs the depth counter. Returns the
  * last top-level object that parses to a dict containing "verdict".
  */
-export function extractVerdictJson(text: string): Record<string, unknown> | null {
+/**
+ * Collect candidate JSON object strings from free-form LLM text.
+ * First harvests fenced ```json blocks, then walks the whole text tracking
+ * balanced braces with string/escape awareness so a `{` inside a JSON string
+ * never desyncs the depth counter. Returns candidates in document order
+ * (fenced first, then top-level objects), de-duplicated. Callers pick which
+ * candidate to trust (e.g. the LAST one that parses to the expected shape).
+ *
+ * Shared by both verdict extractors (copilot's `extractVerdictJson` and
+ * write-spec's `extractContractVerdictJson`) so the scan logic never drifts.
+ */
+export function collectJsonCandidates(text: string): string[] {
   const candidates: string[] = [];
   const fenceRe = /```(?:json)?\s*\n(\{[\s\S]*?\})\s*\n```/g;
   for (const m of text.matchAll(fenceRe)) {
@@ -733,6 +744,11 @@ export function extractVerdictJson(text: string): Record<string, unknown> | null
       }
     }
   }
+  return candidates;
+}
+
+export function extractVerdictJson(text: string): Record<string, unknown> | null {
+  const candidates = collectJsonCandidates(text);
   for (let i = candidates.length - 1; i >= 0; i--) {
     try {
       const obj = JSON.parse(candidates[i]!);
