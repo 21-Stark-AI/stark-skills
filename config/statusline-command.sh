@@ -31,6 +31,7 @@ eval "$(jq -r "${_segsrc[@]}" '{
   vim_mode:     (.vim.mode // ""),
   session_name: (.session_name // ""),
   effort:       (.effort.level // ""),
+  thinking:     (if ((.thinking // {}) | has("enabled")) then (.thinking.enabled | tostring) else "" end),
   agent_name:   (.agent.name // ""),
   out_style:    (.output_style.name // ""),
   week_pct:     (.rate_limits.seven_day.used_percentage // ""),
@@ -44,6 +45,8 @@ eval "$(jq -r "${_segsrc[@]}" '{
   cur_cw:       (.context_window.current_usage.cache_creation_input_tokens // ""),
   cur_cr:       (.context_window.current_usage.cache_read_input_tokens // ""),
   over_200k:    (.exceeds_200k_tokens // false),
+  sid:          (.session_id // ""),
+  api_dur_ms:   (.cost.total_api_duration_ms // ""),
   s_added:      (.cost.total_lines_added // ""),
   s_removed:    (.cost.total_lines_removed // ""),
   skip:         ([($_seg[0] // {}) | objects | to_entries[] | select(.value == false) | .key] | join(" "))
@@ -90,6 +93,7 @@ printf -v NOW '%(%s)T' -1
 # dozen times per tick.
 seg()  { [ -z "$out" ] && out="$1" || out="${out}${SEP}$1"; }      # line 1 append
 seg2() { [ -z "$l2" ] && l2="$1" || l2="${l2}${SEP}$1"; }         # line 2 append
+seg3() { [ -z "$l3" ] && l3="$1" || l3="${l3}${SEP}$1"; }         # line 3 append
 
 tcolor() { # val hi_thresh mid_thresh → sets TC
   if [ "$1" -ge "$2" ] 2>/dev/null; then TC="$RED"
@@ -142,10 +146,11 @@ mkbar() { # pct gradarray → sets BAR: railed █ bar, filled cells fading ligh
 }
 
 gradient() { # text [palette] → sets GRAD: per-account color sweep
-  # Static spatial gradient across the label. The periodic statusLine refresh
-  # is intentionally disabled (no refreshInterval key), so there's no animation
-  # timer — each event-driven re-render reads a fresh EPOCHREALTIME and drifts
-  # the field a frame, but it no longer animates on a clock. Palette ($2)
+  # Static spatial gradient across the label. A 30s `refreshInterval` (settings.json)
+  # re-runs the command on a timer so time-based segments (CTX / 5H / 7D, git
+  # state) stay current while the session is idle — each re-render reads a fresh
+  # EPOCHREALTIME and drifts the gradient a frame (30s cadence, not a smooth
+  # animation clock). Palette ($2)
   # selects the account's color family: gold (Max/Com), violet (Max/Net), blue
   # (Enterprise), magenta→orange spectrum (Team#0 magenta / #1 pink / #2 coral /
   # #3 orange) plus emerald→teal (Team#4). Pure bash fixed-point math, no forks. GRAD holds
@@ -319,6 +324,12 @@ if _on effort && [ -n "$effort" ]; then
   seg "${_ec}${_el}${R}"
 fi
 
+# Extended-thinking toggle (chat:thinkingToggle / alt+t) — 🧠 lit when on,
+# dimmed when explicitly off. Absent field (model has no thinking) → hidden.
+if _on thinking && [ -n "$thinking" ]; then
+  [ "$thinking" = "true" ] && seg "${MAUVE}\U0001f9e0${R}" || seg "${DIM}\U0001f9e0 off${R}"
+fi
+
 # Active subagent (--agent foo or via agent settings).
 _on agent && [ -n "$agent_name" ] && seg "${TEAL}\U0001f916 ${agent_name}${R}"
 
@@ -395,14 +406,6 @@ if _on account; then
   fi
 fi
 
-# Session duration — right after the account so the "how long have I been at
-# this" read comes first. Full battery 🔋 for the first 4h, low battery 🪫 after.
-if _on session_dur && [ -n "$total_dur_ms" ] && [ "$total_dur_ms" -gt 0 ] 2>/dev/null; then
-  fmt_dur $(( total_dur_ms / 1000 ))
-  if [ "$total_dur_ms" -lt 14400000 ]; then _batt="\U0001f50b"; else _batt="\U0001faab"; fi
-  seg2 "${DIM}${_batt} ${FD}${R}"
-fi
-
 # Context capacity gauge — how full is the window.
 if _on ctx_usage && [ -n "$used_pct" ]; then
   printf -v ctx '%.0f' "$used_pct"
@@ -460,4 +463,78 @@ if _on code_churn; then
   [ -n "$churn" ] && seg2 "${DIM}✏️${R} ${churn}"
 fi
 
-printf "%b\n" "${out}\n${l2}"
+# ═════════════════════════════════════════════════════════════════════════
+# Line 3: session clocks — started · elapsed · last reply · now
+# ═════════════════════════════════════════════════════════════════════════
+# "Started" = when the Claude Code PROCESS opened (survives /clear, unlike
+# cost.total_duration_ms which resets per session), read from the parent
+# process' start time (ps lstart → epoch). Cached per PPID so the ps+date
+# forks run once per Claude Code run, not every render. Elapsed = NOW − that.
+# "Last reply" has no payload field, so it's derived: the monotonic
+# cost.total_api_duration_ms only advances when an API call completes, so a
+# change since the previous render marks THIS render as the reply — we stamp
+# NOW and cache {sig,ts} per session. Timer (refreshInterval) renders leave
+# the signature unchanged, so the stamp holds between replies.
+l3=""
+if _on session_times; then
+  # Claude Code execs the statusline directly, so $PPID is the `claude`
+  # process — stable across renders, distinct per window. Its start epoch is
+  # cached per-PPID: the warm path is a single file read, zero forks (matching
+  # the git/account caches). Only a cold miss touches ps+date. If a shell
+  # wrapper ever sits between (PPID != claude), walk ancestors to find claude
+  # and skip the cache — the wrapper pid is ephemeral, so caching it would
+  # leak a file per render and never hit anyway.
+  _procstart="" _ccpid="$PPID"
+  _psf="$HOME/.claude/.statusline-procstart-${PPID}"
+  [ -r "$_psf" ] && IFS= read -r _procstart < "$_psf"
+  if ! [ "$_procstart" -gt 0 ] 2>/dev/null; then
+    _ppcomm=$(ps -o comm= -p "$PPID" 2>/dev/null); _ppcomm="${_ppcomm##*/}"
+    if [ "$_ppcomm" != "claude" ]; then           # resolve claude via ancestors
+      _p=$PPID
+      for _ in 1 2 3 4 5 6; do
+        _p=$(ps -o ppid= -p "$_p" 2>/dev/null); _p="${_p//[[:space:]]/}"
+        { [ -n "$_p" ] && [ "$_p" -gt 1 ] 2>/dev/null; } || break
+        _c=$(ps -o comm= -p "$_p" 2>/dev/null)
+        [ "${_c##*/}" = "claude" ] && { _ccpid="$_p"; break; }
+      done
+    fi
+    _ls=$(ps -o lstart= -p "$_ccpid" 2>/dev/null)
+    _ls="${_ls%"${_ls##*[![:space:]]}"}"          # rstrip trailing spaces
+    if [ -n "$_ls" ]; then
+      _procstart=$(date -j -f "%a %b %d %T %Y" "$_ls" +%s 2>/dev/null) \
+        || _procstart=$(date -d "$_ls" +%s 2>/dev/null)   # GNU/Linux fallback
+      [ "$_ppcomm" = "claude" ] && [ -n "$_procstart" ] && \
+        printf '%s\n' "$_procstart" > "$_psf" 2>/dev/null
+    fi
+  fi
+  if [ "$_procstart" -gt 0 ] 2>/dev/null; then
+    printf -v _startc '%(%H:%M)T' "$_procstart"
+    fmt_dur $(( NOW - _procstart ))
+    seg3 "${DIM}\U0001f7e2 ${_startc}${R}"        # started (CC opened)
+    seg3 "${TEAL}⏱ ${FD}${R}"                # elapsed since open
+  fi
+
+  # Last reply — api-duration signature cached per session (sid keeps
+  # concurrent sessions from clobbering each other's stamp).
+  _lrf="$HOME/.claude/.statusline-lastreply-${sid:-default}"
+  _sig="${api_dur_ms:-0}" _psig="" _lrt=""
+  [ -r "$_lrf" ] && { IFS= read -r _psig; IFS= read -r _lrt; } < "$_lrf"
+  if [ "$_psig" != "$_sig" ] || ! [ "$_lrt" -gt 0 ] 2>/dev/null; then
+    _lrt="$NOW"
+    printf '%s\n%s\n' "$_sig" "$_lrt" > "$_lrf" 2>/dev/null
+  fi
+  if [ "$_lrt" -gt 0 ] 2>/dev/null; then
+    printf -v _lrc '%(%H:%M)T' "$_lrt"
+    fmt_dur $(( NOW - _lrt ))
+    seg3 "${GRN}\U0001f4ac ${_lrc}${DIM} (${FD} ago)${R}"   # last reply
+  fi
+
+  printf -v _nowc '%(%H:%M)T' "$NOW"
+  seg3 "${SAP}\U0001f552 ${_nowc}${R}"            # current time
+fi
+
+if [ -n "$l3" ]; then
+  printf "%b\n" "${out}\n${l2}\n${l3}"
+else
+  printf "%b\n" "${out}\n${l2}"
+fi

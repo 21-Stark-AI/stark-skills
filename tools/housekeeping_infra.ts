@@ -205,6 +205,35 @@ export function findStaleCheckpointFiles(
   );
 }
 
+// Per-run / per-session statusline state files live directly under ~/.claude
+// (`.statusline-procstart-<pid>`, `.statusline-lastreply-<sid>`). One accretes
+// per Claude Code process / session, so they pile up over time. They are tiny
+// and self-rebuild on the next render, so anything untouched for a while is
+// safe to drop. The single-file caches (`.statusline-git-dirty-cache`,
+// `.statusline-account-cache`) are deliberately excluded — they self-refresh
+// in place and never multiply.
+export function findStaleStatuslineStateFiles(
+  claudeDir: string,
+  maxAgeDays: number,
+  ageProvider: AgeProvider = REAL_AGE,
+  now: Date = new Date(),
+): string[] {
+  return listFilesMatching(
+    claudeDir,
+    (full, rel) => {
+      const base = path.basename(rel);
+      if (
+        !base.startsWith(".statusline-procstart-") &&
+        !base.startsWith(".statusline-lastreply-")
+      ) {
+        return false;
+      }
+      return isOlderThan(full, maxAgeDays, ageProvider, now);
+    },
+    false,
+  );
+}
+
 export function findStaleLockFiles(
   scanDirs: string[],
   options: { clock?: StaleClock } = {},
@@ -486,6 +515,7 @@ export type CleanupReceipt = {
   sessionsRemoved: string[];
   checkpointsRemoved: string[];
   staleLocksRemoved: string[];
+  statuslineStateRemoved: string[];
   validationLogsRemoved: string[];
   logsRotated: { path: string; previousLines: number }[];
   artifactsArchived: ArchiveResult[];
@@ -507,7 +537,8 @@ export function cleanInfra(opts: CleanupOptions = {}): CleanupReceipt {
   const dryRun = opts.dryRun ?? false;
   const home = opts.homeDir ?? os.homedir();
   const cwd = opts.cwd ?? process.cwd();
-  const codeReview = path.join(home, ".claude", "code-review");
+  const claudeDir = path.join(home, ".claude");
+  const codeReview = path.join(claudeDir, "code-review");
   const sessions = path.join(codeReview, "sessions");
   const archiveDir = path.join(codeReview, "archives");
   const errors: string[] = [];
@@ -528,6 +559,12 @@ export function cleanInfra(opts: CleanupOptions = {}): CleanupReceipt {
     [codeReview, "/tmp"],
     { clock: opts.clock },
   );
+  const statuslineState = findStaleStatuslineStateFiles(
+    claudeDir,
+    14,
+    opts.ageProvider,
+    opts.now,
+  );
   const validationLogs = listFilesMatching(
     path.join(codeReview, "logs"),
     (full, rel) =>
@@ -537,7 +574,7 @@ export function cleanInfra(opts: CleanupOptions = {}): CleanupReceipt {
   );
 
   if (!dryRun) {
-    for (const f of [...sessionsToRemove, ...checkpointsToRemove, ...staleLocks, ...validationLogs]) {
+    for (const f of [...sessionsToRemove, ...checkpointsToRemove, ...staleLocks, ...statuslineState, ...validationLogs]) {
       try {
         fs.unlinkSync(f);
       } catch (err) {
@@ -593,6 +630,7 @@ export function cleanInfra(opts: CleanupOptions = {}): CleanupReceipt {
     sessionsRemoved: sessionsToRemove,
     checkpointsRemoved: checkpointsToRemove,
     staleLocksRemoved: staleLocks,
+    statuslineStateRemoved: statuslineState,
     validationLogsRemoved: validationLogs,
     logsRotated,
     artifactsArchived,
@@ -623,6 +661,7 @@ function formatText(receipt: CleanupReceipt): string {
   out.push(`  sessions removed:        ${receipt.sessionsRemoved.length}`);
   out.push(`  checkpoints removed:     ${receipt.checkpointsRemoved.length}`);
   out.push(`  stale locks removed:     ${receipt.staleLocksRemoved.length}`);
+  out.push(`  statusline state removed:${receipt.statuslineStateRemoved.length}`);
   out.push(`  validation logs removed: ${receipt.validationLogsRemoved.length}`);
   out.push(`  logs rotated:            ${receipt.logsRotated.length}`);
   const archiveCount = receipt.artifactsArchived.length;
