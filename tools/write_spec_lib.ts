@@ -37,7 +37,11 @@ import {
 import { assetPromptsDir, stateRoot } from "./asset_root_lib.ts";
 import { DEFAULT_WRITE_SPEC, getModelId, getWriteSpecConfig } from "./stark_config_lib.ts";
 import { computeDispatchCost } from "./cost_lib.ts";
-import { writeJsonAtomic } from "./stark_review_doc_lib.ts";
+import {
+  pruneRunDirs,
+  updateLatestPointer,
+  writeJsonAtomic,
+} from "./stark_review_doc_lib.ts";
 
 /**
  * The sole runtime authority for spec section ids. A host typed literal — the
@@ -717,6 +721,8 @@ export interface WriteSpecReceipt {
   slug: string;
   spec_path: string;
   run_dir: string;
+  /** The per-run history id (basename of `run_dir` under the slug dir). */
+  run_id: string;
   rounds: number;
   lead_agent: string;
   wing_agent: string;
@@ -729,6 +735,12 @@ export interface WriteSpecReceipt {
   cost_breakdown: CostBreakdownRow[];
   /** One entry per invocation whose usage was unavailable (floored to {0,0}). */
   cost_notes: CostNote[];
+  /**
+   * NON-FATAL history/rounds/latest/retention write failures, surfaced but
+   * never fatal — the run still returns its verdict. The spec + terminal
+   * receipt writes remain FATAL (they never land here; they reject the run).
+   */
+  persistence_errors: string[];
   error?: { code: string; message: string };
 }
 
@@ -749,8 +761,36 @@ export interface RunWriteSpecOpts {
   leadTimeoutS?: number | null;
   /** Override the wing dispatch timeout in seconds (`--wing-timeout`). */
   wingTimeoutS?: number | null;
-  /** Override the slug-derived run dir (tests point this at a temp tree). */
+  /** Override the slug-derived run dir (tests point this at a temp tree). When
+   * set, the lib does NOT own the per-slug layout, so it skips the latest
+   * pointer + retention prune (those need the slug dir the lib constructs). */
   runDir?: string;
+  /** Override the history base (`stateRoot()/history/write-spec`). Tests point
+   * this at a temp tree to exercise the full slug-dir/run-id/latest/prune path
+   * without touching the real state root. */
+  historyRoot?: string;
+  /** Override the generated run id (tests pin it for deterministic layout). */
+  runId?: string;
+  /** Override `write_spec.history_keep_runs` for retention pruning. */
+  historyKeepRuns?: number;
+  /** A dry run performs ZERO writes: no history dir, no brief.md/rounds.json,
+   * no spec, no receipt. It still runs the loop and returns its verdict. */
+  dryRun?: boolean;
+}
+
+/** One record per completed loop round, persisted in `rounds.json`. */
+export interface WriteSpecRoundRecord {
+  round: number;
+  /** Whether the lead drafted (round 1) or revised (rounds 2+). */
+  lead_role: WriteSpecRole;
+  /** Wall-clock duration of the round in milliseconds. */
+  duration_ms: number;
+  /** Host-recomputed `done` for the round (false for a breaker round). */
+  done: boolean;
+  /** The round's normalized nine-section status, or null if unparseable. */
+  contract_status: ContractItem[] | null;
+  /** The wing's summary for the round (empty for a breaker with no verdict). */
+  summary: string;
 }
 
 /** The config-resolved default knobs, read once. The SOLE home for the
@@ -762,6 +802,8 @@ export interface WriteSpecDefaults {
   wingTimeoutS: number;
   wingEffort: string;
   inputCap: number;
+  /** How many newest per-slug run dirs to keep (`write_spec.history_keep_runs`). */
+  historyKeepRuns: number;
 }
 
 /** Resolve the write-spec defaults from config (with the built-in fallbacks). */
@@ -773,6 +815,8 @@ export function resolveWriteSpecDefaults(): WriteSpecDefaults {
     wingTimeoutS: Number(cfg.wing_timeout_s) || DEFAULT_WRITE_SPEC.wing_timeout_s,
     wingEffort: String(cfg.wing_reasoning_effort || DEFAULT_WRITE_SPEC.wing_reasoning_effort),
     inputCap: Number(cfg.max_input_chars) || DEFAULT_WRITE_SPEC.max_input_chars,
+    historyKeepRuns:
+      Number(cfg.history_keep_runs) || DEFAULT_WRITE_SPEC.history_keep_runs,
   };
 }
 
@@ -806,6 +850,14 @@ export interface WriteSpecDeps {
     specText: string,
     receipt: WriteSpecReceipt,
   ) => void;
+  /**
+   * NON-FATAL history JSON writer (rounds.json + interim receipt.json). Default
+   * {@link writeJsonAtomic}; tests stub it to throw to prove a history write
+   * failure is surfaced in `persistence_errors` WITHOUT failing the run. Kept
+   * distinct from `writeArtifacts` so a stubbed history failure never touches
+   * the FATAL terminal spec/receipt write.
+   */
+  writeHistoryJson: (filePath: string, data: unknown) => void;
 }
 
 /** An all-`missing` nine-id array — the fail-closed contract_status floor. */
@@ -948,7 +1000,20 @@ export function defaultWriteSpecDeps(
     dispatchLead: ({ prompt }) => dispatch(leadAgent, leadCmd, prompt, leadTimeout),
     dispatchWing: ({ prompt }) => dispatch(wingAgent, wingCmd, prompt, wingTimeout),
     writeArtifacts: writeExitArtifacts,
+    writeHistoryJson: writeJsonAtomic,
   };
+}
+
+/**
+ * A per-run history id that sorts lexicographically == chronologically (so
+ * `pruneRunDirs`' newest-wins ordering holds). `YYYYMMDD-HHMMSS-<rand>`.
+ */
+export function makeRunId(): string {
+  const iso = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
+  // iso now looks like YYYYMMDDTHHMMSS → split the date/time on the `T`.
+  const [date, time] = iso.split("T");
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `${date}-${time}-${rand}`;
 }
 
 /**
@@ -984,9 +1049,26 @@ export async function runWriteSpec(
   };
 
   const slug = deriveSlugFromOut(opts.out);
-  const runDir =
-    opts.runDir ?? path.join(stateRoot(), "write-spec", "history", slug);
+  const dryRun = opts.dryRun === true;
+  const historyKeepRuns = Math.max(
+    0,
+    opts.historyKeepRuns ?? defaults.historyKeepRuns,
+  );
+  // Per-run history layout: <historyBase>/<slug>/<run-id>/. When the caller
+  // pins `runDir` (tests), the lib does NOT own the slug-dir layout, so the
+  // latest-pointer + prune (which need that dir) are skipped.
+  const historyBase =
+    opts.historyRoot ?? path.join(stateRoot(), "history", "write-spec");
+  const slugDir = path.join(historyBase, slug);
+  const runId = opts.runId ?? makeRunId();
+  const ownsLayout = !opts.runDir;
+  const runDir = opts.runDir ?? path.join(slugDir, runId);
   const contractText = d.loadContract();
+
+  // NON-FATAL history state: any history/rounds/latest/retention write failure
+  // is recorded here (never thrown), so the run still returns its verdict.
+  const persistenceErrors: string[] = [];
+  const roundRecords: WriteSpecRoundRecord[] = [];
 
   // Per-role model ids (override → configured → agent name floor) drive the
   // cost math; an unknown model falls back to the `_fallback` rate.
@@ -1029,8 +1111,99 @@ export async function runWriteSpec(
   let roundsRun = 0;
   let finalVerdict: FinalVerdict = "max_rounds_unsatisfied";
 
+  /** Build a receipt reflecting current accumulator state (interim or final). */
+  function snapshotReceipt(): WriteSpecReceipt {
+    const contractStatus = lastGoodVerdict?.items ?? allMissingItems();
+    const ok = finalVerdict === "contract_satisfied";
+    const summary = lastGoodVerdict?.summary ?? "";
+    return {
+      ok,
+      final_verdict: finalVerdict,
+      slug,
+      spec_path: opts.out,
+      run_dir: runDir,
+      run_id: runId,
+      rounds: roundsRun,
+      lead_agent: leadAgent,
+      wing_agent: wingAgent,
+      contract_status: contractStatus,
+      dropped_sections: [],
+      summary,
+      cost_usd: costUsd,
+      cost_breakdown: costBreakdown,
+      cost_notes: costNotes,
+      persistence_errors: persistenceErrors,
+      ...(ok
+        ? {}
+        : {
+            error: {
+              code: finalVerdict,
+              message: summary || `write-spec terminated: ${finalVerdict}`,
+            },
+          }),
+    };
+  }
+
+  /** Run a NON-FATAL history write; a failure lands in persistence_errors. */
+  function nonFatal(label: string, fn: () => void): void {
+    if (dryRun) return;
+    try {
+      fn();
+    } catch (e) {
+      persistenceErrors.push(`${label}: ${(e as Error).message}`);
+    }
+  }
+
+  /** Persist rounds.json + an interim receipt.json after a round (non-fatal).
+   * Writing after EVERY round means a crash mid-loop leaves the rounds-so-far
+   * durable (atomic tmp+rename, never a partial file). */
+  function persistProgress(): void {
+    if (dryRun) return;
+    nonFatal("history mkdir", () => mkdirSync(runDir, { recursive: true }));
+    nonFatal("rounds.json", () =>
+      d.writeHistoryJson(path.join(runDir, "rounds.json"), {
+        slug,
+        run_id: runId,
+        run_dir: runDir,
+        lead_agent: leadAgent,
+        wing_agent: wingAgent,
+        rounds: roundRecords,
+        generated_at: new Date().toISOString(),
+      }),
+    );
+    nonFatal("interim receipt.json", () =>
+      d.writeHistoryJson(path.join(runDir, "receipt.json"), snapshotReceipt()),
+    );
+  }
+
+  /** Append a round record + persist rounds.json/receipt.json (non-fatal). */
+  function recordRound(
+    round: number,
+    leadRole: WriteSpecRole,
+    startMs: number,
+    normalized: NormalizedContractVerdict | null,
+  ): void {
+    roundRecords.push({
+      round,
+      lead_role: leadRole,
+      duration_ms: Date.now() - startMs,
+      done: normalized?.verdict.done ?? false,
+      contract_status: normalized?.verdict.items ?? null,
+      summary: normalized?.verdict.summary ?? "",
+    });
+    persistProgress();
+  }
+
+  // Copy the assembled brief in as brief.md at dispatch (before round 1), so a
+  // run is reproducible from exactly what the agents saw. NON-FATAL.
+  nonFatal("history mkdir", () => mkdirSync(runDir, { recursive: true }));
+  nonFatal("brief.md", () =>
+    writeTextAtomic(path.join(runDir, "brief.md"), assembledBrief),
+  );
+
   for (let round = 1; round <= maxRounds; round++) {
     roundsRun = round;
+    const roundStart = Date.now();
 
     // ── Lead: draft (round 1) or revise (rounds 2+) ──────────────────────
     let leadBrief: string;
@@ -1062,12 +1235,14 @@ export async function runWriteSpec(
       // Empty draft: preserve any prior draft as the on-disk spec.
       finalVerdict = "lead_empty_draft";
       specText = priorDraft ?? "";
+      recordRound(round, leadRole, roundStart, null);
       break;
     }
     if (priorDraft !== null && draft === priorDraft) {
       // Byte-identical revision: the lead is stuck; break the loop.
       finalVerdict = "unchanged_revision";
       specText = draft;
+      recordRound(round, leadRole, roundStart, null);
       break;
     }
     specText = draft;
@@ -1099,51 +1274,39 @@ export async function runWriteSpec(
     if (!normalized) {
       // Two malformed verdicts → terminate with the draft preserved.
       finalVerdict = "wing_unparseable";
+      recordRound(round, leadRole, roundStart, null);
       break;
     }
 
     lastGoodVerdict = normalized.verdict;
     if (normalized.verdict.done) {
       finalVerdict = "contract_satisfied";
+      recordRound(round, leadRole, roundStart, normalized);
       break;
     }
 
     // Non-done → carry the draft forward for a revise round.
+    recordRound(round, leadRole, roundStart, normalized);
     priorDraft = draft;
   }
 
-  const contractStatus = lastGoodVerdict?.items ?? allMissingItems();
-  const droppedSections: string[] = [];
-  const ok = finalVerdict === "contract_satisfied";
-  const summary = lastGoodVerdict?.summary ?? "";
+  const receipt = snapshotReceipt();
 
-  const receipt: WriteSpecReceipt = {
-    ok,
-    final_verdict: finalVerdict,
-    slug,
-    spec_path: opts.out,
-    run_dir: runDir,
-    rounds: roundsRun,
-    lead_agent: leadAgent,
-    wing_agent: wingAgent,
-    contract_status: contractStatus,
-    dropped_sections: droppedSections,
-    summary,
-    cost_usd: costUsd,
-    cost_breakdown: costBreakdown,
-    cost_notes: costNotes,
-    ...(ok
-      ? {}
-      : {
-          error: {
-            code: finalVerdict,
-            message: summary || `write-spec terminated: ${finalVerdict}`,
-          },
-        }),
-  };
+  // A dry run performs ZERO writes: no history dir, no spec, no receipt. It
+  // still returns its verdict.
+  if (dryRun) return receipt;
 
-  // FATAL: never report a verdict without the spec + receipt on disk.
+  // FATAL: never report a verdict without the spec + receipt on disk. Written
+  // to `runDir` — which, when the lib owns the layout, IS the per-run history
+  // dir, so the terminal receipt overwrites the last interim one.
   d.writeArtifacts(runDir, specText, receipt);
+
+  // NON-FATAL: point `latest` at this run and prune to history_keep_runs. Only
+  // when the lib owns the slug-dir layout (the caller did not pin `runDir`).
+  if (ownsLayout) {
+    nonFatal("latest pointer", () => updateLatestPointer(slugDir, runId));
+    nonFatal("retention prune", () => pruneRunDirs(slugDir, historyKeepRuns));
+  }
 
   return receipt;
 }
