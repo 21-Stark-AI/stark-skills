@@ -16,13 +16,13 @@ If a section clears its Done-when bar, its status is `satisfied` and you move on
 
 ## The nine sections (the checklist)
 
-Judge exactly these, in this order — the ids are canonical and fixed:
+Judge exactly these, in the contract's order — the ids are owned by the prepended Spec Contract and reproduced here for reference; this list must match it exactly:
 
 1. `intent` — Intent & Soundness
 2. `scope` — Scope & Boundaries
 3. `interfaces` — Interfaces & Contracts
-4. `ssot` — Single Source of Truth
-5. `behavior` — Behavior & Correctness
+4. `behavior` — Behavior & Correctness
+5. `ssot` — Single Source of Truth
 6. `security` — Security & Trust
 7. `test-plan` — Test Plan
 8. `accessibility` — Accessibility
@@ -51,9 +51,9 @@ You may write brief analysis prose first. Then end your response with **exactly 
   "items": [
     { "section": "intent", "status": "satisfied", "note": "one-line justification" },
     { "section": "scope", "status": "satisfied", "note": "…" },
-    { "section": "interfaces", "status": "underspecified", "note": "error envelope schema not specified" },
-    { "section": "ssot", "status": "satisfied", "note": "…" },
+    { "section": "interfaces", "status": "satisfied", "note": "…" },
     { "section": "behavior", "status": "satisfied", "note": "…" },
+    { "section": "ssot", "status": "satisfied", "note": "…" },
     { "section": "security", "status": "satisfied", "note": "…" },
     { "section": "test-plan", "status": "satisfied", "note": "…" },
     { "section": "accessibility", "status": "n_a", "note": "headless CLI, no user-facing surface" },

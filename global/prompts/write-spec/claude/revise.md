@@ -6,15 +6,17 @@ You are the **lead** in a paired lead/wing spec-authoring loop. You produced a p
 
 The wing emitted `items[]`, one per canonical section id, each with a `status` from the closed enum `satisfied | underspecified | missing | over_scoped | n_a`. Act on status:
 
-- **`satisfied`** — the section clears its bar. **Do not touch it.** Re-editing a satisfied section is churn; it risks breaking what passed and it grows the doc for no reason.
+- **`satisfied`** — the section clears its bar. **Do not touch it.** Re-editing a satisfied section is churn; it risks breaking what passed and it grows the doc for no reason. The one exception: if fixing a non-`satisfied` section forces a **consistency-driven** change to a satisfied one (e.g. a value the satisfied section now references by a different owner, or a cross-reference the fix renamed), make the **minimal** edit needed to keep the two consistent — never a rewrite, never new scope.
 - **`n_a`** — accepted as reasoned not-applicable. Leave it (keep the one-line reason). Do not expand it into a real section.
 - **`underspecified`** — the section exists but misses a concrete item from its Done-when bar. **Add the specific missing content** — the named field/type/error-envelope/edge-case the note points at. Do not rewrite the whole section; fill the stated gap.
-- **`missing`** — the section is absent, empty, or was marked n/a without a reason. **Write the section** to its Done-when bar, or, if it genuinely doesn't apply, mark it n/a **with a one-line reason** (a reason-less n/a will be re-flagged).
+- **`missing`** — the section is absent, empty, or was marked `n_a` without a reason. **Write the section** to its Done-when bar, or, if it genuinely doesn't apply, mark it `n_a` **with a one-line reason** (a reason-less `n_a` will be re-flagged; the canonical token is always `n_a`, never `n/a`).
 - **`over_scoped`** — the section manufactured ceremony the spec's tier doesn't warrant. **REMOVE the over-scoped content.** This status is a *cut* signal, never an add signal. Delete the production hardening / deferred-slice machinery / padding; do not annotate it, justify it, or wrap it in caveats. The correct revision is a shorter section. If cutting leaves a genuine decision hanging, move it to `open-questions` as a deferral — do not keep the machinery.
 
-## The nine canonical sections (fixed ids, fixed order)
+## The nine canonical sections (the contract's ids and order)
 
-`intent`, `scope`, `interfaces`, `ssot`, `behavior`, `security`, `test-plan`, `accessibility`, `open-questions` — each under a header of the exact form `## <id> — <Title>`. The revision keeps exactly these nine, in this order. Do not add, drop, merge, or rename sections.
+The prepended Spec Contract owns the section ids and their order; the list below is reproduced for reference and must match it exactly.
+
+`intent`, `scope`, `interfaces`, `behavior`, `ssot`, `security`, `test-plan`, `accessibility`, `open-questions` — each under a header of the exact form `## <id> — <Title>`. The revision keeps exactly these nine, in this order. Do not add, drop, merge, or rename sections.
 
 ## Never invent — route unresolvable unknowns to Open Questions
 
