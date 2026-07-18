@@ -32,7 +32,7 @@ When filling an `underspecified`/`missing` section needs a value, rule, route, o
 
 ## Self-Review (before you output)
 
-1. **Every non-`satisfied` section addressed** — walk the verdict's `items`; each `underspecified` filled, each `missing` written (or reasoned-n/a'd), each `over_scoped` **cut**.
+1. **Every non-`satisfied` section addressed** — walk the verdict's `items`; each `underspecified` filled, each `missing` written (or reasoned-`n_a`'d), each `over_scoped` **cut**.
 2. **Satisfied sections untouched** — confirm you did not edit anything the wing passed.
 3. **No inventions** — every gap the source couldn't settle went to `open-questions`, not into a fabricated contract.
 4. **Scope proportionality** — the revision did not grow a section with ceremony the tier doesn't warrant; over-scoped content is gone, not annotated.

@@ -32,11 +32,11 @@ For each, use the contract's **Done-when bar** as the pass/fail line and its **R
 
 ## The five statuses (closed enum — no other value is legal)
 
-- **`satisfied`** — the section clears its Done-when bar. A section marked n/a **with a one-line reason** counts as satisfied (reasoned not-applicable is a complete answer).
+- **`satisfied`** — the section clears its Done-when bar. A section marked `n_a` **with a one-line reason** counts as satisfied (reasoned not-applicable is a complete answer).
 - **`underspecified`** — the section exists but does not fully clear its Done-when bar; a concrete item from the Review lens is missing or too vague to implement against.
-- **`missing`** — the section is absent, empty, or marked n/a **without a reason** (an unexplained omission is not reviewable, so it does not count as coverage).
+- **`missing`** — the section is absent, empty, or marked `n_a` **without a reason** (an unexplained omission is not reviewable, so it does not count as coverage).
 - **`over_scoped`** — the section manufactures ceremony the spec's declared tier does not warrant (production hardening on a declared playground tool, deferred-slice machinery the boundary excludes). This is a **cut** signal, not an add signal — the revise step will remove content.
-- **`n_a`** — genuinely not applicable to this spec (the canonical token; the enum has no `n/a`). Use only for a section the spec's nature excludes, and only when the draft gave a reason. A reason-less n/a is `missing`, not `n_a`.
+- **`n_a`** — genuinely not applicable to this spec (the canonical token; the enum has no `n/a`). Use only for a section the spec's nature excludes, and only when the draft gave a reason. A reason-less `n_a` is `missing`, not `n_a`.
 
 ## Scope discipline — do not flag correct restraint
 
@@ -67,7 +67,7 @@ You may write brief analysis prose first. Then end your response with **exactly 
 Rules:
 - `items` MUST contain **exactly one entry per canonical section id**, using the ids above verbatim (`test-plan`, `open-questions` — hyphenated). No extra sections, no omitted sections, no duplicates.
 - `status` MUST be one of the five closed values: `satisfied`, `underspecified`, `missing`, `over_scoped`, `n_a`. No other string is legal.
-- `note` is one line per section — the specific reason for the status (which lens item failed, or why the section is satisfied / n/a / over-scoped). A `note` is required for `n_a` (the reason) and expected for every non-`satisfied` status.
+- `note` is one line per section — the specific reason for the status (which lens item failed, or why the section is satisfied / `n_a` / over-scoped). A `note` is required for `n_a` (the reason) and expected for every non-`satisfied` status.
 - `done` is `true` only when **every** section is `satisfied` or a reasoned `n_a`; any `underspecified` / `missing` / `over_scoped` makes it `false`. The host recomputes `done` over the full section set and does not trust yours — but emit it honestly.
 - `summary` is one sentence the orchestrator can render to the user.
 - Emit the JSON block **once**, as the last thing in your response.
