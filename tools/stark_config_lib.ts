@@ -343,6 +343,7 @@ export interface WriteSpecConfig {
   max_input_chars: number;
   history_keep_runs: number;
   open_pr: boolean;
+  [key: string]: unknown;
 }
 
 // timeout_s / wing_timeout_s mirror plan_dispatch.ts DEFAULT_TIMEOUT_SEC (900)
