@@ -258,7 +258,15 @@ export function renderManualFixReply(opts: {
 /**
  * Whether an error is a GitHub *secondary* rate-limit / abuse response — the
  * retryable kind you hit by creating content (comments, review threads) too
- * quickly. Matches a 403/422 status alongside GitHub's characteristic phrasing.
+ * quickly. Matches a 403/422/429 status alongside GitHub's characteristic
+ * phrasing. Three known shapes:
+ *
+ *   403 "You have exceeded a secondary rate limit" / "abuse detection mechanism"
+ *   422 Validation Failed with `"errors":[{"code":"abuse",...}]` — the shape
+ *       review-thread reply creation actually returns under rapid posting
+ *       (no "rate limit" phrasing anywhere in the body; `abuse` is the only tell)
+ *   429 Too Many Requests
+ *
  * A plain 403 without that phrasing (e.g. "Resource not accessible by
  * integration") is a permission error, not rate limiting, and must NOT match —
  * retrying it just wastes the backoff budget.
@@ -266,5 +274,8 @@ export function renderManualFixReply(opts: {
 export function isRateLimitError(err: unknown): boolean {
   const m = (err as { message?: unknown })?.message;
   if (typeof m !== "string") return false;
-  return /\b(403|422)\b/.test(m) && /(secondary rate limit|submitted too quickly|rate limit)/i.test(m);
+  return (
+    /\b(403|422|429)\b/.test(m) &&
+    /(secondary rate limit|submitted too quickly|rate limit|abuse)/i.test(m)
+  );
 }

@@ -179,6 +179,16 @@ describe("isRateLimitError", () => {
     assert.equal(isRateLimitError(new Error("403 You have exceeded a secondary rate limit")), true);
     assert.equal(isRateLimitError(new Error("was submitted too quickly (422)")), true);
     assert.equal(isRateLimitError(new Error("API rate limit exceeded (403)")), true);
+    assert.equal(isRateLimitError(new Error("429 Too Many Requests: rate limit")), true);
+  });
+  test("matches the 422 code:abuse shape reply-creation actually returns (retryable)", () => {
+    // Live-observed 2026-07-19: the only tell is `"code":"abuse"` — no "rate
+    // limit" phrasing anywhere. This shape 100%-bypassed the retry before.
+    const live =
+      'GitHub POST /repos/o/r/pulls/736/comments/123/replies failed (422): ' +
+      '{"message":"Validation Failed","errors":[{"resource":"PullRequestReview","code":"abuse","field":"base"}],"status":"422"}';
+    assert.equal(isRateLimitError(new Error(live)), true);
+    assert.equal(isRateLimitError(new Error("403 You have triggered an abuse detection mechanism")), true);
   });
   test("does NOT match permission/other 403s (non-retryable)", () => {
     // The dominant false-positive risk: a plain permission 403 must not be retried.
