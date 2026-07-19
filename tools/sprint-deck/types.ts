@@ -26,6 +26,7 @@ export interface FlowLedger {
 
 export interface Ticket {
   key: string
+  type: string // story | task | bug | … (lowercase)
   status: string
   state: string // done | in_progress | cancelled
   estimate_points: number | null

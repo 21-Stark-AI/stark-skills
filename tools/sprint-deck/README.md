@@ -51,6 +51,17 @@ node --experimental-strip-types sprint-deck.ts --inspect <newDeckId>
 and copy the printed ids into `INFRA_TEMPLATE`. Add teams to the `TEAMS` map
 (meridian `public.teams.id` UUID + display title).
 
+## Definitions
+
+- **Issue** = a **Task or Bug** only. The flow ledger's lane keys include epics
+  and goals (containers, not discrete work); `toDeckData` filters every lane to
+  the Task/Bug set from the tickets companion so counts reflect real work items.
+- **Plan** = `carried_in` = already in progress (had a `started_at`) *before* the
+  window opened. **Unplanned** = `started` = got its `started_at` *during* the
+  window. For a kanban team with no sprint commitment, "unplanned" is a **proxy
+  for pulled-in-mid-sprint** — not a true "wasn't committed"; a backlog item the
+  team always meant to do but started this window still counts as unplanned.
+
 ## Known limits (by design, until the meridian source is fixed)
 
 - **Capacity is a FIRST DRAFT.** Meridian's capacity model can't yet see reduced
