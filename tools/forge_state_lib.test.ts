@@ -17,16 +17,26 @@ import {
   type MergePoint,
   type PrReader,
   type ResolvedRun,
+  type RunInput,
   type RunState,
   type Stage,
+  type StageArtifacts,
   type StageStatus,
   LEGAL_TRANSITIONS,
+  encodeIntent,
   initializeRun,
   isLegalTransition,
+  isRenderableArg,
+  mergePointsFor,
+  nextInputFor,
+  parsePlanSlug,
+  planPathFor,
   recordOutput,
   reconcileRunningStage,
+  renderStageCommand,
   requiredOutputsFor,
   requiresBaseSync,
+  resolveChain,
   stageArtifact,
   transition,
 } from "./forge_state_lib.ts";
@@ -999,6 +1009,548 @@ test("lib imports nothing network/clock/disk", () => {
   assert.doesNotMatch(src, /Date\.now\(/);
   assert.doesNotMatch(src, /stateRoot/);
   assert.doesNotMatch(src, /from\s+["']child_process["']/);
+});
+
+// ---------------------------------------------------------------------------
+// Test #7 — chain resolver: auto-detection, red-team inserts, --from/--until
+// ---------------------------------------------------------------------------
+
+const DEFAULT_6: Stage[] = [
+  "write-spec",
+  "review-spec",
+  "spec-to-plan",
+  "review-plan",
+  "plan-to-tasks",
+  "copilot",
+];
+const FULL_8: Stage[] = [
+  "write-spec",
+  "review-spec",
+  "red-team-spec",
+  "spec-to-plan",
+  "review-plan",
+  "red-team-plan",
+  "plan-to-tasks",
+  "copilot",
+];
+
+test("#7 default chain: intent → full 6-stage chain from write-spec", () => {
+  assert.deepEqual(
+    resolveChain({ inputKind: "intent", redTeam: false }),
+    DEFAULT_6,
+  );
+});
+
+test("#7 auto-detection: spec-path starts at review-spec, plan-path at review-plan", () => {
+  assert.deepEqual(resolveChain({ inputKind: "spec-path", redTeam: false }), [
+    "review-spec",
+    "spec-to-plan",
+    "review-plan",
+    "plan-to-tasks",
+    "copilot",
+  ]);
+  assert.deepEqual(resolveChain({ inputKind: "plan-path", redTeam: false }), [
+    "review-plan",
+    "plan-to-tasks",
+    "copilot",
+  ]);
+});
+
+test("#7 --red-team inserts red-team-spec after review-spec and red-team-plan after review-plan (8 stages)", () => {
+  assert.deepEqual(
+    resolveChain({ inputKind: "intent", redTeam: true }),
+    FULL_8,
+  );
+  // red-team inserts survive auto-detection from a spec path
+  assert.deepEqual(resolveChain({ inputKind: "spec-path", redTeam: true }), [
+    "review-spec",
+    "red-team-spec",
+    "spec-to-plan",
+    "review-plan",
+    "red-team-plan",
+    "plan-to-tasks",
+    "copilot",
+  ]);
+});
+
+test("#7 --from/--until slice the resolved order (inclusive)", () => {
+  assert.deepEqual(
+    resolveChain({
+      inputKind: "intent",
+      redTeam: false,
+      from: "spec-to-plan",
+      until: "review-plan",
+    }),
+    ["spec-to-plan", "review-plan"],
+  );
+  // --from overrides auto-detection
+  assert.deepEqual(
+    resolveChain({
+      inputKind: "spec-path",
+      redTeam: false,
+      from: "write-spec",
+    }),
+    DEFAULT_6,
+  );
+  // --until short of copilot on a red-team chain
+  assert.deepEqual(
+    resolveChain({
+      inputKind: "intent",
+      redTeam: true,
+      until: "red-team-spec",
+    }),
+    ["write-spec", "review-spec", "red-team-spec"],
+  );
+});
+
+test("#7 --until naming a red-team stage without --red-team throws stage_not_in_chain", () => {
+  assert.throws(
+    () =>
+      resolveChain({
+        inputKind: "intent",
+        redTeam: false,
+        until: "red-team-spec",
+      }),
+    (e: Error & { code?: string }) => {
+      assert.equal(e.code, "stage_not_in_chain");
+      return true;
+    },
+  );
+});
+
+test("#7 --from after --until produces empty_chain", () => {
+  assert.throws(
+    () =>
+      resolveChain({
+        inputKind: "intent",
+        redTeam: false,
+        from: "copilot",
+        until: "review-spec",
+      }),
+    (e: Error & { code?: string }) => {
+      assert.equal(e.code, "empty_chain");
+      return true;
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test #8 — mergePointsFor: one merge per artifact at the last touching stage
+// ---------------------------------------------------------------------------
+
+test("#8 default 6-stage chain: spec after review-spec, plan after review-plan, impl after copilot; none for plan-to-tasks", () => {
+  assert.deepEqual(mergePointsFor(DEFAULT_6), [
+    { after_stage: "review-spec", artifact: "spec" },
+    { after_stage: "review-plan", artifact: "plan" },
+    { after_stage: "copilot", artifact: "impl" },
+  ]);
+});
+
+test("#8 red-team chain: merges move to the last present of each artifact's stages", () => {
+  assert.deepEqual(mergePointsFor(FULL_8), [
+    { after_stage: "red-team-spec", artifact: "spec" },
+    { after_stage: "red-team-plan", artifact: "plan" },
+    { after_stage: "copilot", artifact: "impl" },
+  ]);
+});
+
+test("#8 chain ending at an author stage yields no merge for that artifact", () => {
+  // --until write-spec: author-only spec chain → no spec merge
+  assert.deepEqual(mergePointsFor(["write-spec"]), []);
+  // --until spec-to-plan: spec reviewed (merge) but plan author-only (no merge)
+  assert.deepEqual(
+    mergePointsFor(["write-spec", "review-spec", "spec-to-plan"]),
+    [{ after_stage: "review-spec", artifact: "spec" }],
+  );
+});
+
+test("#8 plan-path slice: only plan + impl merges (no spec)", () => {
+  assert.deepEqual(
+    mergePointsFor(["review-plan", "plan-to-tasks", "copilot"]),
+    [
+      { after_stage: "review-plan", artifact: "plan" },
+      { after_stage: "copilot", artifact: "impl" },
+    ],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test #10 — command renderer + threading against §4 recorded fields
+// ---------------------------------------------------------------------------
+
+// Build an 8-stage run with producer artifacts recorded, then render commands.
+function fullRunWithArtifacts(): RunState {
+  const chain = FULL_8;
+  let s = mkRun(chain, mergePointsFor(chain), {
+    input: { kind: "intent", value: "build the thing" },
+  });
+  // write-spec produces spec_path
+  s = transition(s, { stage: "write-spec", to: "running", at: AT });
+  s = recordOutput(s, {
+    stage: "write-spec",
+    artifacts: { spec_path: "docs/specs/2026-07-19-demo-spec.md" },
+    at: AT,
+  });
+  // spec-to-plan produces plan_path AND plan_slug. Deliberately make plan_slug
+  // DIFFER from what a filename re-parse of plan_path would give, so test #10
+  // proves copilot reads the recorded slug, not a re-derivation.
+  s = transition(s, { stage: "spec-to-plan", to: "running", at: AT });
+  s = recordOutput(s, {
+    stage: "spec-to-plan",
+    artifacts: {
+      plan_path: "docs/plans/2026-07-19-demo-plan.md",
+      plan_slug: "custom-plan-slug",
+    },
+    at: AT,
+  });
+  return s;
+}
+
+test("#10 every stage command renders exactly per the spec §2 table", () => {
+  const s = fullRunWithArtifacts();
+  assert.equal(
+    renderStageCommand(s, "write-spec"),
+    '/stark-write-spec "build the thing"',
+  );
+  assert.equal(
+    renderStageCommand(s, "review-spec"),
+    "/stark-review-spec docs/specs/2026-07-19-demo-spec.md",
+  );
+  assert.equal(
+    renderStageCommand(s, "red-team-spec"),
+    "/stark-red-team-spec docs/specs/2026-07-19-demo-spec.md --fold",
+  );
+  assert.equal(
+    renderStageCommand(s, "spec-to-plan"),
+    "/stark-spec-to-plan docs/specs/2026-07-19-demo-spec.md",
+  );
+  assert.equal(
+    renderStageCommand(s, "review-plan"),
+    "/stark-review-plan docs/plans/2026-07-19-demo-plan.md",
+  );
+  assert.equal(
+    renderStageCommand(s, "red-team-plan"),
+    "/stark-red-team-plan docs/plans/2026-07-19-demo-plan.md --fold",
+  );
+  assert.equal(
+    renderStageCommand(s, "plan-to-tasks"),
+    "/stark-plan-to-tasks docs/plans/2026-07-19-demo-plan.md --plan-slug custom-plan-slug",
+  );
+  assert.equal(
+    renderStageCommand(s, "copilot"),
+    "/stark-copilot --plan-slug custom-plan-slug",
+  );
+});
+
+test("#10 both red-team commands carry --fold", () => {
+  const s = fullRunWithArtifacts();
+  assert.match(renderStageCommand(s, "red-team-spec"), /--fold$/);
+  assert.match(renderStageCommand(s, "red-team-plan"), /--fold$/);
+});
+
+test("#10 copilot --plan-slug reads spec-to-plan's recorded plan_slug, never a filename re-derivation", () => {
+  const s = fullRunWithArtifacts();
+  // plan_path parses to "demo"; the recorded slug is "custom-plan-slug".
+  assert.equal(parsePlanSlug("docs/plans/2026-07-19-demo-plan.md"), "demo");
+  const cmd = renderStageCommand(s, "copilot");
+  assert.ok(
+    cmd.includes("custom-plan-slug") && !cmd.includes("demo"),
+    `copilot slug must come from artifacts.plan_slug, got: ${cmd}`,
+  );
+  // nextInputFor threads only the recorded slug.
+  assert.deepEqual(nextInputFor(s, "copilot"), {
+    plan_slug: "custom-plan-slug",
+  });
+});
+
+test("#10 path-based start threads initial_artifacts (review-plan from an imported plan)", () => {
+  const chain: Stage[] = ["review-plan", "plan-to-tasks", "copilot"];
+  const s = mkRun(chain, mergePointsFor(chain), {
+    input: { kind: "plan-path", value: "docs/plans/2026-07-19-imported-plan.md" },
+    initial_artifacts: {
+      plan_path: "docs/plans/2026-07-19-imported-plan.md",
+      plan_slug: "imported",
+    },
+  });
+  assert.equal(
+    renderStageCommand(s, "review-plan"),
+    "/stark-review-plan docs/plans/2026-07-19-imported-plan.md",
+  );
+  assert.equal(
+    renderStageCommand(s, "copilot"),
+    "/stark-copilot --plan-slug imported",
+  );
+});
+
+// Table-driven coverage (spec test #10): every input kind × every stage in the
+// resolved chain, threading each producer's reported path/slug and asserting the
+// full rendered command matches the §2 table. Covers intent, existing spec
+// path, existing plan path, AND a path-like nonexistent intent (which §1 fails
+// toward write-spec). The recorded plan_slug ("custom-plan-slug") deliberately
+// differs from a filename re-parse of PLAN ("demo") so no case can pass on a
+// re-derivation.
+const SPEC = "docs/specs/2026-07-19-demo-spec.md";
+const PLAN = "docs/plans/2026-07-19-demo-plan.md";
+const PLAN_SLUG = "custom-plan-slug";
+
+// The exact §2-table command for each stage, given the fixtures above.
+function expectedCommand(stage: Stage, intentValue: string): string {
+  switch (stage) {
+    case "write-spec":
+      return `/stark-write-spec ${encodeIntent(intentValue)}`;
+    case "review-spec":
+      return `/stark-review-spec ${SPEC}`;
+    case "red-team-spec":
+      return `/stark-red-team-spec ${SPEC} --fold`;
+    case "spec-to-plan":
+      return `/stark-spec-to-plan ${SPEC}`;
+    case "review-plan":
+      return `/stark-review-plan ${PLAN}`;
+    case "red-team-plan":
+      return `/stark-red-team-plan ${PLAN} --fold`;
+    case "plan-to-tasks":
+      return `/stark-plan-to-tasks ${PLAN} --plan-slug ${PLAN_SLUG}`;
+    case "copilot":
+      return `/stark-copilot --plan-slug ${PLAN_SLUG}`;
+  }
+}
+
+// Build a run at the state where every stage's inputs are available: producers
+// present in the chain record their outputs; artifacts an earlier producer
+// (absent from a sliced chain) would have owned are seeded via initial_artifacts.
+function runForCase(c: {
+  input: RunInput;
+  chain: Stage[];
+  initial_artifacts: StageArtifacts;
+}): RunState {
+  let s = mkRun(c.chain, mergePointsFor(c.chain), {
+    input: c.input,
+    initial_artifacts: c.initial_artifacts,
+  });
+  if (c.chain.includes("write-spec")) {
+    s = transition(s, { stage: "write-spec", to: "running", at: AT });
+    s = recordOutput(s, {
+      stage: "write-spec",
+      artifacts: { spec_path: SPEC },
+      at: AT,
+    });
+  }
+  if (c.chain.includes("spec-to-plan")) {
+    s = transition(s, { stage: "spec-to-plan", to: "running", at: AT });
+    s = recordOutput(s, {
+      stage: "spec-to-plan",
+      artifacts: { plan_path: PLAN, plan_slug: PLAN_SLUG },
+      at: AT,
+    });
+  }
+  return s;
+}
+
+test("#10 table-driven: each input kind starts at its §1 stage and every stage renders exactly", () => {
+  const cases: Array<{
+    name: string;
+    input: RunInput;
+    inputKind: "intent" | "spec-path" | "plan-path";
+    redTeam: boolean;
+    entry: Stage;
+    initial_artifacts: StageArtifacts;
+  }> = [
+    {
+      name: "intent (8-stage, red-team)",
+      input: { kind: "intent", value: "build the thing" },
+      inputKind: "intent",
+      redTeam: true,
+      entry: "write-spec",
+      initial_artifacts: {},
+    },
+    {
+      name: "path-like nonexistent intent → write-spec (6-stage)",
+      // §1: a positional that looks like a path but does not exist is free-text intent.
+      input: { kind: "intent", value: "docs/specs/2099-01-01-ghost-spec.md" },
+      inputKind: "intent",
+      redTeam: false,
+      entry: "write-spec",
+      initial_artifacts: {},
+    },
+    {
+      name: "existing spec path → review-spec (8-stage, red-team)",
+      input: { kind: "spec-path", value: SPEC },
+      inputKind: "spec-path",
+      redTeam: true,
+      entry: "review-spec",
+      initial_artifacts: { spec_path: SPEC },
+    },
+    {
+      name: "existing plan path → review-plan (6-stage)",
+      input: { kind: "plan-path", value: PLAN },
+      inputKind: "plan-path",
+      redTeam: false,
+      entry: "review-plan",
+      // Import contract (§4): a plan-path start seeds plan_path AND the imported slug.
+      initial_artifacts: { plan_path: PLAN, plan_slug: PLAN_SLUG },
+    },
+  ];
+
+  for (const c of cases) {
+    const chain = resolveChain({ inputKind: c.inputKind, redTeam: c.redTeam });
+    assert.equal(chain[0], c.entry, `${c.name}: entry stage`);
+    const s = runForCase({
+      input: c.input,
+      chain,
+      initial_artifacts: c.initial_artifacts,
+    });
+    for (const stage of chain) {
+      assert.equal(
+        renderStageCommand(s, stage),
+        expectedCommand(stage, c.input.value),
+        `${c.name}: stage '${stage}' command`,
+      );
+    }
+    // The amended plan-to-tasks command carries BOTH the plan path and the slug.
+    if (chain.includes("plan-to-tasks")) {
+      assert.equal(
+        renderStageCommand(s, "plan-to-tasks"),
+        `/stark-plan-to-tasks ${PLAN} --plan-slug ${PLAN_SLUG}`,
+        `${c.name}: plan-to-tasks amended command`,
+      );
+    }
+    // copilot's slug always comes from the recorded/imported plan_slug, never
+    // a filename re-derivation (PLAN parses to "demo", not "custom-plan-slug").
+    if (chain.includes("copilot")) {
+      assert.equal(parsePlanSlug(PLAN), "demo");
+      assert.ok(
+        renderStageCommand(s, "copilot").endsWith(`--plan-slug ${PLAN_SLUG}`),
+        `${c.name}: copilot slug from recorded artifact`,
+      );
+    }
+  }
+});
+
+test("#10 renderStageCommand throws when a required input has not been threaded", () => {
+  const s = mkRun(DEFAULT_6, mergePointsFor(DEFAULT_6)); // no artifacts recorded
+  assert.throws(
+    () => renderStageCommand(s, "review-spec"),
+    (e: Error & { code?: string }) => {
+      assert.equal(e.code, "unthreaded_input");
+      return true;
+    },
+  );
+});
+
+test("#10 planPathFor / parsePlanSlug round-trip the strict dated convention", () => {
+  assert.equal(
+    planPathFor("my-thing", "2026-07-19"),
+    "docs/plans/2026-07-19-my-thing-plan.md",
+  );
+  assert.equal(parsePlanSlug(planPathFor("my-thing", "2026-07-19")), "my-thing");
+  // real dated file (spec-to-plan's runtime output) parses to the slug
+  assert.equal(parsePlanSlug("docs/plans/2026-07-19-my-thing-plan.md"), "my-thing");
+});
+
+test("#10 parsePlanSlug rejects nonconforming paths (date-less, malformed date, empty slug, wrong dir)", () => {
+  // date-less
+  assert.equal(parsePlanSlug("docs/plans/my-thing-plan.md"), null);
+  // malformed date
+  assert.equal(parsePlanSlug("docs/plans/2026-7-9-my-thing-plan.md"), null);
+  assert.equal(parsePlanSlug("docs/plans/20260719-my-thing-plan.md"), null);
+  // empty slug
+  assert.equal(parsePlanSlug("docs/plans/2026-07-19--plan.md"), null);
+  // wrong directory / bare filename
+  assert.equal(parsePlanSlug("2026-07-19-alpha-plan.md"), null);
+  assert.equal(parsePlanSlug("docs/specs/2026-07-19-x-spec.md"), null);
+  assert.equal(parsePlanSlug("other/plans/2026-07-19-x-plan.md"), null);
+  assert.equal(parsePlanSlug("random.md"), null);
+});
+
+test("#10 planPathFor rejects a malformed date or a slug that would break the round-trip", () => {
+  assert.throws(() => planPathFor("ok", "2026-7-19"));
+  assert.throws(() => planPathFor("ok", "not-a-date"));
+  assert.throws(() => planPathFor("bad slug", "2026-07-19"));
+  assert.throws(() => planPathFor("has/slash", "2026-07-19"));
+});
+
+test("#10 parsePlanSlug rejects an option-shaped slug the renderer would reject", () => {
+  // Regression: `docs/plans/2026-07-19---plan.md` used to parse to "-", which
+  // is option-shaped and later threw `unsafe_threaded_arg` in the renderer.
+  assert.equal(parsePlanSlug("docs/plans/2026-07-19---plan.md"), null);
+  assert.equal(parsePlanSlug("docs/plans/2026-07-19--x-plan.md"), null); // leading '-'
+});
+
+test("#10 parse/render agree: every non-null parsed slug is renderable as a bare arg", () => {
+  const paths = [
+    "docs/plans/2026-07-19-my-thing-plan.md",
+    "docs/plans/2026-07-19-a-plan-plan.md", // slug 'a-plan'
+    "docs/plans/2026-07-19-x_y.z-plan.md",
+    "docs/plans/2026-07-19-A123-plan.md",
+    "docs/plans/2026-07-19---plan.md", // parses to null → skipped
+    "docs/plans/2026-07-19--plan.md", // empty slug → null → skipped
+    "docs/specs/2026-07-19-x-spec.md", // wrong dir → null → skipped
+  ];
+  for (const p of paths) {
+    const slug = parsePlanSlug(p);
+    if (slug === null) continue;
+    // The invariant finding #2 wants: a parsed slug is always renderable, so
+    // Phase 5 never accepts an import that the renderer later rejects.
+    assert.ok(
+      isRenderableArg(slug),
+      `parsed slug ${JSON.stringify(slug)} from ${p} must be renderable`,
+    );
+    // And it survives the full render path (copilot threads plan_slug bare).
+    const s = mkRun(["copilot"], [], {
+      input: { kind: "plan-path", value: p },
+      initial_artifacts: { plan_path: p, plan_slug: slug },
+    });
+    assert.equal(
+      renderStageCommand(s, "copilot"),
+      `/stark-copilot --plan-slug ${slug}`,
+    );
+  }
+});
+
+
+test("#10 encodeIntent refuses control / line-separator intents rather than inventing an undecoded escape", () => {
+  for (const intent of [
+    "line1\nline2",
+    "carriage\r\nreturn",
+    "tab\there",
+    "bell\x07",
+    "nextline", // U+0085 NEL (C1)
+    "c1control", // C1 control range start
+    "line separator", // U+2028
+    "para separator", // U+2029
+  ]) {
+    assert.throws(
+      () => encodeIntent(intent),
+      (e: Error & { code?: string }) => {
+        assert.equal(e.code, "intent_unencodable");
+        return true;
+      },
+      `a control/separator-bearing intent (${JSON.stringify(intent)}) must be refused, not silently escaped`,
+    );
+  }
+});
+
+
+
+test("#10 renderStageCommand rejects an option-shaped or metacharacter-bearing threaded arg", () => {
+  for (const badSlug of ["--fold", "-x", "has space", "quote'd", "back\\slash", "n\newline"]) {
+    const chain: Stage[] = ["copilot"];
+    const s = mkRun(chain, [], {
+      input: { kind: "plan-path", value: "docs/plans/2026-07-19-x-plan.md" },
+      initial_artifacts: {
+        plan_path: "docs/plans/2026-07-19-x-plan.md",
+        plan_slug: badSlug,
+      },
+    });
+    assert.throws(
+      () => renderStageCommand(s, "copilot"),
+      (e: Error & { code?: string }) => {
+        assert.equal(e.code, "unsafe_threaded_arg");
+        return true;
+      },
+      `a producer-broken slug (${JSON.stringify(badSlug)}) must be refused, not quoted`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

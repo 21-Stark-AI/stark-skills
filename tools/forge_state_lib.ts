@@ -628,6 +628,440 @@ export function reconcileRunningStage(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 — Chain resolution (T1, issue #755)
+// ---------------------------------------------------------------------------
+
+/** The default author→review chain, in canonical order (spec §2, 6 stages). */
+const DEFAULT_CHAIN: Stage[] = [
+  "write-spec",
+  "review-spec",
+  "spec-to-plan",
+  "review-plan",
+  "plan-to-tasks",
+  "copilot",
+];
+
+/**
+ * Where each `--red-team` stage is inserted (spec §2, criterion 3):
+ * red-team-spec directly after review-spec, red-team-plan directly after
+ * review-plan — yielding the full 8-stage chain.
+ */
+const RED_TEAM_INSERTS: ReadonlyArray<{ after: Stage; insert: Stage }> = [
+  { after: "review-spec", insert: "red-team-spec" },
+  { after: "review-plan", insert: "red-team-plan" },
+];
+
+/** The stage an input kind's auto-detected chain starts at (spec §1). */
+function entryStageFor(
+  inputKind: "intent" | "spec-path" | "plan-path",
+): Stage {
+  switch (inputKind) {
+    case "spec-path":
+      return "review-spec";
+    case "plan-path":
+      return "review-plan";
+    case "intent":
+      return "write-spec";
+  }
+}
+
+/**
+ * Resolve the ordered stage chain for a run (T1). Starts from the full
+ * (red-team-aware) canonical order, drops everything before the auto-detected
+ * (or `--from`) entry stage, then applies `--from`/`--until` slicing. The
+ * result is the single source of what the run will do (stored verbatim in
+ * `state.chain`).
+ *
+ * Throws `empty_chain` when the slice is empty (e.g. `--from` after `--until`)
+ * and `stage_not_in_chain` when `--from`/`--until` names a stage absent from
+ * the resolved (red-team-aware) order — e.g. `--until red-team-spec` without
+ * `--red-team`.
+ */
+export function resolveChain(args: {
+  inputKind: "intent" | "spec-path" | "plan-path";
+  redTeam: boolean;
+  from?: Stage;
+  until?: Stage;
+}): Stage[] {
+  // 1. Build the canonical order, inserting red-team stages when requested.
+  let full = [...DEFAULT_CHAIN];
+  if (args.redTeam) {
+    for (const { after, insert } of RED_TEAM_INSERTS) {
+      const idx = full.indexOf(after);
+      full.splice(idx + 1, 0, insert);
+    }
+  }
+
+  // 2. Auto-detected entry stage (overridden by an explicit `--from`).
+  const entry = args.from ?? entryStageFor(args.inputKind);
+
+  // Validate `--from`/`--until` name stages that exist in this run's order.
+  for (const [flag, stage] of [
+    ["--from", args.from],
+    ["--until", args.until],
+  ] as const) {
+    if (stage !== undefined && !full.includes(stage)) {
+      throw err(
+        "stage_not_in_chain",
+        `${flag} names stage '${stage}', which is not part of the resolved chain ${JSON.stringify(
+          full,
+        )} (missing --red-team?).`,
+      );
+    }
+  }
+
+  const startIdx = full.indexOf(entry);
+  const endIdx = args.until !== undefined ? full.indexOf(args.until) : full.length - 1;
+
+  const sliced = startIdx <= endIdx ? full.slice(startIdx, endIdx + 1) : [];
+  if (sliced.length === 0) {
+    throw err(
+      "empty_chain",
+      `Resolved chain is empty: --from '${entry}' is after --until '${args.until}' in ${JSON.stringify(
+        full,
+      )}.`,
+    );
+  }
+  return sliced;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Merge-point derivation (T2, issue #756)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the ordered merge points for a resolved chain (T2). PRs are owned by
+ * artifact, not stage: each artifact PR is merged exactly once, after the LAST
+ * stage in the chain that touches that artifact (spec §3).
+ *
+ * - spec merge after the last present of {review-spec, red-team-spec}
+ * - plan merge after the last present of {review-plan, red-team-plan}
+ * - impl merge after copilot
+ * - plan-to-tasks produces issues, not a PR → no merge point
+ * - a chain ending at an author stage (write-spec / spec-to-plan) yields NO
+ *   merge for that artifact — an author PR is never merged without its review.
+ */
+export function mergePointsFor(chain: Stage[]): MergePoint[] {
+  const inChain = new Set(chain);
+  const points: MergePoint[] = [];
+
+  // spec: merge only after a REVIEW stage (never a bare author-only chain).
+  const specClosers: Stage[] = ["review-spec", "red-team-spec"];
+  const lastSpec = lastPresent(chain, specClosers);
+  if (lastSpec) points.push({ after_stage: lastSpec, artifact: "spec" });
+
+  // plan: merge only after a plan review stage.
+  const planClosers: Stage[] = ["review-plan", "red-team-plan"];
+  const lastPlan = lastPresent(chain, planClosers);
+  if (lastPlan) points.push({ after_stage: lastPlan, artifact: "plan" });
+
+  // impl: one merge covering all of copilot's PRs.
+  if (inChain.has("copilot")) {
+    points.push({ after_stage: "copilot", artifact: "impl" });
+  }
+
+  // Order the points by their after_stage's position in the chain.
+  points.sort(
+    (a, b) => chain.indexOf(a.after_stage) - chain.indexOf(b.after_stage),
+  );
+  return points;
+}
+
+/** The candidate present in `chain` with the highest chain index, else null. */
+function lastPresent(chain: Stage[], candidates: Stage[]): Stage | null {
+  let best: Stage | null = null;
+  let bestIdx = -1;
+  for (const c of candidates) {
+    const idx = chain.indexOf(c);
+    if (idx > bestIdx) {
+      bestIdx = idx;
+      best = c;
+    }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — plan-path convention (T3, issue #757): the ONE owner
+// ---------------------------------------------------------------------------
+
+/**
+ * The renderable-argument grammar — the ONE definition of a value safe to emit
+ * as a single bare slash-command token: parser-neutral characters only, and not
+ * option-shaped (no leading `-`, which the in-session slash parser would read as
+ * a flag). Every threaded artifact value (spec_path / plan_path / plan_slug) and
+ * every parsed slug MUST satisfy this, so parsing and rendering agree on exactly
+ * one grammar — a value the parser accepts is guaranteed renderable and vice
+ * versa (findings: parse/render divergence). Whitespace, quotes, newlines, and
+ * backslashes are all excluded, so an imported path or slug carrying them is
+ * rejected at the same boundary the renderer would reject it.
+ */
+const SAFE_ARG_RE = /^[A-Za-z0-9._:=\/][A-Za-z0-9._:=\/-]*$/;
+
+/**
+ * Whether `value` is a clean bare slash-command token (the renderable-argument
+ * grammar). Phase 5 `resolve` consumes this to reject a nonconforming imported
+ * artifact path/slug at classification time — the same grammar the renderer
+ * enforces — so an import can never be accepted only to become unrenderable
+ * later. Exported as the single owner of "is this threadable as a bare arg?".
+ */
+export function isRenderableArg(value: string): boolean {
+  return SAFE_ARG_RE.test(value);
+}
+
+/** The single canonical plan-path convention: `docs/plans/YYYY-MM-DD-<slug>-plan.md`. */
+const PLAN_PATH_RE = /^docs\/plans\/(\d{4}-\d{2}-\d{2})-([^/]+)-plan\.md$/;
+/**
+ * The plan-slug grammar — deliberately a subset of the renderable-argument
+ * grammar (`SAFE_ARG_RE`): a slug must start with an alphanumeric, `.`, or `_`
+ * (NEVER `-`, which would render as an option-shaped, unthreadable token) and
+ * then use only `[A-Za-z0-9._-]`. Because the first-char and body classes are
+ * both subsets of `SAFE_ARG_RE`, every slug this accepts is guaranteed
+ * renderable — closing the gap where `parsePlanSlug` accepted an option-shaped
+ * slug (e.g. `-`, from `docs/plans/2026-07-19---plan.md`) that the renderer then
+ * rejected. `parsePlanSlug` and `planPathFor` share this one grammar.
+ */
+const PLAN_SLUG_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
+
+/**
+ * Build the canonical plan path for a slug (T3). The convention is strictly
+ * `docs/plans/YYYY-MM-DD-<slug>-plan.md`. The pure lib has no clock, so the
+ * date segment is HOST-SUPPLIED (spec-to-plan, the runtime owner, knows the
+ * date) — passing it in as an explicit argument keeps the helper pure while
+ * emitting the full dated form the convention requires. `parsePlanSlug` is the
+ * exact inverse, so `parsePlanSlug(planPathFor(slug, date)) === slug`
+ * round-trips. Keeping both directions here means the `docs/plans/…` pattern is
+ * encoded exactly once (spec §4 import parser + Phase 6 producer conformance
+ * both consume this pair). Throws on a malformed date or a slug that would
+ * break the round-trip. ASSUMPTION: the renderer never calls `planPathFor` — it
+ * threads spec-to-plan's REPORTED `plan_path`; this helper only exists to keep
+ * the import/conformance pattern single-owned.
+ */
+export function planPathFor(slug: string, date: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw err("plan_path_invalid", `planPathFor: date must be YYYY-MM-DD, got '${date}'.`);
+  }
+  if (!PLAN_SLUG_RE.test(slug)) {
+    throw err("plan_path_invalid", `planPathFor: slug '${slug}' contains characters outside [A-Za-z0-9._-].`);
+  }
+  return `docs/plans/${date}-${slug}-plan.md`;
+}
+
+/**
+ * Parse the plan slug out of a canonical `docs/plans/YYYY-MM-DD-<slug>-plan.md`
+ * path (T3) — the strict inverse of `planPathFor`. The full path is required:
+ * a date-less name, a malformed date, a bare filename, an empty slug, or a file
+ * outside `docs/plans/` all return null so Phase 5 rejects nonconforming
+ * imports with `plan_slug_unresolved`. Returns the slug, or null when the path
+ * does not match the convention exactly.
+ */
+export function parsePlanSlug(path: string): string | null {
+  const m = path.match(PLAN_PATH_RE);
+  if (!m) return null;
+  const slug = m[2];
+  if (slug.length === 0 || !PLAN_SLUG_RE.test(slug)) return null;
+  return slug;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Threading + command rendering (T3, issue #757)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a threaded artifact field from recorded state (never re-derived): the
+ * producing stage's recorded `artifacts`, falling back to the run-level
+ * `initial_artifacts` seeded at init for a path-based start (§4). Returns
+ * undefined when neither source holds it.
+ */
+function resolveThreadedField(
+  state: RunState,
+  field: "spec_path" | "plan_path" | "plan_slug",
+): string | undefined {
+  const producer: Stage = field === "spec_path" ? "write-spec" : "spec-to-plan";
+  const rec = state.stages.find((s) => s.stage === producer);
+  const fromStage = rec?.artifacts[field];
+  if (fromStage !== undefined) return fromStage;
+  return state.initial_artifacts[field];
+}
+
+/**
+ * The threading helper (T3): the recorded `StageArtifacts` a stage's command
+ * consumes, read only from producer-reported / imported state — no path or slug
+ * is ever reconstructed from a naming convention. `write-spec` consumes the
+ * free-text intent (not an artifact) so it threads nothing.
+ */
+export function nextInputFor(state: RunState, stage: Stage): StageArtifacts {
+  switch (stage) {
+    case "write-spec":
+      return {};
+    case "review-spec":
+    case "red-team-spec":
+    case "spec-to-plan": {
+      const spec_path = resolveThreadedField(state, "spec_path");
+      return spec_path !== undefined ? { spec_path } : {};
+    }
+    case "review-plan":
+    case "red-team-plan": {
+      const plan_path = resolveThreadedField(state, "plan_path");
+      return plan_path !== undefined ? { plan_path } : {};
+    }
+    case "plan-to-tasks": {
+      const out: StageArtifacts = {};
+      const plan_path = resolveThreadedField(state, "plan_path");
+      const plan_slug = resolveThreadedField(state, "plan_slug");
+      if (plan_path !== undefined) out.plan_path = plan_path;
+      if (plan_slug !== undefined) out.plan_slug = plan_slug;
+      return out;
+    }
+    case "copilot": {
+      const plan_slug = resolveThreadedField(state, "plan_slug");
+      return plan_slug !== undefined ? { plan_slug } : {};
+    }
+  }
+}
+
+function requireField(
+  input: StageArtifacts,
+  field: "spec_path" | "plan_path" | "plan_slug",
+  stage: Stage,
+): string {
+  const v = input[field];
+  if (v === undefined || v.length === 0) {
+    throw err(
+      "unthreaded_input",
+      `Cannot render command for stage '${stage}': required input '${field}' has not been reported by its producing stage.`,
+    );
+  }
+  return v;
+}
+
+// ---------------------------------------------------------------------------
+// Command-argument transport (T3)
+//
+// The consumer of a rendered command is the **in-session slash-command parser**
+// (Claude reading a skill's `$ARGUMENTS` and splitting it into flags +
+// positional), NOT a POSIX shell — so POSIX single-quoting is the wrong model.
+// Two value classes need two different, parser-honest transports:
+//
+//   1. Threaded artifact values (spec_path / plan_path / plan_slug) are
+//      producer-controlled and MUST already be safe bare tokens — dated
+//      `docs/{specs,plans}/…` paths and kebab slugs. A threaded value that is
+//      empty, option-shaped (leading `-`, which the parser would read as a
+//      flag), or carries a parser-hostile metacharacter (whitespace / quote /
+//      newline / backslash) is a **producer or import contract violation**, not
+//      something to paper over by quoting — quoting cannot make the slash
+//      parser treat `--fold` as a positional. So we validate and emit bare,
+//      throwing `unsafe_threaded_arg` on a violation.
+//   2. The write-spec **intent** is the one free-text field. Its transport is
+//      the double-quoted-string convention the §2 table documents
+//      (`/stark-write-spec "<intent>"`): wrap in double quotes and backslash-
+//      escape the two characters that would otherwise break the quoting for the
+//      reader — `\`→`\\` and `"`→`\"`. That is the WHOLE decode contract, and it
+//      is the one documented in spec §2 ("Intent transport"). We deliberately do
+//      NOT invent an escape for newlines/CR/tab: nothing on the write-spec side
+//      decodes such an escape, so emitting `\n` would silently deliver a spec
+//      intent containing the literal two characters `\n`. Instead the intent
+//      grammar is NARROWED to a single line of printable text — a control
+//      character (CR/LF/tab/other C0) throws `intent_unencodable`, refusing to
+//      corrupt rather than guessing a decode the consumer never implements. A
+//      double-quoted `"--fold"` is unambiguously the positional, never a flag.
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a producer-threaded path/slug and return it for bare emission. A
+ * value the producing stage or import should have reported as a clean token but
+ * didn't (option-shaped or metacharacter-bearing) throws `unsafe_threaded_arg`
+ * — the renderer refuses to emit a command whose meaning the parser could
+ * misread, rather than silently quoting a broken contract.
+ */
+function safeThreadedArg(value: string, field: string, stage: Stage): string {
+  if (!isRenderableArg(value)) {
+    throw err(
+      "unsafe_threaded_arg",
+      `Cannot render command for stage '${stage}': threaded input '${field}' (${JSON.stringify(
+        value,
+      )}) is option-shaped or contains parser-hostile characters — its producing stage must report a clean token.`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Encode the write-spec free-text intent as the double-quoted positional the §2
+ * "Intent transport" contract defines (`/stark-write-spec "<intent>"`). The
+ * decode contract is exactly: strip the surrounding double quotes, then reverse
+ * `\\`→`\` and `\"`→`"`. Nothing else is escaped — in particular there is NO
+ * newline/CR/tab escape, because the write-spec side implements no decode for
+ * one. The intent must therefore be a single line of printable text; a control
+ * character (any C0 incl. CR/LF/tab, or DEL) throws `intent_unencodable` rather
+ * than being silently corrupted into a literal backslash-n on the command line.
+ * Always quoted, so an option-shaped intent (`--fold`) can never be reparsed as
+ * a flag. Forge's guarantee is one-sided and deliberate: it emits a well-formed,
+ * single-line, double-quoted token. It defines no bespoke decoder and requires
+ * no change in `stark-write-spec`, which already takes a quoted positional.
+ */
+export function encodeIntent(value: string): string {
+  // Reject anything that is not printable single-line text. C0 controls
+  // (0x00-0x1F, incl. CR/LF/tab) and DEL (0x7F) obviously split/corrupt the
+  // line, but so do the C1 controls (0x80-0x9F — U+0085 NEL is a line break)
+  // and the Unicode line/paragraph separators U+2028 / U+2029. Any of them can
+  // terminate or corrupt the rendered command, and none has a defined escape on
+  // the write-spec side. Ordinary Unicode (accents, CJK, emoji) round-trips.
+  const hasControl = [...value].some((ch) => {
+    const cp = ch.codePointAt(0)!;
+    return (
+      cp < 0x20 || // C0 controls (incl. CR/LF/tab)
+      cp === 0x7f || // DEL
+      (cp >= 0x80 && cp <= 0x9f) || // C1 controls (incl. U+0085 NEL)
+      cp === 0x2028 || // LINE SEPARATOR
+      cp === 0x2029 // PARAGRAPH SEPARATOR
+    );
+  });
+  if (hasControl) {
+    throw err(
+      "intent_unencodable",
+      `Cannot render write-spec command: the intent contains a control or line-separator character (e.g. a newline, tab, C1 control, or Unicode line/paragraph separator). The intent transport is a single double-quoted line — no multiline/control-character escape is defined on the write-spec side. Author the intent as one line.`,
+    );
+  }
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+/**
+ * Render a stage's exact in-session command (T3) from recorded state, per the
+ * spec §2 command table. The free-text intent goes through `encodeIntent` (the
+ * double-quoted transport the parser honors); threaded artifacts go through
+ * `safeThreadedArg` (validated + emitted bare, since producers must report
+ * clean tokens). Threaded inputs come only from `nextInputFor` (recorded
+ * producer output / imported initial artifacts) — copilot's `--plan-slug` reads
+ * spec-to-plan's recorded `plan_slug`, NEVER a re-derivation from the plan
+ * filename; both red-team commands carry `--fold`.
+ */
+export function renderStageCommand(state: RunState, stage: Stage): string {
+  const input = nextInputFor(state, stage);
+  const arg = (field: "spec_path" | "plan_path" | "plan_slug") =>
+    safeThreadedArg(requireField(input, field, stage), field, stage);
+  switch (stage) {
+    case "write-spec":
+      return `/stark-write-spec ${encodeIntent(state.input.value)}`;
+    case "review-spec":
+      return `/stark-review-spec ${arg("spec_path")}`;
+    case "red-team-spec":
+      return `/stark-red-team-spec ${arg("spec_path")} --fold`;
+    case "spec-to-plan":
+      return `/stark-spec-to-plan ${arg("spec_path")}`;
+    case "review-plan":
+      return `/stark-review-plan ${arg("plan_path")}`;
+    case "red-team-plan":
+      return `/stark-red-team-plan ${arg("plan_path")} --fold`;
+    case "plan-to-tasks":
+      return `/stark-plan-to-tasks ${arg("plan_path")} --plan-slug ${arg("plan_slug")}`;
+    case "copilot":
+      return `/stark-copilot --plan-slug ${arg("plan_slug")}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // initializeRun — the pure run-state constructor (T7)
 // ---------------------------------------------------------------------------
 
