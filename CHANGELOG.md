@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add the contract-bounded `/stark-write-spec` authoring-stage specification with structured verification, gap resolution, and crash-safe run history.
 
 ### Fixed
+- tools: symlink-invocation regression test (`entry_guard.test.ts`) — spawns every CLI tool through a symlinked path and asserts it still produces output, locking in the #786 `isMainModule` fix (the raw `pathToFileURL(process.argv[1])` guard never matched through the `~/.claude/code-review/tools` symlink, so `main()` silently never ran and the process **exited 0 having done nothing**).
 - stark-gh: the pr-merge self-modifying gate now fires only in the stark-skills repo itself — the generic guarded prefixes (`tools/`, `scripts/`, …) no longer block merges in unrelated repos that happen to have those directories (hit by Atlas PR #162's `tools/CLAUDE.md`).
 - stark-gh: the secret scanner scores the two sides of a `NAME=value` token independently (tolerating a leading diff marker), so `KEY=/filesystem/path` doc and `.env`-style lines no longer false-positive as high-entropy; a real 40+-char secret on either side still flags.
 
