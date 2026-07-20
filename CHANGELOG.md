@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.9.0] - 2026-07-20
+
 ### Added
+- **`/stark-forge` pipeline orchestrator — deterministic core (#736, Phases 1–5).** The spec, plan, and the whole crash-resumable state layer for running the spec→plan→implementation chain end-to-end as one conducted run. **The orchestrator skill itself is not yet wired — Phase 6 lands separately.**
+  - **`tools/forge_state_lib.ts` — the pure state machine.** No clock, no disk, no network, no git; every mutating function returns a new `RunState`. Transition matrix (spec §6) with compare-and-set and no-op reprint; attempts-archive with exactly one `Attempt` per episode; `recordOutput` patch semantics (array union-dedup, write-once scalars → `artifact_conflict`, monotonic merge attribution, one-owner `artifact_prs` registry → `adoption_mismatch`); a `running→done` gate enforcing `requiredOutputsFor`, all-artifact-PRs-merged, no-open-fold, and plan-to-tasks's `issue_numbers` marker; and `reconcileRunningStage`, the single writer of a `crashed` attempt, which archives the episode and applies the resolving transition in one call so no episode is ever double-archived.
+  - **Chain/merge/threading resolution.** `resolveChain` (6-stage default, 8 with `--red-team`, `--from`/`--until` slicing, input-kind auto-detection), `mergePointsFor` (one merge per artifact at its last touching stage), `renderStageCommand`/`nextInputFor` threading strictly from recorded producer outputs, and `planPathFor`/`parsePlanSlug` as the single owner of the `docs/plans/YYYY-MM-DD-<slug>-plan.md` convention.
+  - **Crash-window closure.** `resumeTarget` returns `{state, target}` so the caller persists the reconciliation before acting, over the closed action enum `reinvoke | advance | complete | merge_only | abandon`. A checkpointed merge-point stage retries **only the merge** (never re-running reviews or implementation); dead ends (`author_pr_merged_early`, `artifact_pr_closed`) resolve to `abandon` instead of retrying forever.
+  - **`tools/forge_state.ts` — the host module.** All disk I/O (`persistState`/`loadState`/`resolveLatest`/`listResumeCandidates`; `stateRoot()/history/forge/<slug>/<run-id>/`, mode 0600, latest pointer, retention) reusing the existing history helpers rather than reimplementing them — plus nine CLI subcommands: `resolve`, `init`, `record-output`, `transition`, `get`, `abandon`, `summary`, `resume-target`, `driver-block`. Runs are repo-bound and fail closed on a repo mismatch; `init` is retry-idempotent; a host-side preflight refuses any PR whose base/repo/head-branch shape doesn't match the reporting stage (`artifact_pr_unverified`) before it can enter the registry that drives merging.
+  - **Driver mode** is fully built and tested (`renderDriverBlock` + `driver-block`), so the chain stays drivable by hand — no shell `timeout` wrapper is ever emitted, and an executable fold-state check precedes every `/stark-gh:pr-merge`.
+  - New **`forge_pipeline`** config section (`history_keep_runs`, `merge_timeout_s`), deliberately separate from the existing review-routing `forge` section.
+  - 382 tests, zero network (the PR-state reader is injected throughout).
+- **Spec §2 command-table amendment:** `/stark-plan-to-tasks` gains `--plan-slug <recorded-plan-slug>` so the recorded slug is passed explicitly on both normal and crash-reentry invocations instead of being re-derived from a filename.
+
 <!-- stark-gh:pr-merge pr=686 runId=d4abae4b-3672-48a1-8077-08a09fd06560 -->
 - Add the reviewed implementation plan for the `stark-write-spec` workflow.
 <!-- stark-gh:pr-merge pr=685 runId=fa8a1089-bd46-48ab-aaef-eb15553543d9 -->
