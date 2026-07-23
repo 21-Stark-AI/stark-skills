@@ -347,6 +347,18 @@ describe("collectDiff", () => {
       assert.equal(d.removed, 1);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test("applyDiff carries binary content the review diff elides", async () => {
+    const dir = makeRepo();
+    try {
+      writeFileSync(path.join(dir, "blob.bin"), Buffer.from([0, 1, 2, 255, 0, 7]));
+      const d = await collectDiff(dir);
+      assert.ok(d.diff.includes("Binary files"));
+      assert.ok(!d.diff.includes("GIT binary patch"));
+      assert.ok(d.applyDiff.includes("GIT binary patch"));
+      assert.ok(d.files.includes("blob.bin"));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 // --- createWorktree / cleanupWorktree -------------------------------------

@@ -184,6 +184,7 @@ function getGitHubAppName(agent: AgentName): string {
 export interface RoundResult {
   round_num: number;
   diff: string;
+  apply_diff: string;
   files_changed: string[];
   lines_added: number;
   lines_removed: number;
@@ -202,6 +203,7 @@ function newRound(round_num: number): RoundResult {
   return {
     round_num,
     diff: "",
+    apply_diff: "",
     files_changed: [],
     lines_added: 0,
     lines_removed: 0,
@@ -219,6 +221,7 @@ function newRound(round_num: number): RoundResult {
 
 interface ImplementOutcome {
   diff: string;
+  apply_diff: string;
   files_changed: string[];
   lines_added: number;
   lines_removed: number;
@@ -856,9 +859,14 @@ export async function cleanupWorktree(
 
 export async function collectDiff(
   worktreePath: string,
-): Promise<{ diff: string; files: string[]; added: number; removed: number }> {
+): Promise<{ diff: string; applyDiff: string; files: string[]; added: number; removed: number }> {
   await runGit(["add", "-A"], worktreePath, 60);
+  // Two renderings of the same staged change: `diff` is the textual form fed to the
+  // wing reviewer (binary files appear as a one-line stanza, not base85 noise);
+  // `applyDiff` carries --binary --full-index so `git apply --3way` can replay
+  // binary/rename-heavy changes in the main tree.
   const diffRes = await runGit(["diff", "--cached"], worktreePath, 120);
+  const applyRes = await runGit(["diff", "--cached", "--binary", "--full-index"], worktreePath, 120);
   const numstat = await runGit(["diff", "--cached", "--numstat"], worktreePath, 60);
   const files: string[] = [];
   let added = 0;
@@ -873,7 +881,7 @@ export async function collectDiff(
     if (Number.isFinite(r)) removed += r;
     files.push(parts[2]!);
   }
-  return { diff: diffRes.stdout, files, added, removed };
+  return { diff: diffRes.stdout, applyDiff: applyRes.stdout, files, added, removed };
 }
 
 export type WorktreeSnapshot = readonly [head: string, tree: string];
@@ -961,6 +969,7 @@ async function runImplementationAgent(
   const t0 = process.hrtime.bigint();
   const out: ImplementOutcome = {
     diff: "",
+    apply_diff: "",
     files_changed: [],
     lines_added: 0,
     lines_removed: 0,
@@ -1097,6 +1106,7 @@ async function runImplementationAgent(
   try {
     const d = await collectDiff(worktreePath);
     out.diff = d.diff;
+    out.apply_diff = d.applyDiff;
     out.files_changed = d.files;
     out.lines_added = d.added;
     out.lines_removed = d.removed;
@@ -1399,6 +1409,7 @@ export async function runCopilotStep(
   const sr = await runImplementationAgent(lead, implementPrompt, worktreePath, timeoutSec, goalCondition, goalMaxBudgetUsd);
   const r1 = newRound(1);
   r1.diff = sr.diff;
+  r1.apply_diff = sr.apply_diff;
   r1.files_changed = sr.files_changed;
   r1.lines_added = sr.lines_added;
   r1.lines_removed = sr.lines_removed;
@@ -1534,6 +1545,7 @@ export async function runCopilotStep(
     const srFix = await runImplementationAgent(lead, fixPrompt, worktreePath, timeoutSec, goalCondition, goalMaxBudgetUsd);
     const nextRound = newRound(nextRoundNum);
     nextRound.diff = srFix.diff;
+    nextRound.apply_diff = srFix.apply_diff;
     nextRound.files_changed = srFix.files_changed;
     nextRound.lines_added = srFix.lines_added;
     nextRound.lines_removed = srFix.lines_removed;
@@ -1598,7 +1610,7 @@ function buildResult(
       duration_s: r.duration_s,
       error: r.error,
     })),
-    final_diff: finalRound ? finalRound.diff : "",
+    final_diff: finalRound ? (finalRound.apply_diff || finalRound.diff) : "",
   };
 }
 
