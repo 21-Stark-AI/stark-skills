@@ -58,6 +58,9 @@ re-implement that logic here.
 If `--lead` and `--wing` resolve to the same agent, error and stop:
 > Error: --lead and --wing must be different agents.
 
+If both `--parallel` and `--sequential` are given, error and stop:
+> Error: --parallel and --sequential are mutually exclusive.
+
 If no input provided, ask: "What should I build?"
 
 **Raw input:** `$ARGUMENTS`
@@ -126,16 +129,22 @@ Group fetched issues into phases and tasks:
 If ALL tasks in a phase are closed or human-led, skip the entire phase:
 > Skipping phase {step_id}: all tasks are closed or human-led.
 
+7. **Derive steps from the task DAG (chain-collapse).** A step is the dispatch unit — one worktree, one lead/wing loop. Steps are NOT fixed at phase granularity; they come from the **task-level** dependency graph (each task's `## Dependencies` `#NNN` links), per phase:
+   - An edge to a `CLOSED` task is satisfied — drop it (reconnect its predecessors to its dependents).
+   - An edge to an **open human-led** task is unsatisfiable this run — skip the dependent task and everything downstream of it, warning with the blocking issue: skipped-because-human ≠ done; never build on work that doesn't exist yet.
+   - **Collapse chains:** merge task B into task A's step when A is B's only in-phase dependency and B is A's only dependent. A fully-linear phase collapses to exactly **one step** (today's behavior — shared context, one dispatcher loop, zero extra overhead); genuinely independent tasks or branches become separate steps that can share a wave (§1.4).
+
 **Plan-file mode / Inline mode:**
 
-Parse the plan into an ordered list of steps.
+Parse the plan into an ordered list of steps. If the sections carry dependency metadata, apply the same chain-collapse; otherwise each section is one step.
 
 Regardless of mode, each step contains:
-- `step_id` — phase slug (e.g., `phase-1-data-model`)
-- `title` — phase name
-- `task` — the raw step task description (issue body sections concatenated, or the parsed plan section, or the inline prompt). Saved to `step-$step_id-task.md` for the dispatcher.
+- `step_id` — the phase slug when the phase collapsed to one step (e.g., `phase-1-data-model`); otherwise `<phase-slug>--<first-task-slug>` (e.g., `phase-2-api--rest-endpoints`)
+- `title` — the phase name, or `{phase name}: {first task title} (+K more)` for a multi-step phase
+- `task` — the raw step task description (the step's issue bodies concatenated in chain order, or the parsed plan section, or the inline prompt). Saved to `step-$step_id-task.md` for the dispatcher.
 - `prompt` — the lead's full implement prompt (composed from the agent-specific `implement.md` template + previous-step context + `task`). Saved to `step-$step_id-implement.md`.
 - `issue_numbers` — issue numbers covered by the step
+- `depends_on` — step ids this step's tasks depend on (external edges, projected onto steps)
 
 ### 1.3 Detect test command
 
@@ -150,17 +159,17 @@ If no test command found, warn: "No test command detected. Wing review will rely
 
 ### 1.4 Plan the execution — dependency DAG → waves
 
-Before showing the battle plan, compute an **execution plan**: a DAG over the steps, leveled into **waves**. Steps in the same wave have no dependency edge between them and run **concurrently** (each in its own worktree via the Workflow fan-out — see [Parallel waves](#parallel-waves-default)); waves run sequentially, each branching from the previous wave's merged result.
+Before showing the battle plan, compute an **execution plan**: level the §1.2 steps into **waves**. Steps in the same wave have no dependency edge between them and run **concurrently** (each in its own worktree via the Workflow fan-out — see [Parallel waves](#parallel-waves-default)); waves run sequentially, each branching from the previous wave's merged result.
 
-**Edge sources, per mode:**
+**Edges, per mode:**
 
-- **Issue-driven:** each task issue's `## Dependencies` section (`#NNN` links, written by `/stark-plan-to-tasks`) plus the phase issue's `depends_on`. A step (phase) depends on another step when ANY of its tasks depends on ANY task in the other step. A dependency on a `CLOSED` or human-led (skipped) task is treated as already satisfied — drop the edge.
+- **Issue-driven:** the projected task-level edges from §1.2.7 (`step.depends_on`), **plus phase barriers**: every step in phase P depends on every step of the phases P `depends_on`. Phases stay checkpoints — waves never span a phase boundary; the parallelism unlock is *within* a phase, where `/stark-plan-to-tasks` wrote explicit task deps. (Cross-phase pipelining from task metadata alone would trust silence; barriers are the fail-closed reading.)
 - **Plan-file:** parse each step section for an explicit `Dependencies:` / `depends_on:` line. If the plan carries no dependency metadata at all, do NOT infer independence from silence — read each step's task text and mark an edge wherever a step names files, modules, interfaces, or outputs another step creates. When you cannot rule a dependency out, keep the edge.
 - **Inline:** you decomposed the steps yourself — declare `depends_on` per step as you decompose.
 
 **Leveling (Kahn):** wave 1 = steps with no unmet edges; wave N = steps whose edges all land in waves < N. A cycle is a plan defect — print the cycle and stop (do not guess an order).
 
-**Fail-closed default:** ambiguous or missing dependency info ⇒ dependent (sequential). Wrong-parallel corrupts merges; wrong-sequential only costs wall-clock. `--sequential` collapses every step into its own wave; `--parallel` collapses all steps into one wave (explicit operator override only).
+**Fail-closed default:** ambiguous or missing dependency info ⇒ dependent (sequential). Wrong-parallel corrupts merges; wrong-sequential only costs wall-clock. `--sequential` collapses every step into its own wave; `--parallel` collapses all steps into one wave (explicit operator override only). Passing both is a contradiction — error and stop.
 
 Record the result as `waves = [[step, ...], ...]` and carry it into Phase 2.
 
@@ -169,21 +178,22 @@ Record the result as `waves = [[step, ...], ...]` and carry it into Phase 2.
 ```
 stark-copilot — Battle Plan
 ───────────────────────────
-Mode:         issue-driven (plan:widget-system, 12 tasks across 4 phases)
-Steps:        4
+Mode:         issue-driven (plan:widget-system, 11 tasks across 4 phases → 5 steps in 4 waves, 2 skipped)
 Lead:         claude   (implementer)
 Wing:         codex    (reviewer)
 Max rounds:   4 fix rounds (up to 5 reviews per step)
 Test command: pytest
 Timeout:      900s lead / 600s wing
 
-Wave 1: Step 1: Data Model & Storage (#37, #38, #39)
-Wave 2: Step 2: API Layer (#40, #41, #42)   ∥   Step 3: CLI (#43, #44)
-Wave 3: Step 4: Docs & Release (#45)
-...
+Wave 1: phase-1-data-model            (#37 → #38 → #39, chain)
+Wave 2: phase-2-api--rest-endpoints   (#40 → #41)   ∥   phase-2-api--graphql (#42)
+Wave 3: phase-3-cli                   (#43 → #44)
+Wave 4: phase-4-docs                  (#45)
+Skipped: #46 (human-led, open) and its dependent #47
 
 Each step: lead implements in worktree → wing reviews diff → fix-loop until approved → merge
 Steps sharing a wave run concurrently; waves run in order.
+Widest wave: 2 steps — in goal mode that is up to 2 × $10 goal budget in flight at once.
 ```
 
 In plan-file or inline mode, replace the Mode line with `Mode: plan-file` or `Mode: inline`.
@@ -201,6 +211,8 @@ Only when `plan_path` is set (plan-file or issue-driven mode that originated fro
 ```
 
 ## Phase 2: Execute Waves
+
+**Clean-tree precondition:** before the first wave, `git status --porcelain` on `$REPO_ROOT` must be empty. If it isn't, stop and tell the user to commit or stash first — §2g's `git add -A` would sweep unrelated files into a step commit, and §2f's rollback path is only provably safe on a tree that was clean before the apply.
 
 Execute the waves from §1.4 **in order**. Within a wave:
 
@@ -310,18 +322,27 @@ gates. For procedures, see [references/verification-gates.md](references/verific
 
 Run the gates against the lead's worktree (use `worktree_path` from §2c). If a gate fails:
 
-- If the run still has fix budget remaining (i.e., the dispatcher exited with `final_verdict == "approved"` before round `max_rounds + 1`, **and** you choose to invest one more round), re-invoke `copilot_dispatch.ts` with `--max-rounds 1`, re-staged prompt files whose implement prompt uses "REVISION" framing carrying (a) the gate failure in the wing's findings format and (b) the **approved diff from the original run** as the starting point to re-apply-and-fix — a re-dispatch with the same `--step-id` force-recreates the worktree from HEAD (the dispatcher has no resume mode), so without the diff seeded into the prompt the lead starts from scratch. Use a suffixed step id (`$step_id-r2`) so the original run's artifacts aren't clobbered, and pass `--no-goal` semantics (omit `--goal-condition`) so the retry is one bounded fix round, not a fresh full goal loop. This burns one additional dispatcher invocation; surface that explicitly.
+- If the run still has fix budget remaining (i.e., the dispatcher exited with `final_verdict == "approved"` before round `max_rounds + 1`, **and** you choose to invest one more round), run a **seeded re-dispatch** (below) with the gate failure as the findings. This burns one additional dispatcher invocation; surface that explicitly.
 - Otherwise, stop the run with the gate failure surfaced. Do not silently fall back. The user must address the gate finding manually or rerun with a higher `--max-rounds`.
+
+**Seeded re-dispatch** (used here and by the fan-out conflict path): a re-dispatch with the same `--step-id` force-recreates the worktree from HEAD — the dispatcher has no resume mode — so the approved work must be seeded back in. Seed it as a **diff file the prompt references by path**, never pasted inline (a diff can run to hundreds of KB):
+
+1. Write the step's approved `final_diff` to `/tmp/stark-copilot-$$/step-$step_id-approved.diff`.
+2. Re-stage prompt files under a **suffixed step id** (`$step_id-r2`, so the original run's artifacts and worktree aren't clobbered). The implement prompt uses "REVISION" framing: first `git apply --3way /tmp/stark-copilot-$$/step-$step_id-approved.diff` in your worktree (resolving any conflicts), then address the listed findings.
+3. Invoke with `--step-id $step_id-r2 --max-rounds 1` and **without** `--goal-condition` — the retry is one bounded fix round, not a fresh goal loop with a fresh budget.
+4. Afterwards run §2h cleanup for **both** step ids.
 
 ### 2f. Apply approved diff
 
 Apply the dispatcher's `final_diff` to the main working tree:
 
-The working tree must be clean before applying. On failure, **reset before doing anything else** — `git apply --3way` exits non-zero having already written conflict markers/partial hunks into the tree, and §2g's `git add -A` would commit that garbage:
+`final_diff` is the dispatcher's `--binary --full-index` rendering, so binary and rename-heavy changes replay correctly. The working tree must be clean before applying (guaranteed by the Phase 2 precondition + per-step commits). On failure, **reset before doing anything else** — `git apply --3way` exits non-zero having already written conflict markers/partial hunks into the tree, and §2g's `git add -A` would commit that garbage:
 
 ```bash
 git apply --3way <<< "$final_diff" || { git reset --hard HEAD && git clean -fd && apply_failed=1; }
 ```
+
+(`git clean -fd` is safe here **only** because the tree was clean pre-apply — the only untracked files are ones the failed apply just created. That is what the Phase 2 precondition buys.)
 
 On `apply_failed`:
 
@@ -408,7 +429,7 @@ For the `gh api` posting snippet, see [references/issue-management.md](reference
 
 Multi-step waves from the §1.4 execution DAG fan out via the **Workflow** tool: one `copilot_dispatch.ts` lead/wing loop per step, concurrently, each in its own worktree (the dispatcher already isolates per step, so no extra `isolation` flag is needed beyond distinct `--step-id`s). All worktrees in a wave branch from the same HEAD — the previous wave's merged result — which is exactly what the DAG guarantees is sufficient context.
 
-Stage each step's three prompt files (§2a) and issue transitions (§2a0) **before** invoking the Workflow, then run one Workflow per multi-step wave:
+Stage each step's three prompt files (§2a) and issue transitions (§2a0) **before** invoking the Workflow. Compose each step's §2b command **fully expanded** — concrete absolute paths, no `$TOOLS`/`$step_id` shell variables (the subagent's shell doesn't have the orchestrator's variables) — and redirect its stdout to a per-step result file: `… > /tmp/stark-copilot-$$/step-$step_id-result.json`. A dispatcher `final_diff` can run to hundreds of KB; the redirect keeps it out of model output — the subagent returns only a small verdict record, and the orchestrator reads the full JSON from the file itself. Then run one Workflow per multi-step wave:
 
 ```js
 export const meta = {
@@ -416,30 +437,31 @@ export const meta = {
   description: 'Run one wave of independent copilot lead/wing loops concurrently',
   phases: [{ title: 'Build' }],
 }
-// Mirrors the §2c dispatcher output shape (subset the orchestrator needs)
-const STEP_VERDICT_SCHEMA = {
+const VERDICT = {
   type: 'object',
-  required: ['step_id', 'final_verdict'],
+  required: ['step_id', 'final_verdict', 'exit_code'],
   properties: {
     step_id: { type: 'string' },
     final_verdict: { type: 'string' },
-    worktree_path: { type: 'string' },
-    final_diff: { type: 'string' },
+    exit_code: { type: 'integer' },
     error: { type: ['string', 'null'] },
-    rounds: { type: 'array' },
   },
 }
-// args.steps = the current wave: [{step_id, cmd}], cmd = the full §2b dispatcher command line
+// args.steps = the current wave: [{step_id, cmd, result_file}]
+// cmd is fully expanded and already redirects stdout to result_file.
 const results = await parallel(args.steps.map(s => () =>
-  agent(`Run this command with Bash and return the JSON object it prints on stdout, verbatim (the command exits non-zero on non-approved verdicts — still return the JSON): ${s.cmd}`,
-        { label: `copilot:${s.step_id}`, phase: 'Build', schema: STEP_VERDICT_SCHEMA })))
+  agent(`Run this command with Bash (it may take many minutes; a non-zero exit means a non-approved verdict — that is data, not an error to retry): ${s.cmd}
+Then Read ${s.result_file} and return {step_id, final_verdict, exit_code, error} extracted from it.`,
+        { label: `copilot:${s.step_id}`, phase: 'Build', schema: VERDICT })))
 return results.filter(Boolean)
 ```
 
-After the Workflow returns, for each step **in deterministic wave order**: verify gates (§2e) → apply diff (§2f) → commit (§2g) → close issues (§2g1) → cleanup (§2h). Two caveats specific to fan-out:
+After the Workflow returns, read each step's `result_file` for the full §2c JSON (`final_diff`, `worktree_path`, `rounds`), then for each step **in deterministic wave order**: verify gates (§2e) → apply diff (§2f) → commit (§2g) → close issues (§2g1) → cleanup (§2h). Caveats specific to fan-out:
 
-- **Cross-step apply conflicts:** every worktree branched from the same HEAD, so a later step's `git apply --3way` may conflict with an earlier step's just-committed diff (the DAG missed a real file-level overlap). §2f already resets the tree on failure; do NOT hand-merge or file-copy — re-dispatch that single step sequentially against the new HEAD with a **suffixed step id** (`$step_id-r2`), re-staged prompts using REVISION framing that carries the step's approved `final_diff` as the starting point plus the conflicting files, `--max-rounds 1`, and no `--goal-condition` (bounded fix round, not a fresh goal loop). Or stop and surface it.
-- **A null result** (skipped/dead subagent) is a failed step — treat as non-`approved`.
+- **Cross-step apply conflicts:** every worktree branched from the same HEAD, so a later step's `git apply --3way` may conflict with an earlier step's just-committed diff (the DAG missed a real file-level overlap). §2f already resets the tree on failure; do NOT hand-merge or file-copy — run a **seeded re-dispatch** (§2e) against the new HEAD, with the conflicting files named alongside the findings. Or stop and surface it.
+- **A null result** (skipped/dead subagent) or a missing/unparseable `result_file` is a failed step — treat as non-`approved`.
+- **Budget multiplies with wave width:** in goal mode each concurrent step carries its own `--goal-max-budget-usd` (default $10) — a K-wide wave puts up to K × budget in flight. The battle plan surfaces the widest wave; thin it with `--sequential` if that exposure is unacceptable.
+- **Test-command collisions:** sibling worktrees run `$test_command` concurrently. A suite that binds fixed ports, writes shared global state, or hits one local DB will flake in parallel — use `--sequential` for such repos (or point tests at per-step resources).
 
 A failed step blocks all downstream waves that depend on it (see Phase 2). **On any halt** (blocked step, apply conflict you don't re-dispatch, stopped run): transition every In-Progress issue whose step never committed back to Todo/Blocked (§2a0 moved the whole wave to In Progress up front — don't leave abandoned work claiming to be active on the board). End-of-run verification (Phase 2.5) runs once, after the last wave.
 
