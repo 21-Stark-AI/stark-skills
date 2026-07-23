@@ -2,7 +2,7 @@
 name: stark-copilot
 description: >-
   Autonomous lead/wing implementation: lead subagent implements, wing subagent reviews, fix-loop until wing approves. Use for copilot, paired build.
-argument-hint: '<plan-or-prompt> [--plan-slug SLUG] [--test-command CMD] [--lead claude|codex|gemini] [--wing claude|codex|gemini] [--max-rounds N] [--timeout N] [--dry-run]'
+argument-hint: '<plan-or-prompt> [--plan-slug SLUG] [--test-command CMD] [--lead claude|codex|gemini] [--wing claude|codex|gemini] [--max-rounds N] [--timeout N] [--sequential] [--parallel] [--dry-run]'
 disable-model-invocation: true
 model: opus
 revision: 63a8c794adafa2df8a713b4dcf9743a09e3c7cfc
@@ -51,7 +51,8 @@ re-implement that logic here.
 - `--timeout N` — per-lead-invocation timeout in seconds (default: 900)
 - `--wing-timeout N` — per-wing-invocation timeout in seconds (default: 600)
 - `--no-goal` — disable the goal-driven lead loop. When the lead is `claude` (the default), the lead's implement prompt is prefixed with a `/goal` directive (§2a) so it keeps iterating until tests pass; `--no-goal` reverts to a single bounded pass. Ignored when the lead is `codex`/`gemini` (`/goal` is a Claude Code feature).
-- `--parallel` — when the steps are mutually independent (no step builds on another's merged result), fan them out concurrently via a Workflow instead of the sequential Phase 2 loop. See [Parallel steps](#parallel-steps-opt-in).
+- `--parallel` — force-treat ALL steps as mutually independent (one wave), overriding the dependency DAG. Use only when you know the deps metadata is over-conservative. Parallelism within a wave is otherwise **on by default** via the execution DAG (§1.4); see [Parallel waves](#parallel-waves-default).
+- `--sequential` — disable DAG-driven parallelism entirely; run every step one at a time in dependency order (the pre-DAG behavior).
 - `--dry-run` — show what would happen without executing
 
 If `--lead` and `--wing` resolve to the same agent, error and stop:
@@ -147,7 +148,23 @@ If `--test-command` provided, use it. Otherwise, auto-detect:
 
 If no test command found, warn: "No test command detected. Wing review will rely on semantic evaluation only."
 
-### 1.4 Show battle plan
+### 1.4 Plan the execution — dependency DAG → waves
+
+Before showing the battle plan, compute an **execution plan**: a DAG over the steps, leveled into **waves**. Steps in the same wave have no dependency edge between them and run **concurrently** (each in its own worktree via the Workflow fan-out — see [Parallel waves](#parallel-waves-default)); waves run sequentially, each branching from the previous wave's merged result.
+
+**Edge sources, per mode:**
+
+- **Issue-driven:** each task issue's `## Dependencies` section (`#NNN` links, written by `/stark-plan-to-tasks`) plus the phase issue's `depends_on`. A step (phase) depends on another step when ANY of its tasks depends on ANY task in the other step. A dependency on a `CLOSED` or human-led (skipped) task is treated as already satisfied — drop the edge.
+- **Plan-file:** parse each step section for an explicit `Dependencies:` / `depends_on:` line. If the plan carries no dependency metadata at all, do NOT infer independence from silence — read each step's task text and mark an edge wherever a step names files, modules, interfaces, or outputs another step creates. When you cannot rule a dependency out, keep the edge.
+- **Inline:** you decomposed the steps yourself — declare `depends_on` per step as you decompose.
+
+**Leveling (Kahn):** wave 1 = steps with no unmet edges; wave N = steps whose edges all land in waves < N. A cycle is a plan defect — print the cycle and stop (do not guess an order).
+
+**Fail-closed default:** ambiguous or missing dependency info ⇒ dependent (sequential). Wrong-parallel corrupts merges; wrong-sequential only costs wall-clock. `--sequential` collapses every step into its own wave; `--parallel` collapses all steps into one wave (explicit operator override only).
+
+Record the result as `waves = [[step, ...], ...]` and carry it into Phase 2.
+
+### 1.5 Show battle plan
 
 ```
 stark-copilot — Battle Plan
@@ -160,11 +177,13 @@ Max rounds:   4 fix rounds (up to 5 reviews per step)
 Test command: pytest
 Timeout:      900s lead / 600s wing
 
-Step 1: Data Model & Storage (#37, #38, #39)
-Step 2: API Layer (#40, #41, #42)
+Wave 1: Step 1: Data Model & Storage (#37, #38, #39)
+Wave 2: Step 2: API Layer (#40, #41, #42)   ∥   Step 3: CLI (#43, #44)
+Wave 3: Step 4: Docs & Release (#45)
 ...
 
 Each step: lead implements in worktree → wing reviews diff → fix-loop until approved → merge
+Steps sharing a wave run concurrently; waves run in order.
 ```
 
 In plan-file or inline mode, replace the Mode line with `Mode: plan-file` or `Mode: inline`.
@@ -173,7 +192,7 @@ In plan-file or inline mode, replace the Mode line with `Mode: plan-file` or `Mo
 
 If `--dry-run`, stop here.
 
-### 1.5 Approach Contract
+### 1.6 Approach Contract
 
 Only when `plan_path` is set (plan-file or issue-driven mode that originated from a plan file). Inline mode skips this step.
 
@@ -181,9 +200,14 @@ Only when `plan_path` is set (plan-file or issue-driven mode that originated fro
 [ -n "$plan_path" ] && node --experimental-strip-types --no-warnings ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/code-review}/tools/approach_contract.ts --plan-file "$plan_path" --force-confirm
 ```
 
-## Phase 2: Execute Steps
+## Phase 2: Execute Waves
 
-For each step (sequentially — each builds on the previous step's merged result):
+Execute the waves from §1.4 **in order**. Within a wave:
+
+- **Single-step wave** — run §2a0–§2j inline, exactly as below.
+- **Multi-step wave** — fan the steps out concurrently via the **Workflow** tool (see [Parallel waves](#parallel-waves-default)), then apply each approved diff and commit **in a deterministic order** (step order within the wave), running §2e–§2g1 per step and §2h cleanup. A non-`approved` step's diff is never applied; surface it and — since later waves may depend on it — stop before the next wave unless every remaining wave is provably independent of the failed step.
+
+For each step, sequential or fanned-out:
 
 ### 2a0. Transition issues to In Progress
 
@@ -271,7 +295,7 @@ audit trail (Phase 4).
 | `final_verdict` | Action |
 |---|---|
 | `approved` | Continue to §2e (verify gates → apply diff → commit). |
-| `blocked` | Stop the run. Print the wing's `summary` and `blocking_findings` from the last round. Do not retry. Clean up worktree (§2g). |
+| `blocked` | Stop the run. Print the wing's `summary` and `blocking_findings` from the last round. Do not retry. Clean up worktree (§2h). |
 | `aborted` | Lead's first round failed (timeout, empty diff, or CLI error). Stop the run, surface the round-1 `error`. Clean up worktree. |
 | `max_rounds_unresolved` | Wing did not approve within `--max-rounds` fix rounds. Stop the run, print all rounds' findings. Clean up worktree. |
 | `unresolved` | Loop terminated for another reason (wing parse retry exhausted, empty-diff revision, mid-loop lead failure). Stop the run, surface the `error` field and the latest findings. Clean up worktree. |
@@ -286,18 +310,23 @@ gates. For procedures, see [references/verification-gates.md](references/verific
 
 Run the gates against the lead's worktree (use `worktree_path` from §2c). If a gate fails:
 
-- If the run still has fix budget remaining (i.e., the dispatcher exited with `final_verdict == "approved"` before round `max_rounds + 1`, **and** you choose to invest one more round), append the gate failure to the wing's findings format and re-invoke `copilot_dispatch.ts` with `--max-rounds 1` and the wing's prior findings included in the implement prompt's "REVISION" framing. This burns one additional dispatcher invocation; surface that explicitly.
+- If the run still has fix budget remaining (i.e., the dispatcher exited with `final_verdict == "approved"` before round `max_rounds + 1`, **and** you choose to invest one more round), re-invoke `copilot_dispatch.ts` with `--max-rounds 1`, re-staged prompt files whose implement prompt uses "REVISION" framing carrying (a) the gate failure in the wing's findings format and (b) the **approved diff from the original run** as the starting point to re-apply-and-fix — a re-dispatch with the same `--step-id` force-recreates the worktree from HEAD (the dispatcher has no resume mode), so without the diff seeded into the prompt the lead starts from scratch. Use a suffixed step id (`$step_id-r2`) so the original run's artifacts aren't clobbered, and pass `--no-goal` semantics (omit `--goal-condition`) so the retry is one bounded fix round, not a fresh full goal loop. This burns one additional dispatcher invocation; surface that explicitly.
 - Otherwise, stop the run with the gate failure surfaced. Do not silently fall back. The user must address the gate finding manually or rerun with a higher `--max-rounds`.
 
 ### 2f. Apply approved diff
 
 Apply the dispatcher's `final_diff` to the main working tree:
 
+The working tree must be clean before applying. On failure, **reset before doing anything else** — `git apply --3way` exits non-zero having already written conflict markers/partial hunks into the tree, and §2g's `git add -A` would commit that garbage:
+
 ```bash
-git apply --3way <<< "$final_diff"
+git apply --3way <<< "$final_diff" || { git reset --hard HEAD && git clean -fd && apply_failed=1; }
 ```
 
-If the diff fails to apply cleanly (rare — the worktree was branched from main's HEAD), fall back to copying changed files from `worktree_path` over to `$REPO_ROOT`.
+On `apply_failed`:
+
+- **Sequential step (HEAD unchanged since the worktree branched):** a conflict is rare here. Fall back to copying changed files from `worktree_path` over to `$REPO_ROOT` — sound only because both trees share the same base.
+- **Fan-out step (HEAD moved — a sibling step in this wave already committed):** the file-copy fallback is **forbidden** — the worktree's files are based on the pre-wave HEAD and copying them silently reverts the sibling's committed edits. Instead, re-dispatch this single step against the new HEAD (see the conflict path in [Parallel waves](#parallel-waves-default)), or stop and surface it.
 
 ### 2g. Commit step
 
@@ -324,7 +353,7 @@ node --experimental-strip-types "$TOOLS/copilot_dispatch.ts" \
 
 ### 2i. Log and continue
 
-Print step summary (lead, wing, rounds count, final verdict, files changed, test result). Move to the next step.
+Print step summary (lead, wing, rounds count, final verdict, files changed, test result). Move to the next step in the wave, then the next wave.
 
 ### 2j. Session state update
 
@@ -375,28 +404,46 @@ If the working tree is on a branch with an open PR (detect via `gh pr view --jso
 
 For the `gh api` posting snippet, see [references/issue-management.md](references/issue-management.md).
 
-## Parallel steps (opt-in)
+## Parallel waves (default)
 
-Active only with `--parallel`, and only sound when the steps are **mutually independent** — no step's implement prompt references a prior step's merged result. The default copilot contract is sequential ("each builds on the previous step's merged result"), so most plans should NOT use this.
+Multi-step waves from the §1.4 execution DAG fan out via the **Workflow** tool: one `copilot_dispatch.ts` lead/wing loop per step, concurrently, each in its own worktree (the dispatcher already isolates per step, so no extra `isolation` flag is needed beyond distinct `--step-id`s). All worktrees in a wave branch from the same HEAD — the previous wave's merged result — which is exactly what the DAG guarantees is sufficient context.
 
-When the steps are independent, call the **Workflow** tool and run one `copilot_dispatch.ts` lead/wing loop per step concurrently, each in its own worktree (the dispatcher already isolates per step, so no extra `isolation` flag is needed beyond distinct `--step-id`s):
+Stage each step's three prompt files (§2a) and issue transitions (§2a0) **before** invoking the Workflow, then run one Workflow per multi-step wave:
 
 ```js
 export const meta = {
-  name: 'copilot-parallel',
-  description: 'Run independent copilot lead/wing loops concurrently',
+  name: 'copilot-wave',
+  description: 'Run one wave of independent copilot lead/wing loops concurrently',
   phases: [{ title: 'Build' }],
 }
-const steps = args.steps // [{step_id, title, ...}]
-const results = await parallel(steps.map(s => () =>
-  agent(`Dispatch copilot_dispatch.ts for step ${s.step_id} (lead/wing loop) and return its JSON verdict.`,
+// Mirrors the §2c dispatcher output shape (subset the orchestrator needs)
+const STEP_VERDICT_SCHEMA = {
+  type: 'object',
+  required: ['step_id', 'final_verdict'],
+  properties: {
+    step_id: { type: 'string' },
+    final_verdict: { type: 'string' },
+    worktree_path: { type: 'string' },
+    final_diff: { type: 'string' },
+    error: { type: ['string', 'null'] },
+    rounds: { type: 'array' },
+  },
+}
+// args.steps = the current wave: [{step_id, cmd}], cmd = the full §2b dispatcher command line
+const results = await parallel(args.steps.map(s => () =>
+  agent(`Run this command with Bash and return the JSON object it prints on stdout, verbatim (the command exits non-zero on non-approved verdicts — still return the JSON): ${s.cmd}`,
         { label: `copilot:${s.step_id}`, phase: 'Build', schema: STEP_VERDICT_SCHEMA })))
 return results.filter(Boolean)
 ```
 
-After the Workflow returns, apply each approved diff and commit in a deterministic order (§2e–§2g), then run end-of-run verification (Phase 2.5) once across the combined result. If any step came back non-`approved`, surface it and do not apply that step's diff.
+After the Workflow returns, for each step **in deterministic wave order**: verify gates (§2e) → apply diff (§2f) → commit (§2g) → close issues (§2g1) → cleanup (§2h). Two caveats specific to fan-out:
 
-> **Constraint:** parallel mode trades the build-on-previous guarantee for throughput. If any step depends on another, leave `--parallel` off.
+- **Cross-step apply conflicts:** every worktree branched from the same HEAD, so a later step's `git apply --3way` may conflict with an earlier step's just-committed diff (the DAG missed a real file-level overlap). §2f already resets the tree on failure; do NOT hand-merge or file-copy — re-dispatch that single step sequentially against the new HEAD with a **suffixed step id** (`$step_id-r2`), re-staged prompts using REVISION framing that carries the step's approved `final_diff` as the starting point plus the conflicting files, `--max-rounds 1`, and no `--goal-condition` (bounded fix round, not a fresh goal loop). Or stop and surface it.
+- **A null result** (skipped/dead subagent) is a failed step — treat as non-`approved`.
+
+A failed step blocks all downstream waves that depend on it (see Phase 2). **On any halt** (blocked step, apply conflict you don't re-dispatch, stopped run): transition every In-Progress issue whose step never committed back to Todo/Blocked (§2a0 moved the whole wave to In Progress up front — don't leave abandoned work claiming to be active on the board). End-of-run verification (Phase 2.5) runs once, after the last wave.
+
+> `--sequential` disables fan-out entirely; `--parallel` forces one all-steps wave (operator override, sound only when the deps metadata is over-conservative and the steps truly don't overlap).
 
 ## Failure Modes
 

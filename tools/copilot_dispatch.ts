@@ -858,7 +858,7 @@ export async function collectDiff(
   worktreePath: string,
 ): Promise<{ diff: string; files: string[]; added: number; removed: number }> {
   await runGit(["add", "-A"], worktreePath, 60);
-  const diffRes = await runGit(["diff", "--cached"], worktreePath, 120);
+  const diffRes = await runGit(["diff", "--cached", "--binary", "--full-index"], worktreePath, 120);
   const numstat = await runGit(["diff", "--cached", "--numstat"], worktreePath, 60);
   const files: string[] = [];
   let added = 0;
