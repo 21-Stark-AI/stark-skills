@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- copilot: headless claude subprocesses (goal + non-goal lead, claude wing) now run with an empty MCP roster (`--mcp-config` + `--strict-mcp-config` via `writeEmptyMcpConfig`) — they inherited the host's full MCP server list, where each configured server adds startup latency that compounded into multi-minute hangs before the prompt was even processed.
+- copilot: wing verdict findings that arrive as objects (`{file, issue, ...}` — codex does this) are JSON-serialized by `toStringList` instead of collapsing to `[object Object]`, which starved the lead's fix round of the actual finding text.
+
 ## [v0.10.0] - 2026-07-24
 
 ### Added
