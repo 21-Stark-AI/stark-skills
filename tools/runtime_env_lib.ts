@@ -4,8 +4,9 @@
  *
  * Controls which env vars reach CLI subprocesses, injects GitHub App
  * tokens for operations that need repo access, manages process-scoped
- * temp dirs, and injects ANTHROPIC_API_KEY (from the ANTHROPIC_AGENTS
- * host var) for the claude agent while keeping it out of codex/gemini.
+ * temp dirs, and applies claude model auth via `claude_auth_lib.ts`
+ * (subscription OAuth by default; ANTHROPIC_API_KEY injection in api
+ * mode) while keeping the key out of codex/gemini envs.
  *
  * The Python imported `config_loader` + shelled out to `github_app.ts`;
  * this port reads config via `stark_config_lib.ts` and mints tokens by
@@ -17,6 +18,7 @@ import fs from "node:fs";
 
 import { getToken, resolveAppName } from "./github_app_lib.ts";
 import { getRuntimeConfig, loadGlobalConfig } from "./stark_config_lib.ts";
+import { applyClaudeAuth } from "./claude_auth_lib.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -132,9 +134,10 @@ export function makeTempDir(prefix: string): string {
  * @param agent      "claude", "codex", or "gemini".
  * @param operation  "review", "pr_create", "issue_ops", "local", or other.
  *
- * ANTHROPIC_API_KEY is injected for the claude agent (sourced from
- * ANTHROPIC_AGENTS) and absent from codex/gemini envs. GH_TOKEN is
- * present only when `operation === "review"`.
+ * Claude model auth follows `claude_auth_lib.ts` (subscription default;
+ * ANTHROPIC_API_KEY injected only in api mode) and the key is always
+ * absent from codex/gemini envs. GH_TOKEN is present only when
+ * `operation === "review"`.
  */
 export async function buildAgentEnv(
   agent: string,
@@ -167,16 +170,11 @@ export async function buildAgentEnv(
     env["CLAUDE_PLUGIN_ROOT"] = pluginRoot;
   }
 
-  // Inject ANTHROPIC_API_KEY for the claude agent, from ANTHROPIC_AGENTS.
+  // Model auth for the claude agent: subscription mode (default) leaves
+  // ANTHROPIC_API_KEY absent so the CLI uses the logged-in account's OAuth
+  // credentials; api mode injects it from ANTHROPIC_AGENTS. See claude_auth_lib.ts.
   if (agent === "claude") {
-    const sourceKey = process.env[API_KEY_SOURCE_VAR];
-    if (!sourceKey) {
-      throw new Error(
-        `${API_KEY_SOURCE_VAR} not set in environment. ` +
-          "Source your Anthropic key file before dispatching claude.",
-      );
-    }
-    env["ANTHROPIC_API_KEY"] = sourceKey;
+    applyClaudeAuth(env, { require: true });
   }
 
   // GH_TOKEN: inject the bot token only for review operations.

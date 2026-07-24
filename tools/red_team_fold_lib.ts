@@ -23,6 +23,7 @@ import {
 } from "./agent_claude.ts";
 import type { BuiltCommand } from "./agent_codex.ts";
 import { assetPromptsDir } from "./asset_root_lib.ts";
+import { applyClaudeAuth } from "./claude_auth_lib.ts";
 import { getRedTeamConfig } from "./stark_config_lib.ts";
 import { computeDispatchCost } from "./cost_lib.ts";
 import {
@@ -431,10 +432,10 @@ export const DECIDER_DISALLOWED_TOOLS = [
  *
  * Starts from `scrubEnv()` (PATH/USER/SHELL/LANG/LC_ALL/TMPDIR — no HOME, no
  * credentials) and re-adds ONLY what the model call itself needs: `HOME`
- * (so the Claude CLI can find its config) and `ANTHROPIC_API_KEY` (the one
- * sanctioned egress — the call to Anthropic). `ANTHROPIC_AGENTS` is honored
- * as the source var and surfaced as `ANTHROPIC_API_KEY`, matching
- * `agent_claude.ts::buildEnv`. The repo/publishing credential
+ * (so the Claude CLI can find its config/OAuth credentials) plus model auth
+ * per `claude_auth_lib.ts` (subscription default rides HOME's OAuth; api
+ * mode surfaces `ANTHROPIC_AGENTS` as `ANTHROPIC_API_KEY` — the one
+ * sanctioned egress, matching `agent_claude.ts::buildEnv`). The repo/publishing credential
  * (`GITHUB_TOKEN`/`GH_TOKEN`) and `OPENAI_*` are deliberately NOT
  * re-added — a prompt-injected artifact that talks past the delimiter
  * defense still finds no GitHub token to reach the repo with. The host
@@ -445,10 +446,7 @@ export function buildDeciderEnv(
 ): Record<string, string> {
   const env = scrubEnv(source);
   if (typeof source.HOME === "string") env.HOME = source.HOME;
-  const apiKey = source.ANTHROPIC_API_KEY ?? source.ANTHROPIC_AGENTS;
-  if (typeof apiKey === "string" && apiKey.length > 0) {
-    env.ANTHROPIC_API_KEY = apiKey;
-  }
+  applyClaudeAuth(env, { source });
   return env;
 }
 

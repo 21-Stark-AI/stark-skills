@@ -2,6 +2,7 @@ import type { AgentName, Finding, Severity } from "./stark_review_lib.ts";
 import { findingId } from "./stark_review_lib.ts";
 import type { BuildContext, BuiltCommand, ParseError, ParseResult } from "./agent_codex.ts";
 import { resolvedPath } from "./agent_env_lib.ts";
+import { applyClaudeAuth } from "./claude_auth_lib.ts";
 
 export const CLAUDE_DEFAULT_MODEL = "claude-opus-4-8";
 
@@ -14,11 +15,12 @@ const KNOWN_FINDING_KEYS: ReadonlySet<string> = new Set([
   "title", "body", "classification", "classification_reason", "extra",
 ]);
 
-// Strict allowlist: PATH/HOME for the binary, plus ANTHROPIC_API_KEY for auth.
-// GH_TOKEN/GITHUB_TOKEN/STARK_PUSH_TOKEN are intentionally excluded so the
-// reviewer subprocess cannot exfiltrate posting credentials. ANTHROPIC_AGENTS
-// (the source var in claude_utils.py) is read here and surfaced as
-// ANTHROPIC_API_KEY only — the source name is never forwarded.
+// Strict allowlist: PATH/HOME for the binary + model auth (see
+// claude_auth_lib.ts — subscription mode rides HOME's OAuth credentials,
+// api mode surfaces ANTHROPIC_AGENTS as ANTHROPIC_API_KEY; the source name
+// is never forwarded). GH_TOKEN/GITHUB_TOKEN/STARK_PUSH_TOKEN are
+// intentionally excluded so the reviewer subprocess cannot exfiltrate
+// posting credentials.
 const ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"] as const;
 
 function buildEnv(): Record<string, string> {
@@ -28,10 +30,7 @@ function buildEnv(): Record<string, string> {
     if (typeof v === "string") env[key] = v;
   }
   env.PATH = resolvedPath(env.PATH);
-  const apiKey = process.env.ANTHROPIC_AGENTS ?? process.env.ANTHROPIC_API_KEY;
-  if (typeof apiKey === "string" && apiKey.length > 0) {
-    env.ANTHROPIC_API_KEY = apiKey;
-  }
+  applyClaudeAuth(env);
   return env;
 }
 

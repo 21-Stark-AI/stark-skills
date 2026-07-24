@@ -30,6 +30,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { assetConfigPath } from "./asset_root_lib.ts";
+import { applyClaudeAuth } from "./claude_auth_lib.ts";
 import { resolveVertexLocation, resolveVertexProject } from "./vertex_config_lib.ts";
 
 // Constants ---------------------------------------------------------------
@@ -452,14 +453,9 @@ export async function buildAgentEnv(
   }
 
   if (agent === "claude") {
-    const sourceKey = process.env["ANTHROPIC_AGENTS"];
-    if (!sourceKey) {
-      throw new Error(
-        "ANTHROPIC_AGENTS not set in environment. Source your Anthropic key file " +
-          "(e.g. `source \"$HOME/Code/.private/API Keys/.anthropic.key\"`) before dispatching claude.",
-      );
-    }
-    env["ANTHROPIC_API_KEY"] = sourceKey;
+    // Subscription mode (default) leaves ANTHROPIC_API_KEY absent — the CLI
+    // uses the logged-in account's OAuth creds; api mode injects the key.
+    applyClaudeAuth(env, { require: true });
   } else {
     delete env["ANTHROPIC_API_KEY"];
   }

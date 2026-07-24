@@ -89,6 +89,7 @@ import {
   shouldRevertScopeGrowthRound,
 } from "./stark_review_doc_analytics_lib.ts";
 import { assetConfigPath, assetPromptsDir } from "./asset_root_lib.ts";
+import { applyClaudeAuth } from "./claude_auth_lib.ts";
 
 // ─── Constants ─────────────────────────────────────────────────────────
 
@@ -327,10 +328,7 @@ function baseSubprocessEnv(): NodeJS.ProcessEnv {
 
 function claudeSubprocessEnv(): NodeJS.ProcessEnv {
   const env = baseSubprocessEnv();
-  const apiKey = process.env.ANTHROPIC_AGENTS ?? process.env.ANTHROPIC_API_KEY;
-  if (typeof apiKey === "string" && apiKey.length > 0) {
-    env.ANTHROPIC_API_KEY = apiKey;
-  }
+  applyClaudeAuth(env);
   return env;
 }
 
