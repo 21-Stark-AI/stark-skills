@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.10.0] - 2026-07-24
+
+### Added
+- **auth: subscription-mode claude dispatch — stop billing the API by default (#782).** New `tools/claude_auth_lib.ts` is the SSOT for headless-claude model auth: `subscription` mode (default — no `ANTHROPIC_API_KEY` injected; the CLI rides the logged-in account's OAuth credentials via `HOME`, billing the seat instead of the metered API) vs `api` mode (legacy key injection from `ANTHROPIC_AGENTS`). Resolution: `STARK_CLAUDE_AUTH` env > `models.claude.auth` config > `subscription`. All 6 dispatch env-builders route through `applyClaudeAuth`; subscription mode actively strips stale keys so API billing can't silently re-enable. Live-verified keyless dispatch on opus-4-8 and fable-5.
+- **auth: gemini oauth mode — dispatch on the Code Assist seat, not per-token Vertex (#783).** New `tools/gemini_auth_lib.ts` (sibling SSOT): `oauth` mode (default — `selectedType: "oauth-personal"` riding the logged-in Google account's Gemini Code Assist seat, `GOOGLE_CLOUD_PROJECT` as the licensing project) vs `vertex` (former hardwired per-token behavior) vs `api-key`. Resolution: `STARK_GEMINI_AUTH` env > `models.gemini.auth` config > `oauth`. All 3 gemini env-builders swept; `agent_gemini` now copies the oauth cred files into its isolated home; Vertex env vars are kept out of non-vertex envs (inside the CLI they override the settings.json auth type). Live-verified `gemini-3.1-pro-preview` on the seat with zero Vertex billing.
+
 ## [v0.9.1] - 2026-07-23
 
 ### Added
