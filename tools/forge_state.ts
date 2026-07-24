@@ -21,9 +21,9 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 import { stateRoot } from "./asset_root_lib.ts";
+import { isMainModule } from "./main_module_lib.ts";
 import { getForgePipelineConfig } from "./stark_config_lib.ts";
 import {
   pruneRunDirs,
@@ -2374,6 +2374,6 @@ export function main(argv: string[]): number {
 
 // Run `main` only when executed as the entry point — never on import (tests
 // import the pure helpers), so importing this module is side-effect free.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   process.exit(main(process.argv.slice(2)));
 }

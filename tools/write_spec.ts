@@ -46,7 +46,7 @@ import {
 } from "./write_spec_lib.ts";
 import { DEFAULT_WRITE_SPEC, getWriteSpecConfig } from "./stark_config_lib.ts";
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isMainModule } from "./main_module_lib.ts";
 
 /** The v1 agent allowlist. `gemini` is a KNOWN-but-unsupported name (distinct
  * error message); anything else is an unknown value. */
@@ -374,7 +374,7 @@ async function main(argv: string[]): Promise<number> {
 // Run `main` only when executed as the entry point — NOT when imported (e.g. a
 // unit test importing `renderReceipt`), so importing this module is side-effect
 // free.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((err) => {

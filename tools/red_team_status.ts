@@ -18,6 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveDb } from "./red_team_db_resolver.ts";
+import { isMainModule } from "./main_module_lib.ts";
 
 import {
   type PendingHalt,
@@ -173,6 +174,6 @@ export function main(argv: string[]): number {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   process.exit(main(process.argv.slice(2)));
 }
