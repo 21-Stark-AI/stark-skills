@@ -82,17 +82,28 @@ test("buildAgentEnv: codex/local → no Anthropic key, sanitized, has tmpdir", a
   fs.rmSync(resolved["STARK_AGENT_TMPDIR"], { recursive: true, force: true });
 });
 
-test("buildAgentEnv: claude/local → ANTHROPIC_API_KEY injected from ANTHROPIC_AGENTS", async () => {
-  const resolved = await withEnv({ ANTHROPIC_AGENTS: "secret-key" }, () =>
-    buildAgentEnv("claude", "local"),
+test("buildAgentEnv: claude/local subscription mode (default) → no ANTHROPIC_API_KEY", async () => {
+  const resolved = await withEnv(
+    { STARK_CLAUDE_AUTH: "subscription", ANTHROPIC_AGENTS: "secret-key" },
+    () => buildAgentEnv("claude", "local"),
+  );
+  assert.equal(resolved["ANTHROPIC_API_KEY"], undefined, "subscription mode must not inject the key");
+  assert.equal(resolved["ANTHROPIC_AGENTS"], undefined, "source var must not leak");
+  fs.rmSync(resolved["STARK_AGENT_TMPDIR"], { recursive: true, force: true });
+});
+
+test("buildAgentEnv: claude/local api mode → ANTHROPIC_API_KEY injected from ANTHROPIC_AGENTS", async () => {
+  const resolved = await withEnv(
+    { STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: "secret-key" },
+    () => buildAgentEnv("claude", "local"),
   );
   assert.equal(resolved["ANTHROPIC_API_KEY"], "secret-key");
   assert.equal(resolved["ANTHROPIC_AGENTS"], undefined, "source var must not leak");
   fs.rmSync(resolved["STARK_AGENT_TMPDIR"], { recursive: true, force: true });
 });
 
-test("buildAgentEnv: claude with no ANTHROPIC_AGENTS → throws", async () => {
-  await withEnv({ ANTHROPIC_AGENTS: undefined }, async () => {
+test("buildAgentEnv: claude api mode with no ANTHROPIC_AGENTS → throws", async () => {
+  await withEnv({ STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: undefined }, async () => {
     await assert.rejects(
       () => buildAgentEnv("claude", "local"),
       /ANTHROPIC_AGENTS not set/,

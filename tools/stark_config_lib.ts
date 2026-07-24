@@ -56,7 +56,10 @@ export interface ModelEntry {
 }
 
 export const DEFAULT_MODELS: Record<string, ModelEntry> = {
-  claude: { enabled: true, model_id: "claude-opus-4-8" },
+  // auth: "subscription" dispatches headless claude on the logged-in
+  // account's OAuth credentials; "api" injects ANTHROPIC_API_KEY (from
+  // ANTHROPIC_AGENTS). Env override: STARK_CLAUDE_AUTH. See claude_auth_lib.ts.
+  claude: { enabled: true, model_id: "claude-opus-4-8", auth: "subscription" },
   codex: { enabled: true, model_id: "gpt-5.6-sol" },
   gemini: { enabled: true, model_id: "gemini-3.1-pro-preview" },
 };

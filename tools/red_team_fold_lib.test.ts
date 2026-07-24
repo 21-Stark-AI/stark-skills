@@ -481,9 +481,27 @@ test("runFold: an invalid decider disposition is recorded as apply_failed, not d
   assert.equal(foldLog.includes("APPLY_FAILED"), true);
 });
 
-test("rt1: buildDeciderEnv keeps model auth, drops repo/publishing creds", () => {
+test("rt1: buildDeciderEnv subscription mode (default) injects no key, drops creds", () => {
   const env = buildDeciderEnv({
     HOME: "/home/me",
+    STARK_CLAUDE_AUTH: "subscription",
+    ANTHROPIC_API_KEY: "sk-ant-x",
+    GITHUB_TOKEN: "ghs_secret",
+    GH_TOKEN: "gh_secret",
+    OPENAI_API_KEY: "sk-openai",
+    PATH: "/usr/bin",
+  } as unknown as NodeJS.ProcessEnv);
+  assert.equal(env.HOME, "/home/me"); // OAuth creds resolve via HOME
+  assert.equal(env.ANTHROPIC_API_KEY, undefined); // subscription: no key egress
+  assert.equal(env.GITHUB_TOKEN, undefined);
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.OPENAI_API_KEY, undefined);
+});
+
+test("rt1: buildDeciderEnv api mode keeps model auth, drops repo/publishing creds", () => {
+  const env = buildDeciderEnv({
+    HOME: "/home/me",
+    STARK_CLAUDE_AUTH: "api",
     ANTHROPIC_API_KEY: "sk-ant-x",
     GITHUB_TOKEN: "ghs_secret",
     GH_TOKEN: "gh_secret",
@@ -498,8 +516,8 @@ test("rt1: buildDeciderEnv keeps model auth, drops repo/publishing creds", () =>
   assert.equal(env.OPENAI_API_KEY, undefined);
 });
 
-test("rt1: buildDeciderEnv surfaces ANTHROPIC_AGENTS as ANTHROPIC_API_KEY", () => {
-  const env = buildDeciderEnv({ HOME: "/h", ANTHROPIC_AGENTS: "sk-agents", PATH: "/usr/bin" } as unknown as NodeJS.ProcessEnv);
+test("rt1: buildDeciderEnv api mode surfaces ANTHROPIC_AGENTS as ANTHROPIC_API_KEY", () => {
+  const env = buildDeciderEnv({ HOME: "/h", STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: "sk-agents", PATH: "/usr/bin" } as unknown as NodeJS.ProcessEnv);
   assert.equal(env.ANTHROPIC_API_KEY, "sk-agents");
   assert.equal(env.GITHUB_TOKEN, undefined);
 });

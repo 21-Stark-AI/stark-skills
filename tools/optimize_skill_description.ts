@@ -32,6 +32,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { applyClaudeAuth } from "./claude_auth_lib.ts";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -160,20 +162,12 @@ const ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"] as const;
 export function buildCleanEnv(
   source: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
-  const apiKey = source.ANTHROPIC_AGENTS;
-  if (!apiKey) {
-    throw new Error(
-      "ANTHROPIC_AGENTS not set in environment. " +
-        'Source your Anthropic key file (e.g. `source "$HOME/Code/.private/API Keys/.anthropic.key"`) ' +
-        "before running Claude sub-agents.",
-    );
-  }
   const env: Record<string, string> = {};
   for (const key of ENV_ALLOWLIST) {
     const v = source[key];
     if (typeof v === "string") env[key] = v;
   }
-  env.ANTHROPIC_API_KEY = apiKey;
+  applyClaudeAuth(env, { source, require: true });
   return env;
 }
 

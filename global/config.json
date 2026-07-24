@@ -55,7 +55,8 @@
   "models": {
     "claude": {
       "enabled": true,
-      "model_id": "claude-opus-4-8"
+      "model_id": "claude-opus-4-8",
+      "auth": "subscription"
     },
     "codex": {
       "enabled": true,

@@ -44,6 +44,7 @@ This is a **personal playground**, not production. No customers depend on it; th
 ### Infrastructure
 - `tools/stark_config_lib.ts` — full config reader (DEFAULT_* sections, per-section accessors, deep merge, red_team locked-field enforcement)
 - `tools/runtime_env_lib.ts` — isolated subprocess env builder (allowlist, GitHub App token injection, temp dirs)
+- `tools/claude_auth_lib.ts` — headless-claude model auth SSOT: `subscription` mode (default, no `ANTHROPIC_API_KEY` — CLI uses the logged-in account's OAuth creds) vs `api` mode (inject key from `ANTHROPIC_AGENTS`); `STARK_CLAUDE_AUTH` env > `models.claude.auth` config > `subscription`
 - `tools/github_projects_lib.ts` + `tools/github_projects.ts` — GitHub Projects V2 GraphQL operations (TS; replaces the deleted `scripts/github_projects.py`)
 
 ### Dispatch tools (TS)
