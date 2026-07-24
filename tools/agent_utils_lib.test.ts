@@ -238,7 +238,8 @@ test("setupGeminiHome: approval mode patched into settings.json", () => {
   }
 });
 
-test("setupGeminiHome: forces Vertex AI auth + global region", () => {
+test("setupGeminiHome: vertex mode forces Vertex AI auth + global region", () => {
+  process.env.STARK_GEMINI_AUTH = "vertex";
   const home = setupGeminiHome("agentutil-test-", "/tmp/proj", "t");
   try {
     const settings = JSON.parse(
@@ -249,6 +250,23 @@ test("setupGeminiHome: forces Vertex AI auth + global region", () => {
     assert.equal(settings.security.auth.vertexAi.region, "global");
     assert.ok(settings.security.auth.vertexAi.projectId);
   } finally {
+    delete process.env.STARK_GEMINI_AUTH;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setupGeminiHome: oauth mode (default) selects oauth-personal, no vertexAi", () => {
+  process.env.STARK_GEMINI_AUTH = "oauth";
+  const home = setupGeminiHome("agentutil-test-", "/tmp/proj", "t");
+  try {
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".gemini", "settings.json"), "utf8"),
+    );
+    assert.equal(settings.security.auth.selectedType, "oauth-personal");
+    assert.equal(settings.selectedAuthType, "oauth-personal");
+    assert.equal(settings.security.auth.vertexAi, undefined);
+  } finally {
+    delete process.env.STARK_GEMINI_AUTH;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
@@ -294,8 +312,9 @@ test("makeGeminiEnv: trustWorkspace opt-in", () => {
   assert.equal(env.GEMINI_CLI_TRUST_WORKSPACE, "true");
 });
 
-test("makeGeminiEnv: forces Vertex AI env, overrides a host regional pin", () => {
+test("makeGeminiEnv: vertex mode forces Vertex AI env, overrides a host regional pin", () => {
   const prev = process.env.GOOGLE_CLOUD_LOCATION;
+  process.env.STARK_GEMINI_AUTH = "vertex";
   process.env.GOOGLE_CLOUD_LOCATION = "us-east1";
   try {
     const env = makeGeminiEnv("/tmp/h");
@@ -303,8 +322,21 @@ test("makeGeminiEnv: forces Vertex AI env, overrides a host regional pin", () =>
     assert.ok(env.GOOGLE_CLOUD_PROJECT);
     assert.equal(env.GOOGLE_CLOUD_LOCATION, "global");
   } finally {
+    delete process.env.STARK_GEMINI_AUTH;
     if (prev === undefined) delete process.env.GOOGLE_CLOUD_LOCATION;
     else process.env.GOOGLE_CLOUD_LOCATION = prev;
+  }
+});
+
+test("makeGeminiEnv: oauth mode keeps Vertex env out, keeps licensing project", () => {
+  process.env.STARK_GEMINI_AUTH = "oauth";
+  try {
+    const env = makeGeminiEnv("/tmp/h");
+    assert.equal(env.GOOGLE_GENAI_USE_VERTEXAI, undefined);
+    assert.equal(env.GOOGLE_APPLICATION_CREDENTIALS, undefined);
+    assert.ok(env.GOOGLE_CLOUD_PROJECT, "Code Assist licensing project must survive");
+  } finally {
+    delete process.env.STARK_GEMINI_AUTH;
   }
 });
 

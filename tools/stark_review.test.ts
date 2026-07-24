@@ -134,10 +134,14 @@ test("agent_gemini: buildCommand emits gemini -o json with model and stdin promp
     );
     if (process.env.GEMINI_API_KEY) {
       assert.equal(settings.selectedAuthType, "gemini-api-key");
-    } else {
+    } else if (process.env.STARK_GEMINI_AUTH === "vertex") {
       assert.equal(settings.selectedAuthType, "vertex-ai");
       assert.equal(built.env.GOOGLE_GENAI_USE_VERTEXAI, "true");
       assert.equal(built.env.GOOGLE_CLOUD_LOCATION, "global");
+    } else {
+      // oauth default: creds ride the copied oauth files, no Vertex env.
+      assert.equal(settings.selectedAuthType, "oauth-personal");
+      assert.equal(built.env.GOOGLE_GENAI_USE_VERTEXAI, undefined);
     }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

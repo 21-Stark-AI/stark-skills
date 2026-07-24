@@ -7,6 +7,7 @@ import { findingId } from "./stark_review_lib.ts";
 import type { BuildContext, BuiltCommand, ParseError, ParseResult } from "./agent_codex.ts";
 import { resolvedPath } from "./agent_env_lib.ts";
 import { resolveVertexLocation, resolveVertexProject } from "./vertex_config_lib.ts";
+import { geminiAuthSettings, resolveGeminiAuthMode } from "./gemini_auth_lib.ts";
 
 export const GEMINI_DEFAULT_MODEL = "gemini-3.1-pro-preview";
 // Vertex project/location resolved at command-build time (env > config >
@@ -32,24 +33,28 @@ const ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"] as const;
  * Caller passes the dispatcher cwd in projectDir; we register it. The home
  * lives under <projectDir>/.gemini-home so it is cleaned up when the
  * dispatcher rmSyncs the cwd. */
+const OAUTH_CRED_FILES = ["oauth_creds.json", "google_accounts.json", "installation_id"] as const;
+
 export function setupGeminiHome(projectDir: string, useApiKey: boolean): string {
   const home = path.join(projectDir, ".gemini-home");
   const dotGemini = path.join(home, ".gemini");
   fs.mkdirSync(dotGemini, { recursive: true });
-  const project = resolveVertexProject();
-  const vertexAi: Record<string, string> = { region: resolveVertexLocation() };
-  if (project) vertexAi.projectId = project;
-  const settings = useApiKey
-    ? { security: { auth: { selectedType: "gemini-api-key" } }, selectedAuthType: "gemini-api-key" }
-    : {
-        security: {
-          auth: {
-            selectedType: "vertex-ai",
-            vertexAi,
-          },
-        },
-        selectedAuthType: "vertex-ai",
-      };
+  const mode = useApiKey ? "api-key" : resolveGeminiAuthMode();
+  const auth = geminiAuthSettings(mode, {
+    projectId: resolveVertexProject() ?? undefined,
+    region: resolveVertexLocation(),
+  });
+  if (mode === "oauth") {
+    // OAuth creds live in the real home — copy them into the isolated one.
+    const realGeminiDir = path.join(process.env.GEMINI_CLI_HOME || os.homedir(), ".gemini");
+    for (const f of OAUTH_CRED_FILES) {
+      const src = path.join(realGeminiDir, f);
+      if (fs.existsSync(src)) {
+        try { fs.copyFileSync(src, path.join(dotGemini, f)); } catch { /* best-effort */ }
+      }
+    }
+  }
+  const settings = { security: { auth }, selectedAuthType: auth.selectedType };
   fs.writeFileSync(path.join(dotGemini, "settings.json"), JSON.stringify(settings));
   fs.writeFileSync(
     path.join(dotGemini, "projects.json"),
@@ -83,7 +88,7 @@ function buildEnv(geminiHome: string, apiKey: string | null, trustWorkspace: boo
     // API-key mode: disable Vertex so the CLI does not retry against ADC.
     env.GEMINI_API_KEY = apiKey;
     env.GOOGLE_GENAI_USE_VERTEXAI = "false";
-  } else {
+  } else if (resolveGeminiAuthMode() === "vertex") {
     // Vertex AI + ADC. We force these defaults rather than forwarding host
     // values, because a host-set GOOGLE_CLOUD_LOCATION (e.g. us-east1) breaks
     // preview models that only exist on the global endpoint.
@@ -98,6 +103,12 @@ function buildEnv(geminiHome: string, apiKey: string | null, trustWorkspace: boo
       const defaultAdc = path.join(os.homedir(), ".config", "gcloud", "application_default_credentials.json");
       if (fs.existsSync(defaultAdc)) env.GOOGLE_APPLICATION_CREDENTIALS = defaultAdc;
     }
+  } else {
+    // oauth (Code Assist seat): creds copied into the isolated home; only
+    // the licensing project is needed. Vertex env must stay out or the CLI
+    // overrides the settings.json auth type.
+    const project = resolveVertexProject();
+    if (project) env.GOOGLE_CLOUD_PROJECT = project;
   }
   return env;
 }

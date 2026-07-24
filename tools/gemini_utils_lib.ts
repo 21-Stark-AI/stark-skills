@@ -17,6 +17,7 @@ import path from "node:path";
 import { AgentDisabledError } from "./agent_disabled_error.ts";
 import { getModelId, isAgentEnabled } from "./stark_config_lib.ts";
 import { resolveVertexLocation, resolveVertexProject } from "./vertex_config_lib.ts";
+import { geminiAuthSettings, resolveGeminiAuthMode } from "./gemini_auth_lib.ts";
 
 export { AgentDisabledError };
 
@@ -204,17 +205,14 @@ export function setupGeminiHome(
     }
   }
 
-  const project = resolveVertexProject();
-  const vertexAi: Record<string, string> = { region: resolveVertexLocation() };
-  if (project) vertexAi.projectId = project;
+  const authMode = resolveGeminiAuthMode();
+  const auth = geminiAuthSettings(authMode, {
+    projectId: resolveVertexProject() ?? undefined,
+    region: resolveVertexLocation(),
+  });
   const settings: Record<string, unknown> = {
-    security: {
-      auth: {
-        selectedType: "vertex-ai",
-        vertexAi,
-      },
-    },
-    selectedAuthType: "vertex-ai",
+    security: { auth },
+    selectedAuthType: auth.selectedType,
   };
   if (approvalMode) settings.defaultApprovalMode = approvalMode;
   fs.writeFileSync(path.join(geminiDir, "settings.json"), JSON.stringify(settings));
@@ -282,13 +280,21 @@ export function makeGeminiEnv(
   if (options.trustWorkspace) {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
-  env.GOOGLE_GENAI_USE_VERTEXAI = "true";
   const project = resolveVertexProject();
   if (project) env.GOOGLE_CLOUD_PROJECT = project;
-  env.GOOGLE_CLOUD_LOCATION = resolveVertexLocation();
-  const adc = defaultAdcPath();
-  if (!("GOOGLE_APPLICATION_CREDENTIALS" in env) && fs.existsSync(adc)) {
-    env.GOOGLE_APPLICATION_CREDENTIALS = adc;
+  if (resolveGeminiAuthMode() === "vertex") {
+    env.GOOGLE_GENAI_USE_VERTEXAI = "true";
+    env.GOOGLE_CLOUD_LOCATION = resolveVertexLocation();
+    const adc = defaultAdcPath();
+    if (!("GOOGLE_APPLICATION_CREDENTIALS" in env) && fs.existsSync(adc)) {
+      env.GOOGLE_APPLICATION_CREDENTIALS = adc;
+    }
+  } else {
+    // oauth / api-key: Vertex env would override the settings.json auth
+    // type inside the CLI — keep it out. GOOGLE_CLOUD_PROJECT stays (Code
+    // Assist licensing resolves through it in oauth mode).
+    delete env.GOOGLE_GENAI_USE_VERTEXAI;
+    delete env.GOOGLE_APPLICATION_CREDENTIALS;
   }
   return env;
 }
