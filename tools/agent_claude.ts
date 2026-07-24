@@ -16,9 +16,9 @@ const KNOWN_FINDING_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 // Strict allowlist: PATH/HOME for the binary + model auth (see
-// claude_auth_lib.ts — subscription mode rides HOME's OAuth credentials,
-// api mode surfaces ANTHROPIC_AGENTS as ANTHROPIC_API_KEY; the source name
-// is never forwarded). GH_TOKEN/GITHUB_TOKEN/STARK_PUSH_TOKEN are
+// claude_auth_lib.ts — subscription-only, so the CLI rides HOME's OAuth
+// credentials and no Anthropic API key is ever forwarded).
+// GH_TOKEN/GITHUB_TOKEN/STARK_PUSH_TOKEN are
 // intentionally excluded so the reviewer subprocess cannot exfiltrate
 // posting credentials.
 const ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"] as const;

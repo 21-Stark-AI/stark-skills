@@ -56,9 +56,9 @@ export interface ModelEntry {
 }
 
 export const DEFAULT_MODELS: Record<string, ModelEntry> = {
-  // auth: "subscription" dispatches headless claude on the logged-in
-  // account's OAuth credentials; "api" injects ANTHROPIC_API_KEY (from
-  // ANTHROPIC_AGENTS). Env override: STARK_CLAUDE_AUTH. See claude_auth_lib.ts.
+  // auth: "subscription" is the only mode — headless claude dispatches on the
+  // logged-in account's OAuth credentials. The metered-API mode was removed;
+  // any other value warns and is ignored. See claude_auth_lib.ts.
   claude: { enabled: true, model_id: "claude-opus-4-8", auth: "subscription" },
   codex: { enabled: true, model_id: "gpt-5.6-sol" },
   // auth: "oauth" rides the logged-in Google account's Code Assist seat;

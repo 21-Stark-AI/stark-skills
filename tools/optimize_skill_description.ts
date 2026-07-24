@@ -167,7 +167,7 @@ export function buildCleanEnv(
     const v = source[key];
     if (typeof v === "string") env[key] = v;
   }
-  applyClaudeAuth(env, { source, require: true });
+  applyClaudeAuth(env, { source });
   return env;
 }
 

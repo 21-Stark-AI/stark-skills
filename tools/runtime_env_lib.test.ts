@@ -92,21 +92,24 @@ test("buildAgentEnv: claude/local subscription mode (default) → no ANTHROPIC_A
   fs.rmSync(resolved["STARK_AGENT_TMPDIR"], { recursive: true, force: true });
 });
 
-test("buildAgentEnv: claude/local api mode → ANTHROPIC_API_KEY injected from ANTHROPIC_AGENTS", async () => {
+test("buildAgentEnv: claude/local never injects ANTHROPIC_API_KEY, whatever the host sets", async () => {
+  // The metered-API mode is gone: a legacy STARK_CLAUDE_AUTH=api must not
+  // resurrect key injection, and a set-but-unused ANTHROPIC_AGENTS must not
+  // leak or make dispatch throw.
   const resolved = await withEnv(
-    { STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: "secret-key" },
+    { STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: "secret-key", ANTHROPIC_API_KEY: "sk-stale" },
     () => buildAgentEnv("claude", "local"),
   );
-  assert.equal(resolved["ANTHROPIC_API_KEY"], "secret-key");
+  assert.equal(resolved["ANTHROPIC_API_KEY"], undefined, "no key injection in subscription-only mode");
   assert.equal(resolved["ANTHROPIC_AGENTS"], undefined, "source var must not leak");
   fs.rmSync(resolved["STARK_AGENT_TMPDIR"], { recursive: true, force: true });
 });
 
-test("buildAgentEnv: claude api mode with no ANTHROPIC_AGENTS → throws", async () => {
-  await withEnv({ STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: undefined }, async () => {
-    await assert.rejects(
-      () => buildAgentEnv("claude", "local"),
-      /ANTHROPIC_AGENTS not set/,
-    );
-  });
+test("buildAgentEnv: claude with no ANTHROPIC_AGENTS → succeeds (OAuth dispatch)", async () => {
+  const resolved = await withEnv({ STARK_CLAUDE_AUTH: undefined, ANTHROPIC_AGENTS: undefined }, () =>
+    buildAgentEnv("claude", "local"),
+  );
+  assert.equal(resolved["ANTHROPIC_API_KEY"], undefined);
+  assert.ok(resolved["HOME"], "HOME carried so the CLI finds its OAuth credentials");
+  fs.rmSync(resolved["STARK_AGENT_TMPDIR"], { recursive: true, force: true });
 });

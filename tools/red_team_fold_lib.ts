@@ -433,9 +433,9 @@ export const DECIDER_DISALLOWED_TOOLS = [
  * Starts from `scrubEnv()` (PATH/USER/SHELL/LANG/LC_ALL/TMPDIR — no HOME, no
  * credentials) and re-adds ONLY what the model call itself needs: `HOME`
  * (so the Claude CLI can find its config/OAuth credentials) plus model auth
- * per `claude_auth_lib.ts` (subscription default rides HOME's OAuth; api
- * mode surfaces `ANTHROPIC_AGENTS` as `ANTHROPIC_API_KEY` — the one
- * sanctioned egress, matching `agent_claude.ts::buildEnv`). The repo/publishing credential
+ * per `claude_auth_lib.ts` (subscription-only — HOME's OAuth credentials,
+ * no Anthropic API key, matching `agent_claude.ts::buildEnv`).
+ * The repo/publishing credential
  * (`GITHUB_TOKEN`/`GH_TOKEN`) and `OPENAI_*` are deliberately NOT
  * re-added — a prompt-injected artifact that talks past the delimiter
  * defense still finds no GitHub token to reach the repo with. The host
