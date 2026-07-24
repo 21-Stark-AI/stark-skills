@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.10.1] - 2026-07-24
+
+### Changed
+- review-doc: `max_fixes_per_round` default raised 8 → 12 (#788) — two default rounds now clear up to 24 findings in-dispatcher; a 25-finding run leaves ~1 for the interactive Phase 5 loop instead of ~9. Convergence math unchanged (still measured on the uncapped count).
+
+### Removed
+- auth: the metered-Anthropic-API claude dispatch mode (#787) — `claude_auth_lib` is subscription-only; the legacy `api` mode and its `ANTHROPIC_AGENTS` key injection are gone.
+
+### Added
+- tools: symlink-invocation entry-guard regression test (`entry_guard.test.ts`, #734) — spawns every CLI tool through a symlinked path and asserts `main()` actually runs, locking in the #786 `isMainModule` fix.
+
 ### Fixed
+- marketplace-sync: bundle auto-bump now fires on vendored tools/config/prompts changes too (#789) — detection covers `dist/claude/<bundle>/` diffs, not just `catalog/<b>/{skills,commands}/`, closing the stale-plugin-cache gap (bifrost#103) where tools-only changes shipped under an unchanged version.
 - copilot: headless claude subprocesses (goal + non-goal lead, claude wing) now run with an empty MCP roster (`--mcp-config` + `--strict-mcp-config` via `writeEmptyMcpConfig`) — they inherited the host's full MCP server list, where each configured server adds startup latency that compounded into multi-minute hangs before the prompt was even processed.
 - copilot: wing verdict findings that arrive as objects (`{file, issue, ...}` — codex does this) are JSON-serialized by `toStringList` instead of collapsing to `[object Object]`, which starved the lead's fix round of the actual finding text.
 
