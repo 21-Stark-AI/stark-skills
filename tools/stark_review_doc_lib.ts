@@ -94,7 +94,7 @@ export const DEFAULT_DOC_REVIEW_CONFIG: DocReviewConfig = {
   // third round only to roll it back). A run that genuinely needs more passes
   // opts in via --rounds.
   max_rounds: 2,
-  max_fixes_per_round: 8,
+  max_fixes_per_round: 12,
   compress_retry_growth_ratio: 1.15,
   max_codex_concurrent: 3,
   coherence_pass: true,

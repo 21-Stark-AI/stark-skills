@@ -159,7 +159,7 @@
     "fix_threshold": "medium",
     "disabled_domains": [],
     "max_rounds": 2,
-    "max_fixes_per_round": 8,
+    "max_fixes_per_round": 12,
     "compress_retry_growth_ratio": 1.15,
     "triage": {
       "mode": "conservative"

@@ -84,7 +84,7 @@ Lead/wing multi-round spec review:
   **binding** — reviewers must not raise, and the wing skips (reason `author
   deferred to V1 boundary / out of scope`), findings that would add an
   explicitly-deferred concern. Each fix round is capped at
-  `max_fixes_per_round` (default 8) patches, top-N by severity — the medium
+  `max_fixes_per_round` (default 12) patches, top-N by severity — the medium
   "add detail" overflow stays recorded, not patched — and reviewers receive the
   **prior rounds' applied patches** (accumulated) with an explicit anti-churn instruction
   (wrong fix text ⇒ "revert it", never "extend it"). Cross-domain
