@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+<!-- stark-gh:pr-merge pr=792 runId=9c0c7296-57bd-45c9-9c98-6075e519169a -->
+- Add statusline labels and distinct Max and Team palettes for the third Stark account.
+
 ## [v0.10.1] - 2026-07-24
 
 ### Changed
