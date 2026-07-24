@@ -166,7 +166,8 @@ gradient() { # text [palette] → sets GRAD: per-account color sweep
   # animation clock). Palette ($2)
   # selects the account's color family: gold (Max/Com), violet (Max/Net), blue
   # (Enterprise), magenta→orange spectrum (Team#0 magenta / #1 pink / #2 coral /
-  # #3 orange) plus emerald→teal (Team#4), ice/cyan (Max/S1), lime (Max/S2). Pure bash fixed-point math, no forks. GRAD holds
+  # #3 orange) plus emerald→teal (Team#4), ice/cyan (Max/S1), lime (Max/S2),
+  # crimson→rose (Max/S3). Pure bash fixed-point math, no forks. GRAD holds
   # interpreted ESC bytes (printf -v %b) — embed directly, don't re-%b it.
   local text="$1" pal="${2:-gold}" RST=$'\033[0m'
   local -a PR PG PB
@@ -182,6 +183,8 @@ gradient() { # text [palette] → sets GRAD: per-account color sweep
     stark2) PR=(190 214 163 235) PG=(242 255 230 250) PB=(100 133 80  120) ;;  # lime→chartreuse — Max/S2
     stark1t) PR=(30  72  96  52 ) PG=(148 196 214 172) PB=(210 238 248 226) ;; # steel/deep cyan — Team/S1
     stark2t) PR=(150 178 128 196) PG=(196 214 176 226) PB=(60  92  48  110) ;; # olive→moss — Team/S2
+    stark3) PR=(255 255 240 250) PG=(90  130 70  105) PB=(110 150 95  130) ;;  # crimson→rose — Max/S3
+    stark3t) PR=(178 205 150 196) PG=(52  88  38  70 ) PB=(72  105 60  90 ) ;; # wine/maroon — Team/S3
     *)      PR=(230 255 255 250) PG=(150 190 224 204) PB=(0   0   60  15 ) ;;  # amber→gold — Max/Com
   esac
   local n=${#PR[@]} len=${#text}
@@ -392,12 +395,13 @@ acct_label=""
         # Several accounts share the .net domain — disambiguate by the email
         # local part: aryeh.kiovetsky{1,2,3} → Team#{1,2,3}, the base
         # aryeh.kiovetsky → Team#0. The Max ones split too:
-        # aryeh.stark.{1,2} → Max/S1, Max/S2; anything else → Max/Net. The same
-        # two stark emails also carry a Team plan → Team/S1, Team/S2.
+        # aryeh.stark.{1,2,3} → Max/S{1,2,3}; anything else → Max/Net. The same
+        # three stark emails also carry a Team plan → Team/S{1,2,3}.
         if [ "$acct_otype" = "claude_max" ]; then
           case "${acct_email%%@*}" in
             aryeh.stark.1) acct_label="Max/S1" ;;
             aryeh.stark.2) acct_label="Max/S2" ;;
+            aryeh.stark.3) acct_label="Max/S3" ;;
             *)             acct_label="Max/Net" ;;
           esac
         else case "${acct_email%%@*}" in
@@ -407,6 +411,7 @@ acct_label=""
           aryeh.kiovetsky4) acct_label="Team#4" ;;
           aryeh.stark.1)    acct_label="Team/S1" ;;
           aryeh.stark.2)    acct_label="Team/S2" ;;
+          aryeh.stark.3)    acct_label="Team/S3" ;;
           *)                acct_label="Team#0" ;;
         esac; fi ;;
       *) acct_label="$acct_dom" ;;
@@ -419,6 +424,7 @@ acct_label=""
         Max/Net)    _pal=violet ;;
         Max/S1)     _pal=stark1 ;;
         Max/S2)     _pal=stark2 ;;
+        Max/S3)     _pal=stark3 ;;
         Max/*)      _pal=gold ;;
         Enterprise) _pal=blue ;;
         Team#0)     _pal=team0 ;;
@@ -428,6 +434,7 @@ acct_label=""
         Team#4)     _pal=team4 ;;
         Team/S1)    _pal=stark1t ;;
         Team/S2)    _pal=stark2t ;;
+        Team/S3)    _pal=stark3t ;;
         Team*)      _pal=team0 ;;
         *)          _pal=gold ;;
       esac
