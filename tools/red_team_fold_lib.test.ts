@@ -498,28 +498,24 @@ test("rt1: buildDeciderEnv subscription mode (default) injects no key, drops cre
   assert.equal(env.OPENAI_API_KEY, undefined);
 });
 
-test("rt1: buildDeciderEnv api mode keeps model auth, drops repo/publishing creds", () => {
+test("rt1: buildDeciderEnv keeps HOME/PATH, drops every credential", () => {
   const env = buildDeciderEnv({
     HOME: "/home/me",
-    STARK_CLAUDE_AUTH: "api",
+    STARK_CLAUDE_AUTH: "api", // legacy value — must not resurrect key injection
     ANTHROPIC_API_KEY: "sk-ant-x",
+    ANTHROPIC_AGENTS: "sk-agents",
     GITHUB_TOKEN: "ghs_secret",
     GH_TOKEN: "gh_secret",
     OPENAI_API_KEY: "sk-openai",
     PATH: "/usr/bin",
   } as unknown as NodeJS.ProcessEnv);
-  assert.equal(env.HOME, "/home/me"); // model needs HOME
-  assert.equal(env.ANTHROPIC_API_KEY, "sk-ant-x"); // the one sanctioned egress
+  assert.equal(env.HOME, "/home/me"); // model needs HOME for its OAuth creds
   assert.equal(env.PATH, "/usr/bin"); // binary needs PATH
+  assert.equal(env.ANTHROPIC_API_KEY, undefined); // subscription-only: no key egress at all
+  assert.equal(env.ANTHROPIC_AGENTS, undefined);
   assert.equal(env.GITHUB_TOKEN, undefined); // no repo/publishing cred
   assert.equal(env.GH_TOKEN, undefined);
   assert.equal(env.OPENAI_API_KEY, undefined);
-});
-
-test("rt1: buildDeciderEnv api mode surfaces ANTHROPIC_AGENTS as ANTHROPIC_API_KEY", () => {
-  const env = buildDeciderEnv({ HOME: "/h", STARK_CLAUDE_AUTH: "api", ANTHROPIC_AGENTS: "sk-agents", PATH: "/usr/bin" } as unknown as NodeJS.ProcessEnv);
-  assert.equal(env.ANTHROPIC_API_KEY, "sk-agents");
-  assert.equal(env.GITHUB_TOKEN, undefined);
 });
 
 test("rt1: buildDeciderCommand disables mutating/exfil tools (decider only emits JSON)", () => {

@@ -454,9 +454,9 @@ export async function buildAgentEnv(
   }
 
   if (agent === "claude") {
-    // Subscription mode (default) leaves ANTHROPIC_API_KEY absent — the CLI
-    // uses the logged-in account's OAuth creds; api mode injects the key.
-    applyClaudeAuth(env, { require: true });
+    // Subscription-only: leaves ANTHROPIC_API_KEY absent so the CLI uses the
+    // logged-in account's OAuth creds. See claude_auth_lib.ts.
+    applyClaudeAuth(env);
   } else {
     delete env["ANTHROPIC_API_KEY"];
   }

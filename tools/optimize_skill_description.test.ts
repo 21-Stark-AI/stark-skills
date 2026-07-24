@@ -173,14 +173,15 @@ test("buildCleanEnv: subscription mode (default) injects no ANTHROPIC_API_KEY", 
   assert.equal(env.HOME, "/home/x");
 });
 
-test("buildCleanEnv: api mode surfaces ANTHROPIC_AGENTS as ANTHROPIC_API_KEY", () => {
+test("buildCleanEnv: legacy api mode never injects a key (subscription-only)", () => {
   const env = buildCleanEnv({
     PATH: "/bin",
     HOME: "/home/x",
     STARK_CLAUDE_AUTH: "api",
     ANTHROPIC_AGENTS: "sk-secret",
+    ANTHROPIC_API_KEY: "sk-stale",
   });
-  assert.equal(env.ANTHROPIC_API_KEY, "sk-secret");
+  assert.ok(!("ANTHROPIC_API_KEY" in env), "the metered-API mode is gone");
   assert.equal(env.PATH, "/bin");
   assert.equal(env.HOME, "/home/x");
 });
@@ -193,23 +194,10 @@ test("buildCleanEnv: never forwards ANTHROPIC_AGENTS itself", () => {
   assert.ok(!("ANTHROPIC_AGENTS" in env));
 });
 
-test("buildCleanEnv: api mode drops stale ANTHROPIC_API_KEY from the host", () => {
-  // If the host already exports a stale key, it must NOT leak through —
-  // the only source of truth is ANTHROPIC_AGENTS.
-  const env = buildCleanEnv({
-    PATH: "/bin",
-    STARK_CLAUDE_AUTH: "api",
-    ANTHROPIC_API_KEY: "sk-stale-host-key",
-    ANTHROPIC_AGENTS: "sk-fresh",
-  });
-  assert.equal(env.ANTHROPIC_API_KEY, "sk-fresh");
-});
-
-test("buildCleanEnv: api mode throws when ANTHROPIC_AGENTS is missing", () => {
-  assert.throws(
-    () => buildCleanEnv({ PATH: "/bin", STARK_CLAUDE_AUTH: "api" }),
-    /ANTHROPIC_AGENTS not set/,
-  );
+test("buildCleanEnv: no Anthropic key present → succeeds (OAuth dispatch)", () => {
+  const env = buildCleanEnv({ PATH: "/bin", HOME: "/home/x" });
+  assert.equal(env.HOME, "/home/x", "HOME carried so the CLI finds its OAuth credentials");
+  assert.ok(!("ANTHROPIC_API_KEY" in env));
 });
 
 test("buildCleanEnv: includes the canonical PATH/HOME/LANG/LC_ALL/TMPDIR allowlist", () => {

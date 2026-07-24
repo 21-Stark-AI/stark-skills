@@ -18,11 +18,11 @@ export { AgentDisabledError };
 export const CLAUDE_MODEL = "claude-opus-4-8";
 
 /**
- * Return an allowlisted env with the Anthropic API key, for headless
- * dispatch. Delegates to `runtime_env_lib.buildAgentEnv("claude", "local")`
- * so the subprocess sees only allowlisted vars and `ANTHROPIC_API_KEY`
- * sourced from `ANTHROPIC_AGENTS`. The "local" operation fetches no
- * GitHub App token — used by callers that don't touch GitHub.
+ * Return an allowlisted env for headless dispatch. Delegates to
+ * `runtime_env_lib.buildAgentEnv("claude", "local")` so the subprocess sees
+ * only allowlisted vars; auth rides HOME's OAuth credentials (no Anthropic
+ * API key is injected). The "local" operation fetches no GitHub App token —
+ * used by callers that don't touch GitHub.
  */
 export function makeCleanEnv(): Promise<Record<string, string>> {
   return buildAgentEnv("claude", "local");
