@@ -16,6 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveDb } from "./red_team_db_resolver.ts";
+import { isMainModule } from "./main_module_lib.ts";
 
 import {
   acceptFinding,
@@ -215,6 +216,6 @@ export async function main(argv: string[]): Promise<number> {
   return rc;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   void main(process.argv.slice(2)).then((code) => process.exit(code));
 }

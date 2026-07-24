@@ -22,7 +22,7 @@
  * collectors run in parallel so the slowest single child caps total time.
  */
 
-import { pathToFileURL } from "node:url";
+import { isMainModule } from "./main_module_lib.ts";
 
 import {
   collectEnd,
@@ -97,7 +97,7 @@ export async function main(argv: string[], deps?: Deps): Promise<number> {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then((code) => {
     process.exit(code);
   });
