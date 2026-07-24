@@ -65,6 +65,7 @@
     "gemini": {
       "enabled": true,
       "model_id": "gemini-3.1-pro-preview",
+      "auth": "oauth",
       "vertex_project": "",
       "vertex_location": "global"
     }
