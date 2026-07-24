@@ -786,7 +786,12 @@ function toStringList(v: unknown): string[] {
   const out: string[] = [];
   for (const item of v) {
     if (typeof item === "string") out.push(item);
-    else if (item !== null && item !== undefined) out.push(String(item));
+    else if (item !== null && item !== undefined) {
+      // Codex sometimes returns findings as objects ({file, issue, ...});
+      // String() would collapse them to "[object Object]" and starve the
+      // lead's fix round of the actual finding. Serialize instead.
+      out.push(typeof item === "object" ? JSON.stringify(item) : String(item));
+    }
   }
   return out;
 }
@@ -927,6 +932,10 @@ export function buildClaudeCmd(opts: {
   promptArg?: string;
   maxBudgetUsd?: number; // runaway guard for goal loops
   maxTurns?: number; // explicit turn cap so a phase doesn't hit the CLI default and exit 1
+  // When set, passes --mcp-config <file> --strict-mcp-config so the subprocess
+  // skips the host's full MCP server roster (200+ servers can each stall startup
+  // by seconds, adding up to multi-minute hangs before the prompt is processed).
+  mcpConfigFile?: string;
 }): { cmd: string; args: string[] } {
   const args = [
     "-p", opts.promptArg ?? "-",
@@ -941,7 +950,21 @@ export function buildClaudeCmd(opts: {
     args.push("--max-budget-usd", String(opts.maxBudgetUsd));
   }
   if (opts.allowedTools) args.push("--allowedTools", opts.allowedTools);
+  if (opts.mcpConfigFile) {
+    args.push("--mcp-config", opts.mcpConfigFile, "--strict-mcp-config");
+  }
   return { cmd: "claude", args };
+}
+
+/**
+ * Write an empty MCP roster into the agent's temp dir and return its path,
+ * for `buildClaudeCmd({ mcpConfigFile })`. Headless subprocesses inherit the
+ * host's full MCP server list otherwise, and each server adds startup latency.
+ */
+export function writeEmptyMcpConfig(tempDir: string): string {
+  const p = path.join(tempDir, "empty-mcp.json");
+  writeFileSync(p, '{"mcpServers":{}}', "utf8");
+  return p;
 }
 
 export function buildCodexCmd(
@@ -1019,6 +1042,7 @@ async function runImplementationAgent(
           promptArg: goalPrompt,
           maxBudgetUsd: goalMaxBudgetUsd ?? undefined,
           maxTurns: LEAD_MAX_TURNS,
+          mcpConfigFile: writeEmptyMcpConfig(agentTempDir),
         });
         cmd = c.cmd; args = c.args; stdin = undefined;
       } else {
@@ -1026,6 +1050,7 @@ async function runImplementationAgent(
           allowedTools: "Edit,Write,Read,Bash,Glob,Grep",
           maxTurns: LEAD_MAX_TURNS,
           maxBudgetUsd: LEAD_MAX_BUDGET_USD,
+          mcpConfigFile: writeEmptyMcpConfig(agentTempDir),
         });
         cmd = c.cmd; args = c.args; stdin = prompt;
       }
@@ -1135,10 +1160,10 @@ async function runWingReview(
 
   try {
     if (wing === "claude") {
-      const c = buildClaudeCmd({ allowedTools: "Read,Glob,Grep" });
-      cmd = c.cmd; args = c.args; stdin = reviewPayload;
       const built = await buildAgentEnv("claude", "review");
       env = built.env; agentTempDir = built.tempDir;
+      const c = buildClaudeCmd({ allowedTools: "Read,Glob,Grep", mcpConfigFile: writeEmptyMcpConfig(agentTempDir) });
+      cmd = c.cmd; args = c.args; stdin = reviewPayload;
     } else if (wing === "codex") {
       const c = buildCodexCmd({ readOnly: true });
       cmd = c.cmd; args = c.args; stdin = reviewPayload;

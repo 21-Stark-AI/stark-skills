@@ -101,6 +101,13 @@ describe("normalizeVerdict", () => {
     assert.deepEqual(n.blocking, ["1", "true", "ok"]);
   });
 
+  test("serializes object findings instead of collapsing to [object Object]", () => {
+    const finding = { file: "a.ts", issue: "missing null check" };
+    const n = normalizeVerdict({ verdict: "revise", blocking_findings: [finding] });
+    assert.deepEqual(n.blocking, [JSON.stringify(finding)]);
+    assert.equal(n.blocking.some((s) => s.includes("[object Object]")), false);
+  });
+
   test("ignores non-array blocking_findings (no character-iteration footgun)", () => {
     // Python's [str(x) for x in ...] would iterate over characters of a
     // string. Our toStringList must guard against this.
@@ -406,6 +413,20 @@ describe("buildClaudeCmd (goal mode)", () => {
     const bIdx = args.indexOf("--max-budget-usd");
     assert.notEqual(bIdx, -1);
     assert.equal(args[bIdx + 1], "7");
+  });
+
+  test("mcpConfigFile emits --mcp-config PATH --strict-mcp-config as a unit", () => {
+    const { args } = buildClaudeCmd({ allowedTools: "Read", mcpConfigFile: "/tmp/empty-mcp.json" });
+    const i = args.indexOf("--mcp-config");
+    assert.notEqual(i, -1);
+    assert.equal(args[i + 1], "/tmp/empty-mcp.json");
+    assert.equal(args[i + 2], "--strict-mcp-config");
+  });
+
+  test("no mcpConfigFile → neither MCP flag is emitted", () => {
+    const { args } = buildClaudeCmd({ allowedTools: "Read" });
+    assert.equal(args.includes("--mcp-config"), false);
+    assert.equal(args.includes("--strict-mcp-config"), false);
   });
 
   test("non-positive / NaN budget never emits the flag", () => {
